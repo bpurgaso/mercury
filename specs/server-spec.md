@@ -153,10 +153,8 @@ Future scaling: Split API and Media into separate processes/containers communica
 ### 3.3 Crate/Module Structure
 
 ```
-mercury-server/
+src/server/                         # Rust backend (within mercury/ monorepo)
 ├── Cargo.toml                  # Workspace root
-├── Dockerfile
-├── docker-compose.yml
 ├── config/
 │   ├── default.toml            # Default configuration
 │   └── example.env             # Example environment overrides

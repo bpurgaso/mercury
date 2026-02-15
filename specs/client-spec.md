@@ -225,7 +225,7 @@ ipcRenderer.on('crypto:port', (event) => {
 ### 3.3 Project Structure
 
 ```
-mercury-client/
+src/client/                            # Electron frontend (within mercury/ monorepo)
 ├── package.json
 ├── electron.vite.config.ts
 ├── electron-builder.config.yml
