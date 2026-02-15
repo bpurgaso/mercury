@@ -256,6 +256,7 @@ mercury-client/
 │   │       ├── keystore.ts            # SQLite-encrypted key persistence
 │   │       ├── safe-storage-proxy.ts  # Proxies safeStorage calls to main thread via MessagePort
 │   │       ├── sessions.db.ts         # SQLite session/ratchet state
+│   │       ├── messages.db.ts         # SQLite-encrypted E2E message plaintext storage
 │   │       └── migrations/            # SQLite schema migrations
 │   ├── preload/
 │   │   ├── index.ts                   # contextBridge exposure
@@ -304,7 +305,7 @@ mercury-client/
 │   │   │   ├── moderation/
 │   │   │   │   ├── ReportDialog.tsx       # Report message/user modal
 │   │   │   │   ├── BlockConfirmDialog.tsx # Block user confirmation
-│   │   │   │   ├── ModerationDashboard.tsx # Server owner: reports, signals, bans
+│   │   │   │   ├── ModerationDashboard.tsx # Owner/moderator: reports, signals, bans
 │   │   │   │   ├── ReportQueue.tsx        # Pending reports list
 │   │   │   │   ├── ReportDetail.tsx       # Single report review + action + framing warning
 │   │   │   │   ├── UnverifiedReportBanner.tsx # "⚠️ Cannot be cryptographically verified" warning
@@ -334,7 +335,7 @@ mercury-client/
 │   │   ├── stores/
 │   │   │   ├── authStore.ts          # Auth state, tokens
 │   │   │   ├── serverStore.ts        # Servers, channels, members
-│   │   │   ├── messageStore.ts       # Messages in-memory (plaintext for standard, decrypted for E2E)
+│   │   │   ├── messageStore.ts       # Message cache: E2E from local SQLite, standard from server
 │   │   │   ├── callStore.ts          # Active call state
 │   │   │   ├── presenceStore.ts      # Online/offline/idle status
 │   │   │   ├── moderationStore.ts   # Blocks, reports, bans, abuse signals
@@ -576,8 +577,11 @@ Recovery Key (24 words → 256-bit entropy)
 - User's identity is effectively reset.
 - New master verify key + device identity key generated.
 - All contacts see a "safety number changed" warning.
-- All encrypted message history is permanently unreadable.
+- Server-side E2E ciphertext is permanently unreadable (no ratchet state to decrypt).
+- Local message history (`messages.db`) is lost with the old device.
 - This is by design — no backdoor exists.
+
+**With recovery key:** The backup restores ratchet state, so **new messages** can be decrypted. However, the local `messages.db` (containing previously decrypted E2E plaintext) is still lost with the old device. The cross-device history sync protocol (future) addresses this by transferring history from another online device.
 
 ### 4.5 Text Message Encryption Flow
 
@@ -617,8 +621,14 @@ User types message
                                  5. Return plaintext
   6. Receive plaintext    ◄─────    (zero-copy ArrayBuffer transfer)
   7. Store in messageStore
-     (in-memory only)
+     (in-memory cache)
   8. Render in UI
+
+  (Crypto Worker also persists
+   plaintext to messages.db —
+   forward secrecy means the
+   ciphertext on the server
+   cannot be re-decrypted later)
 ```
 
 **Critical: Ratchet state persistence is atomic.** The worker writes the updated ratchet state to SQLite *before* returning the plaintext to the renderer. If the app crashes between decrypt and persist, the client re-requests the message and re-decrypts. Out-of-order or duplicate messages are handled by the Double Ratchet's built-in skipped message key mechanism (stores up to 1000 skipped keys).
@@ -1035,18 +1045,19 @@ The client:
 |------|---------|-----------|-------------|
 | Private keys (identity, pre-keys) | SQLite (`keys.db`) | Yes (safeStorage) | Permanent |
 | Session/ratchet state | SQLite (`sessions.db`) | Yes (safeStorage) | Permanent |
-| Auth tokens (JWT, refresh) | Electron safeStorage | Yes (OS-level) | Until logout |
-| E2E messages (decrypted) | In-memory (Zustand) | N/A (RAM only) | Session only |
+| **E2E messages (decrypted plaintext)** | **SQLite (`messages.db`)** | **Yes (safeStorage)** | **Permanent** |
 | Standard channel messages | In-memory (Zustand) | N/A (RAM only) | Session only |
+| Auth tokens (JWT, refresh) | Electron safeStorage | Yes (OS-level) | Until logout |
 | User preferences | `electron-store` (JSON) | No (non-sensitive) | Permanent |
 | App cache (avatars, etc.) | Electron cache dir | No | Clearable |
 
 ### 8.2 Security Constraints
 
-- **No E2E plaintext on disk.** Decrypted messages from private channels and DMs exist only in renderer memory. When the app closes, they're gone. History is re-fetched from the server and re-decrypted on next launch.
-- **Standard channel messages are also in-memory only** in MVP, but since the server holds the plaintext, they could be cached to disk in a future version for offline access (non-sensitive — the server already has them).
-- **Key material isolation.** All private keys in the main process only, accessed via IPC.
+- **E2E plaintext MUST be stored locally.** The Double Ratchet and Sender Key protocols provide **forward secrecy** — once a message is decrypted, the ratchet advances and the decryption key is mathematically destroyed. The ciphertext on the server **cannot be re-decrypted** on next launch. If decrypted plaintext were held only in RAM, users would lose their entire E2E message history every time they close the app. Therefore, decrypted E2E messages are persisted to a local SQLite database (`~/.mercury/messages.db`), encrypted at rest using the same `safeStorage`-derived key that protects `keys.db` and `sessions.db`.
+- **Standard channel messages remain in-memory only.** Since the server holds the plaintext for standard channels, they can always be re-fetched. Local caching to disk is a future optimization for offline access.
+- **Key material isolation.** All private keys live in the Crypto Worker Thread only, accessed via MessagePort.
 - **Screen capture protection.** Set `setContentProtection(true)` on BrowserWindow to prevent screen capture by other apps (OS-level, best-effort).
+- **Local message database security:** The `messages.db` file is encrypted with the same AES-256 key derived from `safeStorage` (or the Linux app password fallback). Without the OS keychain or app password, the file is an opaque blob. Users can delete `messages.db` to purge all local E2E history without affecting their encryption keys or sessions.
 
 ---
 
@@ -1182,17 +1193,24 @@ interface ServerState {
   joinServer(inviteCode: string): Promise<void>;
 }
 
-// messageStore — messages (in-memory only, regardless of encryption mode)
+// messageStore — dual-storage message management
+// E2E messages: persisted to local encrypted SQLite (messages.db) via Crypto Worker
+// Standard messages: in-memory only (re-fetched from server on launch)
 interface MessageState {
-  messages: Map<string, Message[]>;       // channelId → messages (plaintext for standard, decrypted for E2E)
+  messages: Map<string, Message[]>;       // channelId → messages (in-memory cache)
   sendMessage(channelId: string, content: string): Promise<void>;
   // For standard channels: sends plaintext via WS, server stores it
-  // For private channels: encrypts via IPC (Sender Keys), sends ciphertext
-  // For DMs: encrypts via IPC (Double Ratchet per-device), sends ciphertext
+  // For private channels: encrypts via MessagePort (Sender Keys), sends ciphertext,
+  //   ALSO persists decrypted plaintext to local messages.db
+  // For DMs: encrypts via MessagePort (Double Ratchet per-device), sends ciphertext,
+  //   ALSO persists decrypted plaintext to local messages.db
   receiveMessage(event: MessageCreateEvent): Promise<void>;
+  // E2E messages: decrypt via Crypto Worker, persist plaintext to messages.db,
+  //   then update in-memory cache
   fetchHistory(channelId: string, before?: string): Promise<void>;
-  // Standard channels: server returns plaintext, displayed directly
-  // E2E channels: server returns ciphertext blobs, decrypted via IPC before display
+  // Standard channels: fetch from server (server returns plaintext)
+  // E2E channels: load from LOCAL messages.db first (fast, offline-capable),
+  //   then fetch any new ciphertext from server since last sync
   // E2E channels: history only available from user's join point forward
 }
 
@@ -1384,7 +1402,7 @@ These are **not in MVP** but the architecture should accommodate:
 - **Cross-device E2E history sync (required for multi-device):** A newly authorized device cannot decrypt historical E2E messages (those ciphertexts were encrypted to device keys that didn't exist yet). An existing online device must package its local `messageStore` history, encrypt it to the new device's identity key, and transfer it. This is a significant protocol to design — the payload can be large (months of history), must be resumable if interrupted, and must handle the case where no other device is currently online (queue on server for later sync). Must be designed at multi-device activation time.
 - **Social recovery:** Alternative to recovery key. Split the recovery secret into k-of-n shares (Shamir's Secret Sharing) distributed to trusted contacts. Requires a share distribution ceremony UI and a recovery ceremony where k contacts provide their shares.
 - **Message franking (v2):** Extend the encryption envelope to include a franking tag (HMAC commitment to plaintext). When a user reports a message, the franking tag + key are included so the server can cryptographically verify the report is authentic. Requires changes to `double-ratchet.ts` and `sender-keys.ts` to produce the franking commitment alongside the ciphertext.
-- **Moderator role UI (v2):** When the server supports designated moderator roles, the client needs scoped moderation UI — moderators see the report queue and can act within their permissions, but don't see the full admin dashboard.
+- **Scoped moderator UI (v2):** MVP shows the full moderation dashboard to both owners and moderators (`is_moderator = true`). When v2 adds scoped RBAC permissions, the client needs to conditionally show/hide moderation actions based on the moderator's specific permissions (e.g., can see report queue but "Ban" button is disabled).
 - **MLS for large private channels:** If demand exists for E2E channels larger than 100 members, implement MLS (RFC 9420) client-side via WASM build of `openmls`. Adds a new `mls-client.ts` module. The 100-member Sender Key cap remains; MLS channels are a distinct encryption mode.
 - **Mobile apps:** Extract the crypto engine into a shared Rust library (compiled via wasm-pack for Electron, native for mobile via FFI). Per-device identity model already supports this — each mobile device gets its own device identity key. Push notifications for standard channels can include message content; E2E channel/DM notifications are metadata-only ("New message from Alice") unless a Notification Service Extension (iOS) or background service (Android) decrypts the preview.
 - **Server-side search (standard channels):** Standard channels store plaintext, so full-text search can be implemented server-side. E2E channels require client-side search (either local indexing or searchable encryption — much harder).

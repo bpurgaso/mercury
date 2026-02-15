@@ -307,6 +307,7 @@ CREATE TABLE server_members (
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     server_id       UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     nickname        VARCHAR(64),
+    is_moderator    BOOLEAN NOT NULL DEFAULT FALSE,      -- MVP moderator delegation (owner can promote)
     joined_at       TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (user_id, server_id)
 );
@@ -665,25 +666,29 @@ Call join/leave/signaling is handled over WebSocket.
 
 Blocked users cannot: send DMs to the blocker, see the blocker's presence, or be matched in user search by the blocker. Enforcement is server-side — the blocked user receives no indication they are blocked (messages silently dropped).
 
-#### Server Moderation (Owner/Moderator only)
+#### Server Moderation (Owner or Moderator)
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| `POST` | `/servers/:id/bans` | Ban a user from server | JWT + Owner |
-| `DELETE` | `/servers/:id/bans/:userId` | Unban a user | JWT + Owner |
-| `GET` | `/servers/:id/bans` | List banned users | JWT + Owner |
-| `POST` | `/servers/:id/kicks/:userId` | Kick user (remove without ban) | JWT + Owner |
-| `POST` | `/channels/:id/mutes` | Mute user in channel | JWT + Owner |
-| `DELETE` | `/channels/:id/mutes/:userId` | Unmute user in channel | JWT + Owner |
-| `GET` | `/servers/:id/audit-log` | Get moderation audit log (paginated) | JWT + Owner |
+| `POST` | `/servers/:id/bans` | Ban a user from server | JWT + Owner/Mod |
+| `DELETE` | `/servers/:id/bans/:userId` | Unban a user | JWT + Owner/Mod |
+| `GET` | `/servers/:id/bans` | List banned users | JWT + Owner/Mod |
+| `POST` | `/servers/:id/kicks/:userId` | Kick user (remove without ban) | JWT + Owner/Mod |
+| `POST` | `/channels/:id/mutes` | Mute user in channel | JWT + Owner/Mod |
+| `DELETE` | `/channels/:id/mutes/:userId` | Unmute user in channel | JWT + Owner/Mod |
+| `GET` | `/servers/:id/audit-log` | Get moderation audit log (paginated) | JWT + Owner/Mod |
+| `PUT` | `/servers/:id/moderators/:userId` | Promote member to moderator | JWT + **Owner only** |
+| `DELETE` | `/servers/:id/moderators/:userId` | Demote moderator | JWT + **Owner only** |
+
+**Auth check:** Moderation endpoints use an Axum extractor that queries `server_members` and allows access if the requesting user is either the `owner_id` on the `servers` table OR has `is_moderator = true` in `server_members`. Moderators **cannot** promote/demote other moderators, delete the server, or modify server settings — those remain owner-only. Moderators also cannot ban or kick the server owner.
 
 #### Reporting
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
 | `POST` | `/reports` | Submit a content report | JWT |
-| `GET` | `/servers/:id/reports` | List reports for a server (paginated) | JWT + Owner |
-| `PATCH` | `/reports/:id` | Review/action a report | JWT + Owner |
+| `GET` | `/servers/:id/reports` | List reports for a server (paginated) | JWT + Owner/Mod |
+| `PATCH` | `/reports/:id` | Review/action a report | JWT + Owner/Mod |
 
 #### Abuse Signals (Server Operator Dashboard)
 
@@ -945,6 +950,7 @@ When Alice wants to message Bob for the first time:
 - Each message encrypted with a unique key derived from ratchet state (per sender-device ↔ recipient-device pair).
 - Provides forward secrecy and break-in recovery.
 - Each per-device ciphertext is stored as a row in `message_recipients` (keyed by `message_id` + `device_id`). The `messages` table stores only metadata (sender, timestamp, channel). When fetching history, the server joins only the `message_recipients` row matching the requesting device, so clients never download ciphertext they can't decrypt.
+- **Forward secrecy implication:** Due to the Double Ratchet and Sender Key chain ratcheting, once a client decrypts a message, the decryption key is destroyed. The server-side ciphertext **cannot be re-decrypted** by that device. The server stores E2E ciphertext primarily for **delivery** (to offline devices that haven't yet received it). The client **must persist decrypted plaintext locally** (in an encrypted SQLite database). Server-side E2E ciphertext for messages that have been delivered to all recipient devices is effectively dead — the server may garbage-collect it after a configurable retention period.
 
 ### 6.6 Channel Encryption Modes
 
@@ -1500,7 +1506,7 @@ Reporter (Client)                    Server                    Server Owner (Cli
 
 ### 10.4 Layer 3 — Server-Operator Moderation Tools (MVP)
 
-Server owners (and future: designated moderators via roles) have enforcement powers:
+Server owners and **promoted moderators** (`is_moderator = true` on `server_members`) have enforcement powers:
 
 | Action | Scope | Effect | Reversible |
 |--------|-------|--------|------------|
@@ -1683,7 +1689,7 @@ These are **not in MVP** but the architecture should not preclude them:
 - **Cross-device E2E history sync (required for multi-device):** When a new device is authorized, it cannot decrypt historical E2E messages (those ciphertexts were encrypted to device keys that didn't exist yet). An existing online device must package its local message history, encrypt it to the new device's identity key, and transfer it via the server. This is a significant protocol: the transfer payload can be large (months of chat history), must be resumable, and must handle the case where no other device is currently online (queue for later sync). Design options include: streaming chunked transfer via a dedicated WebSocket channel, or storing the encrypted history bundle on the server temporarily. This protocol must be designed at multi-device activation time, not retrofitted.
 - **Social recovery (alternative to recovery key):** k-of-n trusted contacts can reconstruct a recovery key via Shamir's Secret Sharing. Each trusted contact holds a share; k shares are needed to reconstruct. Requires a share distribution protocol and a recovery ceremony flow.
 - **Message franking (v2):** Sender commits to plaintext via HMAC included in the encrypted envelope. On report, the server can verify the reporter didn't fabricate the content. See [Facebook's message franking paper](https://eprint.iacr.org/2017/664) for the cryptographic construction. Requires changes to the encryption format — each `message_recipients.ciphertext` blob will include an additional `frankingTag` and `frankingKey` field.
-- **Designated moderator roles (v2):** Extend RBAC so the server owner can appoint moderators with scoped permissions (e.g., can mute/kick but not ban). Requires the roles & permissions system below.
+- **Scoped moderator permissions (v2):** MVP has a single `is_moderator` boolean (full moderation powers). v2 extends this with RBAC: moderators can have scoped permissions (e.g., can mute/kick but not ban, can moderate specific channels only). Requires the roles & permissions system below.
 - **Moderator-specific moderation key (v2):** Instead of a single server-wide moderation keypair, designated moderators each have their own. Report evidence is encrypted to the assigned moderator's key, enabling delegation without sharing a single secret.
 - **MLS for large E2E channels:** If demand exists for E2E channels larger than 100 members, implement MLS (RFC 9420) via the `openmls` crate. MLS provides O(log n) member-change cost, enabling E2E groups of 1,000+ members. This would add `mls_groups`, `mls_welcome_messages`, and `mls_pending_commits` tables. The channel `encryption_mode` would gain a new `private_mls` variant. The 100-member Sender Key cap remains for simplicity; MLS channels would be a distinct type.
 - **Federation:** ActivityPub-inspired or custom protocol. User IDs are already `user@domain` ready. Moderation federation (shared ban lists, cross-server reports) is a separate design challenge.
