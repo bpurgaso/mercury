@@ -57,7 +57,7 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 | Language | **Rust (stable)** | Memory safety, zero-cost abstractions, async performance |
 | Async runtime | **Tokio** | Industry standard, mature ecosystem |
 | HTTP/WebSocket framework | **Axum** | Tower-based, composable middleware, first-class WebSocket support |
-| Serialization | **serde + serde_json** (API), **bincode** (internal) | JSON for client APIs, binary for internal efficiency |
+| Serialization | **serde + serde_json** (REST API), **rmp-serde (MessagePack)** (WebSocket message payloads), **bincode** (internal) | JSON for REST, MessagePack for WS message bodies (~30% smaller than JSON+base64), binary for internal |
 | Database | **PostgreSQL 16+** | Relational integrity, JSONB for flexible metadata, proven at scale |
 | Database driver | **sqlx** | Compile-time query verification, async native |
 | Migrations | **sqlx-cli** | Integrated with sqlx, reversible migrations |
@@ -243,9 +243,14 @@ mercury-server/
 All IDs use `UUID v7` (time-sortable) for natural ordering and future federation compatibility.
 
 ```sql
+-- CONVENTION: All UUID primary keys are generated as UUIDv7 (time-sortable) in the
+-- Rust application layer using uuid::Uuid::now_v7(). No DEFAULT gen_random_uuid() —
+-- the database never auto-generates IDs. This ensures B-tree index locality (inserts
+-- are always at the end of the index) and prevents page fragmentation at high volume.
+
 -- 001_create_users.sql
 CREATE TABLE users (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY,
     username        VARCHAR(32) UNIQUE NOT NULL,
     display_name    VARCHAR(64) NOT NULL,
     email           VARCHAR(255) UNIQUE NOT NULL,
@@ -261,7 +266,7 @@ CREATE INDEX idx_users_email ON users (email);
 
 -- 002_create_servers_channels.sql
 CREATE TABLE servers (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY,
     name            VARCHAR(100) NOT NULL,
     description     TEXT,
     icon_url        TEXT,
@@ -272,7 +277,7 @@ CREATE TABLE servers (
 );
 
 CREATE TABLE channels (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY,
     server_id       UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     name            VARCHAR(100) NOT NULL,
     channel_type    VARCHAR(16) NOT NULL,              -- 'text', 'voice', 'video'
@@ -301,7 +306,7 @@ CREATE TABLE server_members (
 -- Standard channels: content is plaintext in `content`, `message_blob` is NULL.
 -- Private/E2E channels: content is in `message_blob` (ciphertext), `content` is NULL.
 CREATE TABLE messages (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY,
     channel_id      UUID REFERENCES channels(id) ON DELETE CASCADE,
     dm_channel_id   UUID REFERENCES dm_channels(id) ON DELETE CASCADE,
     sender_id       UUID NOT NULL REFERENCES users(id),
@@ -324,7 +329,7 @@ CREATE INDEX idx_messages_channel ON messages (channel_id, created_at DESC);
 CREATE INDEX idx_messages_dm ON messages (dm_channel_id, created_at DESC);
 
 CREATE TABLE dm_channels (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY,
     created_at      TIMESTAMPTZ DEFAULT now()
 );
 
@@ -338,7 +343,7 @@ CREATE TABLE dm_members (
 
 -- Registered devices per user account
 CREATE TABLE devices (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_name     VARCHAR(64) NOT NULL,             -- "MacBook Pro", "Work Desktop"
     created_at      TIMESTAMPTZ DEFAULT now(),
@@ -429,7 +434,7 @@ CREATE TABLE channel_mutes (
 
 -- Content reports (user-submitted, references opaque message IDs)
 CREATE TABLE reports (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY,
     reporter_id     UUID NOT NULL REFERENCES users(id),
     reported_user_id UUID NOT NULL REFERENCES users(id),
     server_id       UUID REFERENCES servers(id),
@@ -670,9 +675,16 @@ Blocked users cannot: send DMs to the blocker, see the blocker's presence, or be
 
 **Connection:** `wss://{host}/ws?token={jwt}`
 
-All WebSocket messages use JSON envelope:
+#### Wire Format (Hybrid JSON + MessagePack)
 
-```json
+WebSocket frames use two formats depending on the operation:
+
+- **Text frames (JSON):** Used for control plane messages — signaling, presence, typing, heartbeats, moderation events. Human-readable for debugging.
+- **Binary frames (MessagePack):** Used for `message_send` and `MESSAGE_CREATE` — the only ops carrying encrypted payloads. MessagePack encodes binary data natively (no base64 bloat), reducing per-message wire size by ~30% compared to JSON+base64. Critical for multi-device fan-out where a single message carries N ciphertext blobs.
+
+Both formats share the same envelope structure:
+
+```
 {
   "op": "string",       // Operation code
   "d": { },             // Payload (operation-specific)
@@ -681,41 +693,47 @@ All WebSocket messages use JSON envelope:
 }
 ```
 
+For JSON (text frames), this is standard JSON. For MessagePack (binary frames), the same structure is encoded via MessagePack, with ciphertext fields as raw `bin` type (not base64 strings).
+
+**Client implementation:** The client checks `event.data instanceof ArrayBuffer` on the WebSocket `message` event. If true, decode as MessagePack; otherwise, parse as JSON.
+
 #### Client → Server Operations
 
-| Op Code | Description | Payload |
-|---------|-------------|---------|
-| `heartbeat` | Keep-alive (every 30s) | `{ "seq": <last_received_seq> }` |
-| `identify` | Initial handshake after connect | `{ "token": "jwt", "device_id": "..." }` |
-| `resume` | Resume dropped connection | `{ "token": "jwt", "session_id": "...", "seq": <last_seq> }` |
-| `message_send` | Send E2E encrypted message | `{ "channel_id": "...", "blob": "<base64>", "nonce": "..." }` |
-| `typing_start` | User started typing | `{ "channel_id": "..." }` |
-| `voice_state_update` | Join/leave/mute voice | `{ "channel_id": "...", "self_mute": bool, "self_deaf": bool }` |
-| `webrtc_signal` | SDP offer/answer/ICE candidate | `{ "room_id": "...", "target_user": "...", "signal": { ... } }` |
-| `presence_update` | Update user status | `{ "status": "online\|idle\|dnd\|offline" }` |
+| Op Code | Format | Description | Payload |
+|---------|--------|-------------|---------|
+| `heartbeat` | JSON | Keep-alive (every 30s) | `{ "seq": <last_received_seq> }` |
+| `identify` | JSON | Initial handshake after connect | `{ "token": "jwt", "device_id": "..." }` |
+| `resume` | JSON | Resume dropped connection | `{ "token": "jwt", "session_id": "...", "seq": <last_seq> }` |
+| `message_send` | **MsgPack** | Send message | `{ "channel_id", "recipients": [{ "device_id", "ciphertext": <bytes> }] }` (E2E) or `{ "channel_id", "content": "text" }` (standard) |
+| `typing_start` | JSON | User started typing | `{ "channel_id": "..." }` |
+| `voice_state_update` | JSON | Join/leave/mute voice | `{ "channel_id": "...", "self_mute": bool, "self_deaf": bool }` |
+| `webrtc_signal` | JSON | SDP offer/answer/ICE candidate | `{ "room_id": "...", "target_user": "...", "signal": { ... } }` |
+| `presence_update` | JSON | Update user status | `{ "status": "online\|idle\|dnd\|offline" }` |
 
 #### Server → Client Events
 
-| Event | Description | Payload |
-|-------|-------------|---------|
-| `READY` | Connection established | `{ "user": {...}, "servers": [...], "dm_channels": [...], "session_id": "..." }` |
-| `RESUMED` | Connection resumed | `{ "replayed_events": <count> }` |
-| `MESSAGE_CREATE` | New encrypted message | `{ "message": { "id", "channel_id", "sender_id", "blob", "nonce", "created_at" } }` |
-| `TYPING_START` | User typing indicator | `{ "channel_id", "user_id" }` |
-| `PRESENCE_UPDATE` | User status changed | `{ "user_id", "status" }` |
-| `VOICE_STATE_UPDATE` | User joined/left/muted | `{ "user_id", "channel_id", "self_mute", "self_deaf" }` |
-| `CALL_STARTED` | Call initiated | `{ "room_id", "channel_id", "initiator_id" }` |
-| `CALL_ENDED` | Call ended | `{ "room_id" }` |
-| `WEBRTC_SIGNAL` | SDP/ICE relay | `{ "from_user", "signal": { ... } }` |
-| `HEARTBEAT_ACK` | Response to heartbeat | `{ }` |
-| `KEY_BUNDLE_UPDATE` | User updated keys | `{ "user_id" }` |
-| `DEVICE_LIST_UPDATE` | User's device list changed | `{ "user_id", "signed_list" }` |
-| `USER_BANNED` | User was banned from server | `{ "server_id", "user_id" }` |
-| `USER_KICKED` | User was kicked from server | `{ "server_id", "user_id" }` |
-| `USER_MUTED` | User was muted in channel | `{ "channel_id", "user_id", "expires_at" }` |
-| `USER_UNMUTED` | User was unmuted in channel | `{ "channel_id", "user_id" }` |
-| `REPORT_CREATED` | New report submitted (to server owner only) | `{ "report": { "id", "category", "status" } }` |
-| `ABUSE_SIGNAL` | Automated abuse flag (to server owner only) | `{ "signal": { "user_id", "signal_type", "severity" } }` |
+| Event | Format | Description | Payload |
+|-------|--------|-------------|---------|
+| `READY` | JSON | Connection established | `{ "user": {...}, "servers": [...], "dm_channels": [...], "session_id": "..." }` |
+| `RESUMED` | JSON | Connection resumed | `{ "replayed_events": <count> }` |
+| `MESSAGE_CREATE` | **MsgPack** | New message | `{ "message": { "id", "channel_id", "sender_id", "ciphertext": <bytes>, "created_at" } }` (E2E) or `{ "message": { ..., "content": "text" } }` (standard) |
+| `TYPING_START` | JSON | User typing indicator | `{ "channel_id", "user_id" }` |
+| `PRESENCE_UPDATE` | JSON | User status changed | `{ "user_id", "status" }` |
+| `VOICE_STATE_UPDATE` | JSON | User joined/left/muted | `{ "user_id", "channel_id", "self_mute", "self_deaf" }` |
+| `CALL_STARTED` | JSON | Call initiated | `{ "room_id", "channel_id", "initiator_id" }` |
+| `CALL_ENDED` | JSON | Call ended | `{ "room_id" }` |
+| `WEBRTC_SIGNAL` | JSON | SDP/ICE relay | `{ "from_user", "signal": { ... } }` |
+| `CALL_CONFIG` | JSON | TURN credentials for call | `{ "turn_urls", "username", "credential", "ttl" }` |
+| `HEARTBEAT_ACK` | JSON | Response to heartbeat | `{ }` |
+| `KEY_BUNDLE_UPDATE` | JSON | User updated keys | `{ "user_id" }` |
+| `DEVICE_LIST_UPDATE` | JSON | User's device list changed | `{ "user_id", "signed_list" }` |
+| `USER_BANNED` | JSON | User was banned from server | `{ "server_id", "user_id" }` |
+| `USER_KICKED` | JSON | User was kicked from server | `{ "server_id", "user_id" }` |
+| `USER_MUTED` | JSON | User was muted in channel | `{ "channel_id", "user_id", "expires_at" }` |
+| `USER_UNMUTED` | JSON | User was unmuted in channel | `{ "channel_id", "user_id" }` |
+| `REPORT_CREATED` | JSON | New report submitted (to server owner only) | `{ "report": { "id", "category", "status" } }` |
+| `ABUSE_SIGNAL` | JSON | Automated abuse flag (to server owner only) | `{ "signal": { "user_id", "signal_type", "severity" } }` |
+| `ICE_DIAGNOSTIC` | JSON | Client ICE connectivity report | `{ "call_id", "stun": bool, "turn_udp": bool, "turn_tcp": bool, "time_to_connected_ms" }` |
 
 ### 5.3 Rate Limiting
 
@@ -725,8 +743,38 @@ All WebSocket messages use JSON envelope:
 | REST API (general) | 60 req/min per user |
 | Message send (WS) | 10 msg/sec per user |
 | WebSocket connect | 3/min per IP |
+| **WebSocket upgrade (global)** | **200/sec server-wide** |
 
 Implemented via Redis sliding window counters. Returns `429 Too Many Requests` with `Retry-After` header.
+
+#### Thundering Herd Protection
+
+If the server restarts or a network blip drops all connections, up to 5,000 clients will attempt to reconnect simultaneously. Without protection, the auth pool (Argon2/JWT validation + Redis session lookups) will be overwhelmed.
+
+**Server-side:** The WebSocket upgrade endpoint (`/ws`) has a **global rate limiter** (200 upgrades/sec, configurable). When saturated, it returns `503 Service Unavailable` with a `Retry-After` header containing a randomized delay (5–30 seconds). This converts the thundering herd into a controlled trickle.
+
+```rust
+// In mercury-api/src/handlers/websocket.rs
+async fn ws_upgrade(
+    ws: WebSocketUpgrade,
+    rate_limiter: Extension<GlobalWsRateLimiter>,
+) -> Response {
+    if !rate_limiter.try_acquire() {
+        let retry_after = rand::thread_rng().gen_range(5..30);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("Retry-After", retry_after.to_string())],
+            "Server busy, retry later"
+        ).into_response();
+    }
+    ws.on_upgrade(handle_connection)
+}
+```
+
+**Client-side:** Reconnection uses extended backoff (see client spec §5.2):
+- Base delay: 1s, multiplier: 2×, **max delay: 120s** (not 30s), jitter: ±25%.
+- Clients disconnected > 5 seconds start at 5s base instead of 1s.
+- Clients respect `Retry-After` headers from 503 responses.
 
 ---
 
@@ -1074,7 +1122,9 @@ key_path = "/etc/mercury/key.pem"
 max_servers_per_user = 100
 max_channels_per_server = 500
 max_members_per_server = 5000
-max_message_size_bytes = 65536                     # Encrypted blob size limit
+max_message_size_bytes = 65536                     # Per-message payload limit (MessagePack binary)
+# With MessagePack, 65KB accommodates ~10 per-device ciphertext blobs per message.
+# For MVP (single device), this is vastly more than needed.
 ```
 
 ### 8.2 Environment Variable Overrides

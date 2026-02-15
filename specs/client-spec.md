@@ -61,6 +61,7 @@ The Mercury client is a cross-platform desktop application built with Electron, 
 | Styling | **Tailwind CSS 4** + **CSS Modules** (escape hatch) | Utility-first, consistent design tokens, small bundle |
 | Routing | **React Router 7** or **TanStack Router** | Client-side navigation between views |
 | WebSocket client | **Custom (native WebSocket)** | Lightweight, full control over reconnection logic |
+| WebSocket serialization | **@msgpack/msgpack** (message payloads) + **JSON** (control plane) | MessagePack for binary message payloads (~30% smaller than JSON+base64); JSON for human-readable control plane |
 | WebRTC | **Native browser WebRTC APIs** | Electron ships Chromium's full WebRTC stack |
 | Crypto (E2E text) | **@aspect-build/aspect-signal-protocol** or custom using **libsodium.js (libsodium-wrappers)** | Signal Protocol (X3DH + Double Ratchet) for message encryption |
 | Crypto (E2E media) | **WebRTC Insertable Streams (Encoded Transform)** + **libsodium** | Frame-level encryption/decryption through the SFU |
@@ -88,42 +89,54 @@ The Mercury client is a cross-platform desktop application built with Electron, 
 ### 3.1 High-Level Architecture
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                     Electron App                          │
-│                                                           │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │                 Main Process                         │  │
-│  │                                                     │  │
-│  │  ┌──────────┐ ┌───────────┐ ┌────────────────────┐  │  │
-│  │  │ App      │ │ Crypto    │ │ Key Store          │  │  │
-│  │  │ Lifecycle│ │ Engine    │ │ (safeStorage +     │  │  │
-│  │  │          │ │ (libsodium│ │  better-sqlite3)   │  │  │
-│  │  │ • Tray   │ │  + Signal │ │                    │  │  │
-│  │  │ • Window │ │  Protocol)│ │ • Identity keys    │  │  │
-│  │  │ • Update │ │           │ │ • Session state    │  │  │
-│  │  │ • IPC    │ │ • Encrypt │ │ • Ratchet state    │  │  │
-│  │  └──────────┘ │ • Decrypt │ │ • Sender keys      │  │  │
-│  │               │ • X3DH    │ └────────────────────┘  │  │
-│  │               │ • Ratchet │                         │  │
-│  │               └───────────┘                         │  │
-│  └───────────────────────┬─────────────────────────────┘  │
-│                    IPC (contextBridge)                     │
-│  ┌───────────────────────▼─────────────────────────────┐  │
-│  │                Renderer Process                      │  │
-│  │                                                     │  │
-│  │  ┌───────────┐ ┌───────────┐ ┌──────────────────┐  │  │
-│  │  │ React UI  │ │ WebSocket │ │ WebRTC Manager   │  │  │
-│  │  │           │ │ Manager   │ │                  │  │  │
-│  │  │ • Servers │ │           │ │ • PeerConnection │  │  │
-│  │  │ • Channels│ │ • Connect │ │ • Insertable     │  │  │
-│  │  │ • Chat    │ │ • Events  │ │   Streams (E2E)  │  │  │
-│  │  │ • Calls   │ │ • Reconnect│ │ • getUserMedia  │  │  │
-│  │  │ • DMs     │ │ • Queue   │ │ • Track mgmt    │  │  │
-│  │  │ • Settings│ │           │ │ • Quality adapt  │  │  │
-│  │  └───────────┘ └───────────┘ └──────────────────┘  │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                                                           │
-└───────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        Electron App                              │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │                    Main Process                             │  │
+│  │                                                            │  │
+│  │  ┌──────────┐  ┌───────────────────────────────────────┐   │  │
+│  │  │ App      │  │ IPC Router                            │   │  │
+│  │  │ Lifecycle│  │                                       │   │  │
+│  │  │          │  │ Renderer ←→ Main ←→ Crypto Worker     │   │  │
+│  │  │ • Tray   │  │ (thin pass-through, no crypto here)   │   │  │
+│  │  │ • Window │  │                                       │   │  │
+│  │  │ • Update │  └──────────────────┬────────────────────┘   │  │
+│  │  └──────────┘                     │                        │  │
+│  │                          Worker Thread                     │  │
+│  │                    ┌──────▼──────────────────────────┐     │  │
+│  │                    │ Crypto Worker (Worker Thread)    │     │  │
+│  │                    │                                  │     │  │
+│  │                    │  ┌───────────┐ ┌─────────────┐  │     │  │
+│  │                    │  │ Crypto    │ │ Key Store   │  │     │  │
+│  │                    │  │ Engine    │ │ (SQLite +   │  │     │  │
+│  │                    │  │           │ │  safeStorage│  │     │  │
+│  │                    │  │ • Encrypt │ │  proxy)     │  │     │  │
+│  │                    │  │ • Decrypt │ │             │  │     │  │
+│  │                    │  │ • X3DH    │ │ • Keys      │  │     │  │
+│  │                    │  │ • Ratchet │ │ • Sessions  │  │     │  │
+│  │                    │  │ • Sender  │ │ • Ratchets  │  │     │  │
+│  │                    │  │   Keys    │ │ • Backups   │  │     │  │
+│  │                    │  └───────────┘ └─────────────┘  │     │  │
+│  │                    └─────────────────────────────────┘     │  │
+│  └────────────────────────────┬───────────────────────────────┘  │
+│                       IPC (contextBridge)                         │
+│  ┌────────────────────────────▼───────────────────────────────┐  │
+│  │                   Renderer Process                          │  │
+│  │                                                            │  │
+│  │  ┌───────────┐ ┌───────────┐ ┌──────────────────┐         │  │
+│  │  │ React UI  │ │ WebSocket │ │ WebRTC Manager   │         │  │
+│  │  │           │ │ Manager   │ │                  │         │  │
+│  │  │ • Servers │ │           │ │ • PeerConnection │         │  │
+│  │  │ • Channels│ │ • Connect │ │ • Insertable     │         │  │
+│  │  │ • Chat    │ │ • Events  │ │   Streams (E2E)  │         │  │
+│  │  │ • Calls   │ │ • Reconnect│ │ • getUserMedia  │         │  │
+│  │  │ • DMs     │ │ • Queue   │ │ • Track mgmt    │         │  │
+│  │  │ • Settings│ │           │ │ • Quality adapt  │         │  │
+│  │  └───────────┘ └───────────┘ └──────────────────┘         │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
               │                           │
          WSS (TLS)                   DTLS-SRTP (UDP)
               │                           │
@@ -136,11 +149,38 @@ The Mercury client is a cross-platform desktop application built with Electron, 
 
 | Process | Role | Access |
 |---------|------|--------|
-| **Main** | App lifecycle, crypto engine, key storage, IPC bridge | Full Node.js, file system, OS APIs |
+| **Main** | App lifecycle, IPC routing, safeStorage access, window management | Full Node.js, file system, OS APIs |
+| **Crypto Worker** | All crypto operations, key storage (SQLite), session management | Node.js Worker Thread — separate event loop, no UI blocking |
 | **Renderer** | React UI, WebSocket, WebRTC, user interaction | Sandboxed, no Node.js, only exposed IPC APIs |
 | **Preload** | contextBridge — exposes safe API surface to renderer | Limited: only whitelisted IPC methods |
 
-**Critical rule:** Private keys NEVER enter the renderer process. All crypto operations go through IPC to the main process.
+**Critical rules:**
+- Private keys NEVER enter the renderer process. All crypto operations go through IPC to the crypto worker.
+- The **Main process is a thin IPC router** — it does NOT perform crypto operations directly. This prevents heavy crypto work (e.g., Sender Key rotation for 99 members = 99 pairwise encryptions + 99 SQLite writes) from blocking IPC handling, window dragging, or typing indicators.
+- The crypto worker communicates with the Main process via `worker_threads` `MessagePort`. The Main process proxies `safeStorage` calls to the worker since `safeStorage` is only available on the main thread.
+
+```typescript
+// src/main/crypto-worker.ts (spawned at app launch)
+import { Worker } from 'worker_threads';
+
+const cryptoWorker = new Worker(
+  path.join(__dirname, 'workers/crypto-worker-entry.ts'),
+  { workerData: { dbPath: '~/.mercury/keys.db' } }
+);
+
+// Route IPC calls from renderer → worker
+ipcMain.handle('crypto:encrypt', async (_, args) => {
+  return cryptoWorker.postMessage({ op: 'encrypt', ...args });
+});
+
+// Proxy safeStorage calls from worker → main thread
+cryptoWorker.on('message', (msg) => {
+  if (msg.op === 'safeStorage:encrypt') {
+    const encrypted = safeStorage.encryptString(msg.data);
+    cryptoWorker.postMessage({ op: 'safeStorage:result', id: msg.id, data: encrypted });
+  }
+});
+```
 
 ### 3.3 Project Structure
 
@@ -151,12 +191,17 @@ mercury-client/
 ├── electron-builder.config.yml
 ├── tsconfig.json
 ├── src/
-│   ├── main/                          # Electron main process
+│   ├── main/                          # Electron main process (thin IPC router)
 │   │   ├── index.ts                   # App entry point, window management
 │   │   ├── ipc/
 │   │   │   ├── handlers.ts            # IPC handler registration
-│   │   │   ├── crypto.ipc.ts          # Crypto operation handlers
-│   │   │   └── keystore.ipc.ts        # Key storage operation handlers
+│   │   │   └── router.ts             # Routes renderer IPC → crypto worker
+│   │   ├── safe-storage.ts           # safeStorage proxy (main thread only)
+│   │   ├── updater.ts                 # Auto-update logic
+│   │   └── tray.ts                    # System tray management
+│   ├── worker/                        # Crypto Worker Thread (separate event loop)
+│   │   ├── crypto-worker-entry.ts     # Worker thread entry point
+│   │   ├── message-handler.ts         # Dispatch incoming messages to crypto ops
 │   │   ├── crypto/
 │   │   │   ├── engine.ts              # Crypto engine orchestrator
 │   │   │   ├── x3dh.ts               # X3DH key agreement (per-device)
@@ -167,12 +212,11 @@ mercury-client/
 │   │   │   ├── recovery.ts            # Recovery key generation, backup encrypt/decrypt
 │   │   │   ├── device-list.ts         # Signed device list creation & verification
 │   │   │   └── utils.ts              # Key serialization, random bytes
-│   │   ├── store/
-│   │   │   ├── keystore.ts            # safeStorage-encrypted key persistence
-│   │   │   ├── sessions.db.ts         # SQLite session/ratchet state
-│   │   │   └── migrations/            # SQLite schema migrations
-│   │   ├── updater.ts                 # Auto-update logic
-│   │   └── tray.ts                    # System tray management
+│   │   └── store/
+│   │       ├── keystore.ts            # SQLite-encrypted key persistence
+│   │       ├── safe-storage-proxy.ts  # Proxies safeStorage calls to main thread via MessagePort
+│   │       ├── sessions.db.ts         # SQLite session/ratchet state
+│   │       └── migrations/            # SQLite schema migrations
 │   ├── preload/
 │   │   ├── index.ts                   # contextBridge exposure
 │   │   └── api.ts                     # Type-safe API surface definition
@@ -290,11 +334,12 @@ mercury-client/
 │   └── icon.ico
 └── tests/
     ├── unit/
-    │   ├── crypto/                   # Crypto engine unit tests
+    │   ├── crypto/                   # Crypto engine unit tests (runs in worker context)
     │   ├── stores/                   # Store logic tests
     │   └── services/                 # Service layer tests
     ├── integration/
-    │   └── ipc.test.ts              # Main↔renderer IPC tests
+    │   ├── ipc.test.ts              # Renderer → Main → Worker IPC round-trip tests
+    │   └── worker.test.ts           # Crypto worker lifecycle & message handling
     └── e2e/
         └── flows/                   # Full user flow tests (Playwright)
 ```
@@ -339,7 +384,7 @@ On first registration:
 8. Client uploads to server: device key bundle, signed device list, encrypted backup blob.
 9. User is prompted to save the recovery key. **Registration cannot complete until the user confirms they've stored it.**
 
-### 4.3 Local Key Storage (Main Process)
+### 4.3 Local Key Storage (Crypto Worker Thread)
 
 Private keys are stored in a local SQLite database, encrypted at rest:
 
@@ -347,8 +392,40 @@ Private keys are stored in a local SQLite database, encrypted at rest:
 2. **SQLite database** (`~/.mercury/keys.db`) stores encrypted key blobs.
 3. On app launch, the database is decrypted and keys are held in memory for the session.
 
+#### Linux safeStorage Fallback
+
+On Linux, `safeStorage` depends on `libsecret` (GNOME Keyring) or KWallet. On minimal window managers, headless setups, or if the keyring daemon is not running, `safeStorage.isEncryptionAvailable()` returns `false`. Mercury **must not fail open** (silently storing the encryption key in plaintext).
+
+**Fallback behavior:**
+
 ```typescript
-// src/main/store/keystore.ts
+// src/main/safe-storage.ts
+async function getDatabaseEncryptionKey(): Promise<Buffer> {
+  if (safeStorage.isEncryptionAvailable()) {
+    // Happy path: OS keychain available
+    return safeStorage.decryptString(storedEncryptedKey);
+  }
+
+  // Linux fallback: prompt user for a local app password
+  // This password is NOT their Mercury account password
+  const password = await showLocalPasswordPrompt(
+    'Your system keychain is unavailable. Enter a local app password to protect your encryption keys.'
+  );
+
+  // Derive the database encryption key from the app password
+  // Uses Argon2id with a persistent salt stored alongside the database
+  const salt = await getOrCreateLocalSalt('~/.mercury/local.salt');
+  return argon2id(password, salt, { memory: 65536, iterations: 3, hashLength: 32 });
+}
+```
+
+**UX flow:**
+- First launch on affected Linux systems: explain why a password is needed ("Your system doesn't provide a secure keychain..."), prompt for a local app password, store the Argon2id salt.
+- Subsequent launches: prompt for the app password before the app unlocks.
+- If the user later installs a keyring daemon, Mercury can detect `safeStorage` availability and offer to migrate.
+
+```typescript
+// src/worker/store/keystore.ts
 interface KeyStore {
   // Master identity
   getMasterVerifyKeyPair(): Promise<SigningKeyPair>;
@@ -449,20 +526,21 @@ Recovery Key (24 words → 256-bit entropy)
 User types message
         │
         ▼
-  Renderer Process                  Main Process (via IPC)
-  ─────────────────                 ──────────────────────
-  1. Call crypto.encrypt()  ──IPC──► 2. Fetch recipient's device list
-                                        (cached, refresh if stale)
-                                     3. For EACH recipient device:
-                                        a. Load/establish session
-                                        b. Double Ratchet encrypt
-                                     4. Return array of per-device ciphertexts
-  5. Receive ciphertexts   ◄──IPC──
-  6. Send via WebSocket
-     { recipients: [
-         { device_id, ciphertext, ... },
-         { device_id, ciphertext, ... }
-     ]}
+  Renderer Process             Main (IPC Router)         Crypto Worker Thread
+  ─────────────────            ─────────────────         ────────────────────
+  1. Call crypto.encrypt() ──IPC──► 2. Forward ──Worker──► 3. Fetch recipient's
+                                                              device list
+                                                           4. For EACH device:
+                                                              a. Load/establish
+                                                                 session
+                                                              b. Double Ratchet
+                                                                 encrypt
+                                                              c. Persist ratchet
+                                                                 state (SQLite)
+                                                           5. Return ciphertexts
+  7. Receive ciphertexts  ◄──IPC── 6. Forward  ◄──Worker──
+  8. Send via WebSocket
+     (MessagePack binary)
 ```
 
 **MVP note:** With single-device, the `recipients` array always has one entry. The fan-out logic is already in place for multi-device.
@@ -470,18 +548,22 @@ User types message
 #### Receiving a Message
 
 ```
-  WebSocket receives event (routed to this device)
+  WebSocket receives event (binary MessagePack → decoded)
         │
         ▼
-  Renderer Process                  Main Process (via IPC)
-  ─────────────────                 ──────────────────────
-  1. Call crypto.decrypt()  ──IPC──► 2. Load session for sender's device
-                                     3. Double Ratchet decrypt
-                                     4. Persist updated ratchet state
-                                        (SQLite write BEFORE returning)
-                                     5. Return plaintext
-  6. Receive plaintext     ◄──IPC──
-  7. Store in messageStore
+  Renderer Process             Main (IPC Router)         Crypto Worker Thread
+  ─────────────────            ─────────────────         ────────────────────
+  1. Call crypto.decrypt() ──IPC──► 2. Forward ──Worker──► 3. Load session for
+                                                              sender's device
+                                                           4. Double Ratchet
+                                                              decrypt
+                                                           5. Persist updated
+                                                              ratchet state
+                                                              (SQLite write
+                                                              BEFORE returning)
+                                                           6. Return plaintext
+  8. Receive plaintext    ◄──IPC── 7. Forward  ◄──Worker──
+  9. Store in messageStore
      (in-memory only)
   8. Render in UI
 ```
@@ -491,20 +573,19 @@ User types message
 #### First Message to New Contact (X3DH)
 
 ```
-  Renderer Process                  Main Process                Server
-  ─────────────────                 ────────────                ──────
-  1. Initiate DM           ──IPC──► 2. Fetch recipient's       ──API──►
-                                       signed device list
-                            ◄──API── 3. Verify device list
-                                       signature (master key)
-                                     4. For each device:
-                                       a. Fetch device key bundle ──►
-                                       b. X3DH key agreement      ◄──
-                                       c. Init Double Ratchet
-                                     5. Encrypt first message
-                                        (per-device)
-  6. Receive ciphertexts   ◄──IPC──
-  7. Send via WebSocket ──────────────────────────────────────────►
+  Renderer              Main (Router)        Crypto Worker              Server
+  ────────              ─────────────        ─────────────              ──────
+  1. Initiate DM ──IPC──► Forward ──Worker──► 2. Request device list ──API──►
+                                              3. Verify signature     ◄──API──
+                                                 (master key)
+                                              4. For each device:
+                                                a. Fetch key bundle   ──API──►
+                                                b. X3DH agreement     ◄──API──
+                                                c. Init Double Ratchet
+                                              5. Encrypt first message
+                                                 (per-device)
+  7. Receive     ◄──IPC── 6. Forward ◄──Worker──
+  8. Send via WebSocket (MessagePack binary) ──────────────────────────────►
 ```
 
 **Device list verification:** When fetching a user's device list for the first time, the client stores the master verify key (trust-on-first-use). On subsequent fetches, if the master verify key changes, the client shows a **safety number changed** warning — the user must manually approve the new identity.
@@ -624,10 +705,11 @@ DISCONNECTED ──connect()──► CONNECTING ──identify──► CONNECT
 
 const RECONNECT_CONFIG = {
   initialDelayMs: 1000,
-  maxDelayMs: 30000,
+  maxDelayMs: 120000,            // 2 minutes (NOT 30s — prevents thundering herd)
   backoffMultiplier: 2,
-  jitterFactor: 0.3,        // ±30% random jitter
-  maxAttempts: Infinity,     // Never stop trying
+  jitterFactor: 0.25,            // ±25% random jitter (disperses simultaneous reconnects)
+  maxAttempts: Infinity,         // Never stop trying
+  extendedBaseThresholdMs: 5000, // If disconnected > 5s, start at 5s base instead of 1s
 };
 ```
 
@@ -635,6 +717,9 @@ On reconnection:
 1. Attempt `resume` with last known `session_id` and `seq` number.
 2. Server replays missed events since last `seq`.
 3. If resume fails (session expired), do full `identify` and re-sync state.
+4. **If server returns `503` with `Retry-After` header**, use the provided delay instead of the backoff calculation. This handles server-side throttling during mass reconnection events.
+
+**Thundering herd scenario:** If the server restarts and 5,000 clients reconnect, the 2-minute max delay with 25% jitter spreads the reconnection wave over ~2.5 minutes instead of ~30 seconds. The server's global WebSocket upgrade rate limiter (200/sec) returns `503 + Retry-After` to excess clients, ensuring the auth pool is never overwhelmed.
 
 ### 5.3 Event Dispatch
 
@@ -655,7 +740,28 @@ class WebSocketManager {
 
   on<K extends keyof WSEventMap>(event: K, cb: (data: WSEventMap[K]) => void): () => void;
   emit<K extends keyof WSEventMap>(event: K, data: WSEventMap[K]): void;
-  send(op: string, data: unknown): void;
+
+  // Hybrid wire format: JSON for control plane, MessagePack for message payloads
+  send(op: string, data: unknown): void {
+    if (op === 'message_send') {
+      // Binary frame: encode as MessagePack (ciphertext as raw bytes, no base64 bloat)
+      this.ws.send(msgpack.encode({ op, d: data }));
+    } else {
+      // Text frame: standard JSON
+      this.ws.send(JSON.stringify({ op, d: data, seq: this.seq++ }));
+    }
+  }
+
+  private onMessage(event: MessageEvent): void {
+    if (event.data instanceof ArrayBuffer) {
+      // Binary frame → MessagePack (MESSAGE_CREATE events)
+      const envelope = msgpack.decode(new Uint8Array(event.data));
+      this.dispatch(envelope);
+    } else {
+      // Text frame → JSON (all other events)
+      this.dispatch(JSON.parse(event.data));
+    }
+  }
 }
 ```
 
@@ -829,7 +935,7 @@ The preload script exposes a strictly typed API to the renderer:
 // src/preload/api.ts
 
 export interface MercuryAPI {
-  // Crypto — all operations run in main process, never in renderer
+  // Crypto — all operations run in the Crypto Worker Thread, routed via Main process IPC
   crypto: {
     // Registration (generates all keys, returns public halves)
     initializeIdentity(): Promise<{
@@ -1109,8 +1215,10 @@ publish:
 | App launch to usable | < 3 seconds |
 | Message send latency (type → delivered) | < 200ms (excluding network) |
 | Message decrypt time | < 5ms per message |
+| Sender Key rotation (100-member private channel) | < 3 seconds total (worker thread, non-blocking to UI) |
 | Voice join-to-speaking | < 2 seconds |
 | Video frame render latency | < 100ms (E2E) |
+| UI responsiveness during heavy crypto | 0 dropped frames (crypto runs on worker thread) |
 | Memory usage (idle, 5 servers) | < 300 MB |
 | Memory usage (active video call, 4 participants) | < 600 MB |
 | CPU idle (no call, messages flowing) | < 5% |
