@@ -70,8 +70,8 @@ sudo apt install -y \
 ### Fedora / RHEL
 
 ```bash
-sudo dnf groupinstall -y "Development Tools"
-sudo dnf install -y \
+sudo dnf5 group install -y "Development Tools"
+sudo dnf5 install -y \
   openssl-devel \
   pkg-config \
   cmake \
@@ -125,7 +125,7 @@ cargo install sqlx-cli --features postgres
 # macOS: uses Apple's linker by default (already fast)
 # Linux:
 sudo apt install -y lld    # Ubuntu/Debian
-sudo dnf install -y lld    # Fedora
+sudo dnf5 install -y lld    # Fedora
 ```
 
 If you installed `lld`, create a Cargo config to use it. This file already exists in the repo, but if you're setting up from scratch:
@@ -148,23 +148,23 @@ EOF
 
 ## Step 3: Node.js and pnpm
 
-Install Node.js 20 LTS via `fnm` (Fast Node Manager). Do not install Node.js from your OS package manager.
+Install Node.js 24 LTS via `nvm` (Node Version Manager). Do not install Node.js from your OS package manager.
 
 ```bash
-# Install fnm
-curl -fsSL https://fnm.vercel.app/install | bash
+# Install nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 source ~/.bashrc   # or ~/.zshrc
 
-# Install Node.js 20 LTS
-fnm install 20
-fnm use 20
-fnm default 20
+# Install Node.js 24 LTS
+nvm install 24
+nvm use 24
+nvm alias default 24
 ```
 
 Verify:
 
 ```bash
-node --version     # Should be v20.x.x
+node --version     # Should be v24.x.x
 ```
 
 Install pnpm globally:
@@ -614,7 +614,7 @@ export OPENSSL_DIR=$(brew --prefix openssl)
 sudo apt install -y libssl-dev pkg-config
 
 # Fedora
-sudo dnf install -y openssl-devel pkg-config
+sudo dnf5 install -y openssl-devel pkg-config
 ```
 
 ### `pnpm install` fails on `better-sqlite3` or `libsodium`
@@ -651,11 +651,11 @@ Your desktop environment's keychain daemon isn't running or isn't detected. Merc
 
 ```bash
 # GNOME-based (Ubuntu, Fedora Workstation, Cinnamon, etc.)
-sudo apt install gnome-keyring    # or: sudo dnf install gnome-keyring
+sudo apt install gnome-keyring    # or: sudo dnf5 install gnome-keyring
 # Then log out and back in
 
 # KDE Plasma
-sudo apt install kwalletmanager   # or: sudo dnf install kwalletmanager
+sudo apt install kwalletmanager   # or: sudo dnf5 install kwalletmanager
 ```
 
 If running in a headless environment or CI, set:
