@@ -1,0 +1,90 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Mercury — Local Development Infrastructure
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This file runs ONLY infrastructure services. The Mercury server and Electron
+# client run natively for fast iteration (cargo watch / pnpm dev).
+#
+# Usage:
+#   cp .env.example .env          # First time only
+#   ./scripts/generate-certs.sh   # First time only
+#   docker compose up -d
+#
+# For production deployment (includes the Mercury server container), see
+# docker-compose.prod.yml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Postgres ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mercury}
+      POSTGRES_USER: ${POSTGRES_USER:-mercury}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mercury}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mercury}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── coturn (TURN/STUN relay for WebRTC) ──────────────────────────────────
+  #
+  # network_mode: host is required — TURN must see real client IPs and needs
+  # direct UDP port access. Docker's NAT would break relay logic.
+  #
+  # Ports used (on the host, not mapped):
+  #   3478/tcp+udp     TURN/STUN listening port
+  #   5349/tcp         TURNS (TLS-secured TURN)
+  #   49152-49252/udp  TURN relay traffic
+  #
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    volumes:
+      - ./certs:/etc/coturn/certs:ro
+    environment:
+      - TURN_SECRET=${TURN_SECRET:-mercury-turn-dev-secret}
+    command: >
+      -n
+      --log-file=stdout
+      --listening-port=3478
+      --tls-listening-port=5349
+      --min-port=49152
+      --max-port=49252
+      --use-auth-secret
+      --static-auth-secret=$${TURN_SECRET}
+      --realm=${PUBLIC_DOMAIN:-localhost}
+      --cert=/etc/coturn/certs/cert.pem
+      --pkey=/etc/coturn/certs/key.pem
+      --no-cli
+      --no-multicast-peers
+      --fingerprint
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
