@@ -31,6 +31,8 @@ The Mercury client is a cross-platform desktop application built with Electron, 
 | Video calls (channel + DM, E2E encrypted) | **MVP** |
 | Presence & typing indicators | **MVP** |
 | Server-configurable media quality | **MVP** |
+| Account recovery via recovery key | **MVP** |
+| Per-device identity keys (single device MVP) | **MVP** |
 | Block/mute users, DM privacy controls | **MVP** |
 | Content reporting with optional evidence | **MVP** |
 | Moderation dashboard (server owner) | **MVP** |
@@ -156,11 +158,14 @@ mercury-client/
 │   │   │   └── keystore.ipc.ts        # Key storage operation handlers
 │   │   ├── crypto/
 │   │   │   ├── engine.ts              # Crypto engine orchestrator
-│   │   │   ├── x3dh.ts               # X3DH key agreement
+│   │   │   ├── x3dh.ts               # X3DH key agreement (per-device)
 │   │   │   ├── double-ratchet.ts      # Double Ratchet implementation
-│   │   │   ├── sender-keys.ts         # Group/channel sender keys
+│   │   │   ├── sender-keys.ts         # Group/channel sender keys (≤100 members)
+│   │   │   ├── mls-client.ts          # MLS group operations (>100 members, WASM bridge)
 │   │   │   ├── media-keys.ts          # Media E2E frame encryption keys
-│   │   │   ├── report-crypto.ts      # Encrypt report evidence to operator moderation key
+│   │   │   ├── report-crypto.ts       # Encrypt report evidence to operator moderation key
+│   │   │   ├── recovery.ts            # Recovery key generation, backup encrypt/decrypt
+│   │   │   ├── device-list.ts         # Signed device list creation & verification
 │   │   │   └── utils.ts              # Key serialization, random bytes
 │   │   ├── store/
 │   │   │   ├── keystore.ts            # safeStorage-encrypted key persistence
@@ -252,6 +257,9 @@ mercury-client/
 │   │   ├── pages/
 │   │   │   ├── LoginPage.tsx
 │   │   │   ├── RegisterPage.tsx
+│   │   │   ├── RecoveryPage.tsx      # Account recovery (enter recovery key)
+│   │   │   ├── RecoveryKeyDisplay.tsx # Show recovery key on registration (must-save)
+│   │   │   ├── SafetyNumberPage.tsx  # Verify contact identity (safety numbers)
 │   │   │   ├── ServerPage.tsx        # Main server view (channels + chat)
 │   │   │   ├── DmPage.tsx            # DM view
 │   │   │   ├── ModerationPage.tsx   # Server moderation dashboard (owner only)
@@ -288,34 +296,62 @@ mercury-client/
 
 ## 4. End-to-End Encryption (Client Implementation)
 
-### 4.1 Key Management
-
-#### Key Hierarchy
+### 4.1 Key Hierarchy & Identity Model
 
 ```
-Master Password (user's login password)
-  └─► KDF (Argon2id) ─► Master Key (256-bit)
-       └─► HKDF ─► Key Encryption Key (KEK)
-            └─► Encrypts:
-                 ├── Identity Key (Ed25519 / X25519 long-term keypair)
-                 ├── Signed Pre-Key (X25519, rotated weekly)
-                 └── One-Time Pre-Keys (X25519, batch of 100)
+Recovery Key (256-bit, user-held, offline backup)
+  └─► HKDF(salt, "mercury-backup-v1") ─► Backup Encryption Key
+       └─► Encrypts full key backup blob (uploaded to server)
+
+Master Verify Key (Ed25519 signing keypair, per-user)
+  └─► Signs Device Lists (authorizes which devices belong to this user)
+
+Per-Device:
+  OS Keychain (via Electron safeStorage)
+    └─► Database Encryption Key
+         └─► Encrypts local SQLite key store (~/.mercury/keys.db):
+              ├── Master Verify Key (private half)
+              ├── Device Identity Key (X25519 keypair)
+              ├── Signed Pre-Key (X25519, rotated weekly)
+              ├── One-Time Pre-Keys (X25519, batch of 100)
+              ├── Double Ratchet session states (per recipient device)
+              ├── Sender Keys (for channels ≤100 members)
+              └── MLS group state (for channels >100 members)
 ```
 
-#### Local Key Storage (Main Process)
+### 4.2 Key Generation & Registration Flow
+
+On first registration:
+
+1. Client generates **Master Verify Key** (Ed25519 keypair). This is the root of user identity.
+2. Client generates **Device Identity Key** (X25519 keypair) for this device.
+3. Client generates **Signed Pre-Key** (X25519) and signs it with the Device Identity Key.
+4. Client generates 100 **One-Time Pre-Keys** (X25519).
+5. Client creates a **signed device list** containing this device's ID + identity key, signed by the Master Verify Key.
+6. Client generates a **Recovery Key** (256-bit random, displayed as 24-word mnemonic).
+7. Client encrypts a backup blob (master verify key + device identity key) with the recovery key.
+8. Client uploads to server: device key bundle, signed device list, encrypted backup blob.
+9. User is prompted to save the recovery key. **Registration cannot complete until the user confirms they've stored it.**
+
+### 4.3 Local Key Storage (Main Process)
 
 Private keys are stored in a local SQLite database, encrypted at rest:
 
 1. **Electron `safeStorage`** encrypts the database encryption key using the OS keychain (macOS Keychain, Windows DPAPI, Linux libsecret).
 2. **SQLite database** (`~/.mercury/keys.db`) stores encrypted key blobs.
-3. On app unlock, the KEK is derived and held in memory for the session duration.
+3. On app launch, the database is decrypted and keys are held in memory for the session.
 
 ```typescript
 // src/main/store/keystore.ts
 interface KeyStore {
-  // Identity
-  getIdentityKeyPair(): Promise<KeyPair>;
-  storeIdentityKeyPair(keyPair: KeyPair): Promise<void>;
+  // Master identity
+  getMasterVerifyKeyPair(): Promise<SigningKeyPair>;
+  storeMasterVerifyKeyPair(keyPair: SigningKeyPair): Promise<void>;
+
+  // Device identity
+  getDeviceId(): Promise<string>;
+  getDeviceIdentityKeyPair(): Promise<KeyPair>;
+  storeDeviceIdentityKeyPair(deviceId: string, keyPair: KeyPair): Promise<void>;
 
   // Pre-keys
   getSignedPreKey(): Promise<SignedPreKey>;
@@ -324,23 +360,88 @@ interface KeyStore {
   storeOneTimePreKeys(prekeys: PreKey[]): Promise<void>;
   markOneTimePreKeyUsed(keyId: number): Promise<void>;
 
-  // Sessions (Double Ratchet state)
-  getSession(userId: string): Promise<SessionState | null>;
-  storeSession(userId: string, state: SessionState): Promise<void>;
+  // Sessions — keyed by (userId, deviceId) pair, NOT just userId
+  getSession(userId: string, deviceId: string): Promise<SessionState | null>;
+  storeSession(userId: string, deviceId: string, state: SessionState): Promise<void>;
+  getAllSessionsForUser(userId: string): Promise<Map<string, SessionState>>;
 
-  // Sender keys (group channels)
-  getSenderKey(channelId: string, userId: string): Promise<SenderKey | null>;
-  storeSenderKey(channelId: string, userId: string, key: SenderKey): Promise<void>;
+  // Sender keys (group channels ≤100 members)
+  getSenderKey(channelId: string, userId: string, deviceId: string): Promise<SenderKey | null>;
+  storeSenderKey(channelId: string, userId: string, deviceId: string, key: SenderKey): Promise<void>;
+
+  // MLS state (group channels >100 members)
+  getMlsGroupState(channelId: string): Promise<MlsGroupState | null>;
+  storeMlsGroupState(channelId: string, state: MlsGroupState): Promise<void>;
 
   // Media keys
   getMediaKey(roomId: string): Promise<Uint8Array | null>;
   storeMediaKey(roomId: string, key: Uint8Array): Promise<void>;
+
+  // Backup
+  exportBackupBlob(): Promise<Uint8Array>;       // Serialize all restorable state
+  importBackupBlob(blob: Uint8Array): Promise<void>;  // Restore from backup
 }
 ```
 
-### 4.2 Text Message Encryption Flow
+### 4.4 Account Recovery Flow
 
-#### Sending a Message
+#### Recovery Key Format
+
+The recovery key is 256 bits of entropy encoded as a **24-word BIP39 mnemonic** (e.g., "abandon ability able about above absent absorb ..."). This is familiar to cryptocurrency users and easy to write down.
+
+#### Backup & Restore
+
+**Automatic backup** — the client uploads an updated encrypted backup to the server whenever significant crypto state changes (new session, sender key rotation, MLS epoch advance). Debounced to max once per 5 minutes.
+
+```
+Recovery Key (24 words → 256-bit entropy)
+    │
+    ├─ HKDF(server-stored salt, "mercury-backup-v1") ──► AES-256-GCM key
+    │
+    └─ Encrypt({
+         masterVerifyKey,        // private half
+         deviceIdentityKey,      // private half
+         sessions,               // all Double Ratchet states
+         senderKeys,             // all channel sender keys
+         mlsGroupStates          // all MLS leaf secrets
+       }) ──► encrypted_backup
+    
+    Upload encrypted_backup + salt to server (PUT /users/me/key-backup)
+```
+
+**Recovery flow** (device lost, fresh install):
+
+```
+  Fresh Client                     Server
+  ────────────                     ──────
+  1. Login (username + password) ──►  (auth is independent of E2E keys)
+  2. No local keys detected
+  3. Prompt: "Enter recovery key"
+  4. Fetch encrypted backup     ◄── GET /users/me/key-backup
+  5. Derive decryption key from
+     recovery key + salt
+  6. Decrypt backup blob
+  7. Restore master verify key,
+     device identity key, sessions
+  8. Register new device         ──►  POST /devices
+  9. Sign new device list        ──►  PUT /users/me/device-list
+     (old device removed,
+      new device added)
+  10. Sessions resume — no
+      re-establishment needed
+```
+
+**No recovery key available:**
+
+- User's identity is effectively reset.
+- New master verify key + device identity key generated.
+- All contacts see a "safety number changed" warning.
+- All encrypted message history is permanently unreadable.
+- This is by design — no backdoor exists.
+
+### 4.5 Text Message Encryption Flow
+
+#### Sending a DM
 
 ```
 User types message
@@ -348,32 +449,42 @@ User types message
         ▼
   Renderer Process                  Main Process (via IPC)
   ─────────────────                 ──────────────────────
-  1. Call crypto.encrypt()  ──IPC──► 2. Load session for recipient
-                                     3. Double Ratchet encrypt
-                                     4. Return ciphertext + header
-  5. Receive ciphertext    ◄──IPC── 
+  1. Call crypto.encrypt()  ──IPC──► 2. Fetch recipient's device list
+                                        (cached, refresh if stale)
+                                     3. For EACH recipient device:
+                                        a. Load/establish session
+                                        b. Double Ratchet encrypt
+                                     4. Return array of per-device ciphertexts
+  5. Receive ciphertexts   ◄──IPC──
   6. Send via WebSocket
-     { blob: <ciphertext>,
-       ratchet_header: <...>,
-       nonce: <...> }
+     { recipients: [
+         { device_id, ciphertext, ... },
+         { device_id, ciphertext, ... }
+     ]}
 ```
+
+**MVP note:** With single-device, the `recipients` array always has one entry. The fan-out logic is already in place for multi-device.
 
 #### Receiving a Message
 
 ```
-  WebSocket receives event
+  WebSocket receives event (routed to this device)
         │
         ▼
   Renderer Process                  Main Process (via IPC)
   ─────────────────                 ──────────────────────
-  1. Call crypto.decrypt()  ──IPC──► 2. Load session for sender
+  1. Call crypto.decrypt()  ──IPC──► 2. Load session for sender's device
                                      3. Double Ratchet decrypt
-                                     4. Return plaintext
-  5. Receive plaintext     ◄──IPC── 
-  6. Store in messageStore
+                                     4. Persist updated ratchet state
+                                        (SQLite write BEFORE returning)
+                                     5. Return plaintext
+  6. Receive plaintext     ◄──IPC──
+  7. Store in messageStore
      (in-memory only)
-  7. Render in UI
+  8. Render in UI
 ```
+
+**Critical: Ratchet state persistence is atomic.** The main process writes the updated ratchet state to SQLite *before* returning the plaintext to the renderer. If the app crashes between decrypt and persist, the client re-requests the message and re-decrypts. Out-of-order or duplicate messages are handled by the Double Ratchet's built-in skipped message key mechanism (stores up to 1000 skipped keys).
 
 #### First Message to New Contact (X3DH)
 
@@ -381,26 +492,54 @@ User types message
   Renderer Process                  Main Process                Server
   ─────────────────                 ────────────                ──────
   1. Initiate DM           ──IPC──► 2. Fetch recipient's       ──API──►
-                                       key bundle
-                            ◄──API── 3. Receive key bundle
-                                     4. X3DH key agreement
-                                     5. Initialize Double Ratchet
-                                     6. Encrypt first message
-  7. Receive ciphertext    ◄──IPC──
-  8. Send via WebSocket ──────────────────────────────────────────►
+                                       signed device list
+                            ◄──API── 3. Verify device list
+                                       signature (master key)
+                                     4. For each device:
+                                       a. Fetch device key bundle ──►
+                                       b. X3DH key agreement      ◄──
+                                       c. Init Double Ratchet
+                                     5. Encrypt first message
+                                        (per-device)
+  6. Receive ciphertexts   ◄──IPC──
+  7. Send via WebSocket ──────────────────────────────────────────►
 ```
 
-### 4.3 Channel (Group) Encryption
+**Device list verification:** When fetching a user's device list for the first time, the client stores the master verify key (trust-on-first-use). On subsequent fetches, if the master verify key changes, the client shows a **safety number changed** warning — the user must manually approve the new identity.
 
-Uses Sender Keys for efficiency (one encryption per message regardless of group size):
+### 4.6 Channel (Group) Encryption — Tiered Model
+
+The client determines which protocol to use based on the channel's member count:
+
+#### Sender Keys (channels ≤ 100 members)
 
 1. When joining a channel, generate a `SenderKey` (symmetric + chain key).
-2. Distribute the SenderKey to all current members encrypted with pairwise sessions.
-3. Messages are encrypted with the sender's SenderKey chain (AES-256-GCM).
+2. Distribute the SenderKey to all current members encrypted via pairwise Double Ratchet sessions (per-device fan-out).
+3. Messages are encrypted once with the sender's SenderKey chain (AES-256-GCM).
 4. On member leave/kick: all remaining members rotate their SenderKeys.
 5. On member join: existing members share current SenderKeys with new member.
 
-### 4.4 Media E2E Encryption
+#### MLS (channels > 100 members)
+
+Uses a client-side MLS library (e.g., `@nicolo-ribaudo/mls` or a compiled WASM build of `openmls`):
+
+1. **Join:** Client receives an MLS `Welcome` message (fetched via `GET /channels/:id/mls/welcome`), processes it to derive the group secret and ratchet tree state.
+2. **Send:** Encrypt message with current epoch key (AES-256-GCM). Single encryption regardless of group size.
+3. **Receive:** Decrypt with epoch key. Process any `Commit` messages to advance epoch.
+4. **Member change:** Client processes MLS `Commit` messages received via WebSocket (`MLS_COMMIT` event). Cost: O(log n) tree update.
+5. **Key update:** Periodically (every 24h or on app restart), update own leaf in the tree for post-compromise security. Submit via `POST /channels/:id/mls/commit`.
+
+**State storage:** MLS group state (leaf secret, ratchet tree cache, pending proposals) is stored in the local encrypted SQLite database and included in backup blobs.
+
+#### Protocol Transitions
+
+When a channel crosses the 100-member threshold, the server sends a `CHANNEL_CRYPTO_UPGRADE` WebSocket event. The client:
+1. Joins the new MLS group (processes the Welcome message).
+2. Continues accepting Sender Key messages for a 5-minute grace period (to drain in-flight messages).
+3. Switches to sending via MLS after confirming MLS group membership.
+4. Discards old Sender Keys after the grace period.
+
+### 4.7 Media E2E Encryption
 
 #### Insertable Streams (Encoded Transform)
 
@@ -451,7 +590,7 @@ function setupSenderTransform(sender: RTCRtpSender, key: CryptoKey) {
 #### Key Distribution for Calls
 
 1. Call initiator generates a random 256-bit symmetric key.
-2. Key is distributed to each participant via their existing encrypted DM/channel session.
+2. Key is distributed to each participant's devices via their existing encrypted sessions (Double Ratchet per-device fan-out).
 3. When a participant joins or leaves, a new key is generated and distributed.
 4. Old keys are retained briefly (2 seconds) for in-flight frame decryption during rotation.
 
@@ -684,24 +823,63 @@ The preload script exposes a strictly typed API to the renderer:
 // src/preload/api.ts
 
 export interface MercuryAPI {
-  // Crypto
+  // Crypto — all operations run in main process, never in renderer
   crypto: {
-    generateIdentityKeyPair(): Promise<{ publicKey: string }>;
-    generatePreKeys(count: number): Promise<{ publicKeys: PublicPreKey[] }>;
-    encryptMessage(recipientId: string, plaintext: string): Promise<EncryptedEnvelope>;
-    decryptMessage(senderId: string, envelope: EncryptedEnvelope): Promise<string>;
+    // Registration (generates all keys, returns public halves)
+    initializeIdentity(): Promise<{
+      masterVerifyKey: string;           // Public master verify key (base64)
+      deviceId: string;
+      deviceIdentityKey: string;         // Public device identity key (base64)
+      signedPreKey: PublicSignedPreKey;
+      oneTimePreKeys: PublicPreKey[];
+      signedDeviceList: string;          // Signed JSON blob (base64)
+    }>;
+
+    // Per-device message encryption (fan-out to all recipient devices)
+    encryptMessage(recipientId: string, plaintext: string): Promise<PerDeviceEnvelope[]>;
+    decryptMessage(senderDeviceId: string, envelope: EncryptedEnvelope): Promise<string>;
+
+    // Group encryption (auto-selects Sender Keys or MLS based on channel)
     encryptGroupMessage(channelId: string, plaintext: string): Promise<EncryptedGroupEnvelope>;
-    decryptGroupMessage(channelId: string, senderId: string, envelope: EncryptedGroupEnvelope): Promise<string>;
+    decryptGroupMessage(channelId: string, senderDeviceId: string, envelope: EncryptedGroupEnvelope): Promise<string>;
+
+    // MLS operations (channels >100 members)
+    processMlsWelcome(channelId: string, welcome: Uint8Array): Promise<void>;
+    processMlsCommit(channelId: string, commit: Uint8Array): Promise<void>;
+    createMlsKeyUpdate(channelId: string): Promise<Uint8Array>;  // Periodic leaf update
+
+    // Session management
+    initializeSession(userId: string, deviceId: string, keyBundle: PublicKeyBundle): Promise<void>;
+    hasSession(userId: string, deviceId: string): Promise<boolean>;
+    getAllDeviceSessions(userId: string): Promise<string[]>;  // Returns device IDs with active sessions
+
+    // Device list verification
+    verifyDeviceList(userId: string, signedList: string, masterVerifyKey: string): Promise<DeviceListInfo>;
+    getSafetyNumber(userId: string): Promise<string>;  // Displayable safety number
+
+    // Media keys
     generateMediaKey(): Promise<{ key: string }>;
     getMediaKey(roomId: string): Promise<string | null>;
     storeMediaKey(roomId: string, key: string): Promise<void>;
-    initializeSession(userId: string, keyBundle: PublicKeyBundle): Promise<void>;
-    hasSesssion(userId: string): Promise<boolean>;
+
+    // Pre-key management
+    generatePreKeys(count: number): Promise<{ publicKeys: PublicPreKey[] }>;
+    rotateSignedPreKey(): Promise<PublicSignedPreKey>;
+  };
+
+  // Recovery
+  recovery: {
+    generateRecoveryKey(): Promise<{ mnemonic: string }>;  // 24-word BIP39
+    createBackup(recoveryKey: string): Promise<Uint8Array>; // Encrypted backup blob
+    restoreFromBackup(recoveryKey: string, encryptedBackup: Uint8Array): Promise<void>;
+    hasRecoveryKey(): Promise<boolean>;
   };
 
   // Key store
   keystore: {
-    getPublicIdentityKey(): Promise<string>;
+    getDeviceId(): Promise<string>;
+    getPublicMasterVerifyKey(): Promise<string>;
+    getPublicDeviceIdentityKey(): Promise<string>;
     getPublicKeyBundle(): Promise<PublicKeyBundle>;
     hasIdentityKey(): Promise<boolean>;
   };
@@ -730,12 +908,10 @@ export interface MercuryAPI {
 
   // Moderation (report evidence encryption)
   moderation: {
-    // Encrypt decrypted message content to the server operator's moderation public key
-    // so only the operator can read it. Used when submitting reports with evidence.
     encryptEvidence(
       plaintext: string,
-      operatorModerationPubKey: string  // base64, fetched from server config
-    ): Promise<string>;  // base64 encrypted blob
+      operatorModerationPubKey: string
+    ): Promise<string>;
   };
 }
 
@@ -962,11 +1138,12 @@ publish:
 
 These are **not in MVP** but the architecture should accommodate:
 
+- **Multi-device activation:** Per-device identity keys and signed device lists are already in the MVP data model. Activation requires: a linked-device pairing flow (QR code scanned on existing device to authorize new device), cross-device session fan-out (already supported by per-device encryption format), read-state sync, and a device management settings page.
+- **Social recovery:** Alternative to recovery key. Split the recovery secret into k-of-n shares (Shamir's Secret Sharing) distributed to trusted contacts. Requires a share distribution ceremony UI and a recovery ceremony where k contacts provide their shares.
 - **Message franking (v2):** Extend the encryption envelope to include a franking tag (HMAC commitment to plaintext). When a user reports a message, the franking tag + key are included so the server can cryptographically verify the report is authentic. Requires changes to `double-ratchet.ts` and `sender-keys.ts` to produce the franking commitment alongside the ciphertext.
 - **Moderator role UI (v2):** When the server supports designated moderator roles, the client needs scoped moderation UI — moderators see the report queue and can act within their permissions, but don't see the full admin dashboard.
-- **Multi-device sync:** Each device has its own identity key. Messages encrypted per-device. Session management across devices via a linked-devices protocol.
-- **Mobile apps:** Consider extracting the crypto engine into a shared Rust library (compiled via wasm-pack for Electron, native for mobile) to avoid reimplementing Signal Protocol.
+- **Mobile apps:** Consider extracting the crypto engine into a shared Rust library (compiled via wasm-pack for Electron, native for mobile via FFI) to avoid reimplementing the Signal Protocol and MLS stack. The per-device identity model already supports this — each mobile device gets its own identity key.
 - **Plugin system:** Sandboxed renderer-side plugins for custom themes, bots, integrations.
-- **Offline message queue:** Queue encrypted messages locally when disconnected; send on reconnect.
+- **Offline message queue:** Queue encrypted messages locally when disconnected; send on reconnect. Requires careful handling of ratchet state for queued messages.
 - **Rich embeds/markdown:** Render markdown in messages, URL preview embeds (fetched client-side to preserve privacy).
 - **Voice processing:** Echo cancellation, noise suppression, auto-gain via Web Audio API or RNNoise WASM module.

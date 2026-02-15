@@ -31,6 +31,10 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 | E2E encrypted text messaging | **MVP** |
 | E2E encrypted audio/video | **MVP** |
 | Configurable audio/video quality limits | **MVP** |
+| Account recovery via recovery key | **MVP** |
+| Per-device identity keys (single device MVP) | **MVP** |
+| Tiered group encryption (Sender Keys + MLS) | **MVP** |
+| Bundled TURN server (coturn) | **MVP** |
 | User-level controls (block, mute, restrict DMs) | **MVP** |
 | Server-operator moderation (ban, kick, channel mute) | **MVP** |
 | Client-side content reporting | **MVP** |
@@ -63,6 +67,8 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 | Signaling | **WebSocket (Axum)** | WebRTC signaling, real-time events, presence |
 | Authentication | **Argon2id** (passwords) + **JWT** (sessions) | Argon2id is current best practice for password hashing; JWT for stateless auth with Redis-backed revocation |
 | E2E Key Exchange | **X3DH + Double Ratchet** (server facilitates key bundles only) | Signal Protocol model — server stores public key bundles, never sees plaintext |
+| Group E2E (large channels) | **OpenMLS** (`openmls` crate) | IETF MLS (RFC 9420) for scalable group key agreement — O(log n) member change cost |
+| TURN server | **coturn** (bundled in Docker Compose) | NAT traversal relay for WebRTC media when direct/STUN connectivity fails |
 | Cryptographic library | **ring** or **RustCrypto** crates | Audited, no OpenSSL dependency |
 | Configuration | **TOML** (file) + **env vars** (override) | Human-readable config with 12-factor app env override |
 | Logging | **tracing + tracing-subscriber** | Structured, async-aware, filterable |
@@ -136,23 +142,28 @@ mercury-server/
 │   ├── 001_create_users.sql
 │   ├── 002_create_servers_channels.sql
 │   ├── 003_create_messages.sql
-│   └── 004_create_key_bundles.sql
+│   ├── 004_create_devices_and_keys.sql
+│   ├── 005_create_moderation.sql
+│   └── 006_create_mls.sql
 ├── crates/
 │   ├── mercury-core/               # Shared types, error handling, config
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── config.rs       # Configuration structs (serde + TOML)
 │   │       ├── error.rs        # Unified error types (thiserror)
-│   │       ├── ids.rs          # Typed IDs (UserId, ChannelId, etc.)
+│   │       ├── ids.rs          # Typed IDs (UserId, ChannelId, DeviceId, etc.)
 │   │       └── models.rs       # Domain models
 │   ├── mercury-db/                 # Database layer
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── pool.rs         # Connection pool setup
 │   │       ├── users.rs        # User CRUD
+│   │       ├── devices.rs      # Device registration & management
 │   │       ├── servers.rs      # Server/channel CRUD
 │   │       ├── messages.rs     # Encrypted message storage
-│   │       └── key_bundles.rs  # E2E public key bundle storage
+│   │       ├── key_bundles.rs  # Per-device E2E public key bundle storage
+│   │       ├── key_backups.rs  # Encrypted key backup blob storage
+│   │       └── mls_groups.rs   # MLS group state, welcome messages, commits
 │   ├── mercury-auth/               # Authentication & authorization
 │   │   └── src/
 │   │       ├── lib.rs
@@ -193,8 +204,10 @@ mercury-server/
 │       └── src/
 │           ├── lib.rs
 │           ├── keys.rs         # Key generation, serialization
-│           ├── bundle.rs       # X3DH key bundle types
-│           └── verify.rs       # Signature verification for key uploads
+│           ├── bundle.rs       # X3DH key bundle types (per-device)
+│           ├── device_list.rs  # Signed device list creation & verification
+│           ├── verify.rs       # Signature verification for key uploads
+│           └── backup.rs       # Encrypted key backup blob validation
 │   └── mercury-moderation/        # Moderation & trust/safety
 │       └── src/
 │           ├── lib.rs
@@ -295,27 +308,99 @@ CREATE TABLE dm_members (
     PRIMARY KEY (dm_channel_id, user_id)
 );
 
--- 004_create_key_bundles.sql
--- X3DH key bundles — server stores public keys only
-CREATE TABLE identity_keys (
-    user_id         UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    identity_key    BYTEA NOT NULL,                   -- Long-term public identity key
+-- 004_create_devices_and_keys.sql
+
+-- Registered devices per user account
+CREATE TABLE devices (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_name     VARCHAR(64) NOT NULL,             -- "MacBook Pro", "Work Desktop"
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    last_seen_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_devices_user ON devices (user_id);
+
+-- X3DH key bundles — per DEVICE, not per user
+-- Each device has its own identity key and pre-keys
+CREATE TABLE device_identity_keys (
+    device_id       UUID PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    identity_key    BYTEA NOT NULL,                   -- Device's public identity key (Ed25519/X25519)
     signed_prekey   BYTEA NOT NULL,                   -- Signed pre-key (public)
-    prekey_signature BYTEA NOT NULL,                  -- Signature over signed_prekey
+    prekey_signature BYTEA NOT NULL,                  -- Signature over signed_prekey by identity_key
     updated_at      TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE INDEX idx_device_ik_user ON device_identity_keys (user_id);
+
 CREATE TABLE one_time_prekeys (
     id              BIGSERIAL PRIMARY KEY,
+    device_id       UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     key_id          INT NOT NULL,
     prekey          BYTEA NOT NULL,                   -- One-time pre-key (public)
     used            BOOLEAN DEFAULT FALSE,
     created_at      TIMESTAMPTZ DEFAULT now(),
-    UNIQUE(user_id, key_id)
+    UNIQUE(device_id, key_id)
 );
 
-CREATE INDEX idx_otp_available ON one_time_prekeys (user_id, used) WHERE NOT used;
+CREATE INDEX idx_otp_available ON one_time_prekeys (device_id, used) WHERE NOT used;
+
+-- Signed device list: user signs a list of their active device IDs + identity keys
+-- Other users verify this signature to trust the device set
+CREATE TABLE device_lists (
+    user_id         UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    signed_list     BYTEA NOT NULL,                   -- Signed JSON: { devices: [{ device_id, identity_key }], timestamp }
+    master_verify_key BYTEA NOT NULL,                 -- Public master verification key (signs device lists)
+    signature       BYTEA NOT NULL,                   -- Signature over signed_list by master_verify_key
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- Encrypted key backup (for account recovery)
+CREATE TABLE key_backups (
+    user_id         UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    encrypted_backup BYTEA NOT NULL,                  -- Identity keys + ratchet state, encrypted with recovery key
+    backup_version  INT NOT NULL DEFAULT 1,           -- Incremented on each backup update
+    key_derivation_salt BYTEA NOT NULL,               -- Salt for HKDF (recovery key → backup encryption key)
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- MLS group state (for large channels using MLS protocol)
+CREATE TABLE mls_groups (
+    channel_id      UUID PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+    group_id        BYTEA NOT NULL UNIQUE,            -- MLS group identifier
+    epoch           BIGINT NOT NULL DEFAULT 0,        -- Current MLS epoch
+    ratchet_tree    BYTEA,                            -- Serialized public ratchet tree (for new joiners)
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- MLS welcome messages (for users joining an MLS group)
+CREATE TABLE mls_welcome_messages (
+    id              BIGSERIAL PRIMARY KEY,
+    channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    target_user_id  UUID NOT NULL REFERENCES users(id),
+    target_device_id UUID NOT NULL REFERENCES devices(id),
+    welcome_message BYTEA NOT NULL,                   -- MLS Welcome message (encrypted to joining device)
+    consumed        BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_mls_welcome ON mls_welcome_messages (target_device_id, consumed) WHERE NOT consumed;
+
+-- MLS pending commits (queued proposals and commits for group members to process)
+CREATE TABLE mls_pending_commits (
+    id              BIGSERIAL PRIMARY KEY,
+    channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    epoch           BIGINT NOT NULL,
+    commit_data     BYTEA NOT NULL,                   -- Serialized MLS Commit message
+    author_id       UUID NOT NULL REFERENCES users(id),
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_mls_commits ON mls_pending_commits (channel_id, epoch);
 
 -- 005_create_moderation.sql
 
@@ -408,11 +493,19 @@ CREATE INDEX idx_abuse_signals_unreviewed ON abuse_signals (reviewed, severity) 
 ### 4.2 Redis Key Schema
 
 ```
-session:{jwt_id}                → JSON { user_id, expires_at, device_id }    TTL: 7d
+session:{jwt_id}                → JSON { user_id, device_id, expires_at }   TTL: 7d
 presence:{user_id}              → JSON { status, last_seen, connected_devices[] }  TTL: 5min (refreshed by heartbeat)
 typing:{channel_id}:{user_id}  → "1"  TTL: 5s
 call:{room_id}                  → JSON { participants[], created_at, channel_id }
 rate:{user_id}:{endpoint}      → counter  TTL: sliding window
+
+# Device management
+devices:{user_id}               → SET { device_ids }              (cache of devices table)
+device_keys:{device_id}         → JSON { identity_key, signed_prekey }  TTL: 1h (cache, DB is source of truth)
+device_list:{user_id}           → JSON { signed_list, signature }  (cache of device_lists table)
+
+# MLS group cache
+mls_epoch:{channel_id}          → INT (current epoch)             TTL: none (evicted on update)
 
 # Moderation
 blocked:{user_id}               → SET { blocked_user_ids }         (cache of user_blocks table)
@@ -448,6 +541,7 @@ typed_id!(ServerId);
 typed_id!(ChannelId);
 typed_id!(MessageId);
 typed_id!(DmChannelId);
+typed_id!(DeviceId);
 typed_id!(ReportId);
 ```
 
@@ -475,9 +569,36 @@ Base path: `/api/v1`
 | `GET` | `/users/me` | Get current user profile | JWT |
 | `PATCH` | `/users/me` | Update profile | JWT |
 | `GET` | `/users/:id` | Get user public profile | JWT |
-| `PUT` | `/users/me/keys` | Upload/update key bundle | JWT |
-| `GET` | `/users/:id/keys` | Fetch user's public key bundle | JWT |
-| `POST` | `/users/:id/keys/one-time` | Claim a one-time prekey | JWT |
+| `GET` | `/users/:id/device-list` | Fetch user's signed device list | JWT |
+
+#### Devices & Key Bundles
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/devices` | Register a new device (returns device_id) | JWT |
+| `GET` | `/devices` | List current user's devices | JWT |
+| `DELETE` | `/devices/:deviceId` | Remove a device (invalidates its keys) | JWT |
+| `PUT` | `/devices/:deviceId/keys` | Upload/update key bundle for a device | JWT |
+| `GET` | `/users/:id/devices/:deviceId/keys` | Fetch a specific device's public key bundle | JWT |
+| `GET` | `/users/:id/keys` | Fetch ALL device key bundles for a user (for multi-device fan-out) | JWT |
+| `POST` | `/users/:id/devices/:deviceId/keys/one-time` | Claim a one-time prekey from a specific device | JWT |
+| `PUT` | `/users/me/device-list` | Upload signed device list (signed by master verify key) | JWT |
+
+#### Account Recovery
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `PUT` | `/users/me/key-backup` | Upload encrypted key backup blob | JWT |
+| `GET` | `/users/me/key-backup` | Download encrypted key backup blob | JWT |
+| `DELETE` | `/users/me/key-backup` | Delete key backup | JWT |
+
+#### MLS Group Management
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/channels/:id/mls/group-info` | Fetch MLS group info + ratchet tree (for joining) | JWT + Member |
+| `GET` | `/channels/:id/mls/welcome` | Fetch pending MLS Welcome messages for current device | JWT + Member |
+| `POST` | `/channels/:id/mls/commit` | Submit an MLS Commit (membership change, key update) | JWT + Member |
 
 #### Servers
 
@@ -607,6 +728,9 @@ All WebSocket messages use JSON envelope:
 | `WEBRTC_SIGNAL` | SDP/ICE relay | `{ "from_user", "signal": { ... } }` |
 | `HEARTBEAT_ACK` | Response to heartbeat | `{ }` |
 | `KEY_BUNDLE_UPDATE` | User updated keys | `{ "user_id" }` |
+| `DEVICE_LIST_UPDATE` | User's device list changed | `{ "user_id", "signed_list" }` |
+| `MLS_WELCOME` | MLS Welcome message available | `{ "channel_id" }` |
+| `MLS_COMMIT` | MLS group state updated | `{ "channel_id", "epoch" }` |
 | `USER_BANNED` | User was banned from server | `{ "server_id", "user_id" }` |
 | `USER_KICKED` | User was kicked from server | `{ "server_id", "user_id" }` |
 | `USER_MUTED` | User was muted in channel | `{ "channel_id", "user_id", "expires_at" }` |
@@ -634,69 +758,224 @@ Implemented via Redis sliding window counters. Returns `429 Too Many Requests` w
 The server is **never trusted with plaintext**. It facilitates key exchange and relays ciphertext.
 
 ```
-Alice                          Server                         Bob
-  │                              │                              │
-  │── Upload key bundle ────────►│◄──── Upload key bundle ──────│
-  │                              │                              │
-  │── Request Bob's keys ───────►│                              │
-  │◄── Bob's public bundle ──────│                              │
-  │                              │                              │
-  │── X3DH key agreement ──────────────────────────────────────►│
-  │                              │                              │
-  │── Encrypted message ────────►│──── Relay ciphertext ───────►│
-  │                              │                              │
-  │   (Server sees only blobs)   │     (Bob decrypts locally)   │
+Alice (Device 1)                 Server                    Bob (Device 1)
+  │                                │                          │
+  │── Upload device key bundle ───►│◄── Upload device key ────│
+  │                                │    bundle                │
+  │                                │                          │
+  │  Bob (Device 2)                │                          │
+  │    │── Upload device key ─────►│                          │
+  │    │   bundle                  │                          │
+  │                                │                          │
+  │── Request Bob's device list ──►│                          │
+  │◄── Bob's signed device list ──│                          │
+  │                                │                          │
+  │── X3DH with Bob Device 1 ─────────────────────────────────►│
+  │── X3DH with Bob Device 2 ──────────────────►│             │
+  │                                │             │             │
+  │── Encrypted msg (per-device) ─►│─── Relay ──►│ (both devices)
+  │                                │             │             │
+  │   (Server sees only blobs)     │             │             │
 ```
 
-### 6.2 Text Messaging Encryption
+Messages are encrypted **per-device**: when Alice sends a message to Bob, she encrypts it separately for each of Bob's registered devices. This is the fundamental design decision that enables future multi-device support without protocol migration.
 
-**Protocol:** Based on the Signal Protocol (X3DH + Double Ratchet).
+### 6.2 Identity Model
 
-#### Key Bundle (per user)
+#### Master Verify Key (per user)
 
-- **Identity Key (IK):** Long-term Ed25519/X25519 keypair. Generated on first registration.
-- **Signed Pre-Key (SPK):** Medium-term X25519 keypair, signed by IK. Rotated weekly.
-- **One-Time Pre-Keys (OPK):** Batch of ephemeral X25519 keys. Server stores public halves; consumed on first message to a new contact.
+Each user has a long-term **Master Verify Key** (Ed25519 signing keypair). This key:
+- Signs the user's **device list** (the set of device identity keys the user vouches for).
+- Is generated once at account registration and backed up via the recovery key.
+- Is the root of trust for the user's identity. Other users verify this key via safety numbers.
+- The public half is stored on the server. The private half never leaves the client (stored locally, backed up encrypted).
 
-#### Session Establishment (X3DH)
+#### Device Identity Key (per device)
 
-1. Alice fetches Bob's key bundle from server (IK, SPK, one OPK if available).
-2. Alice generates ephemeral key (EK) and computes shared secret via X3DH.
-3. Alice sends initial message with: her IK (public), EK (public), used OPK ID, ciphertext.
-4. Bob receives, computes same shared secret, initializes Double Ratchet.
+Each device has its own **Device Identity Key** (X25519 keypair) used for X3DH key agreement. When a user registers a new device:
+1. The new device generates a fresh identity keypair.
+2. The user signs an updated device list (all device IDs + identity keys) with their master verify key.
+3. The signed device list is uploaded to the server.
+4. Other users fetch the updated device list and can verify the new device was authorized by the master verify key.
 
-#### Message Encryption (Double Ratchet)
+#### Signed Device List
 
-- Each message encrypted with unique key derived from ratchet state.
-- Provides forward secrecy and break-in recovery.
-- Message format stored on server:
+The device list is the authoritative mapping of user → devices → identity keys:
 
 ```json
 {
-  "sender_ik": "<base64>",
-  "ephemeral_key": "<base64>",
-  "prekey_id": 42,
-  "ratchet_header": "<base64>",
-  "ciphertext": "<base64>"
+  "user_id": "uuid",
+  "devices": [
+    { "device_id": "uuid", "identity_key": "<base64>" },
+    { "device_id": "uuid", "identity_key": "<base64>" }
+  ],
+  "timestamp": "2026-02-14T12:00:00Z",
+  "master_verify_key": "<base64>",
+  "signature": "<base64>"
 }
 ```
 
-The entire payload is stored as an opaque `BYTEA` blob in the database.
+Other users verify the `signature` over the device list using the `master_verify_key`. If the master verify key changes unexpectedly, the client warns the user (similar to Signal's "safety number changed" alert).
 
-#### Group/Channel Encryption
+### 6.3 Key Bundle (per device)
 
-For channels with multiple members, use **Sender Keys** (Signal Group Protocol variant):
+Each device uploads:
+- **Device Identity Key (DIK):** Long-term X25519 keypair for this device.
+- **Signed Pre-Key (SPK):** Medium-term X25519 keypair, signed by DIK. Rotated weekly.
+- **One-Time Pre-Keys (OPK):** Batch of 100 ephemeral X25519 keys. Consumed on first message to this device.
 
-1. Each member generates a sender key and distributes it (encrypted per-recipient via pairwise sessions) to all group members.
-2. Messages are encrypted once with the sender key (symmetric), not per-recipient.
-3. When membership changes, sender keys are rotated.
+### 6.4 Session Establishment (X3DH, per-device)
 
-### 6.3 Audio/Video Encryption
+When Alice wants to message Bob for the first time:
+
+1. Alice fetches Bob's **signed device list** and verifies the master verify key signature.
+2. For **each of Bob's devices**, Alice fetches the device's key bundle (DIK, SPK, one OPK).
+3. Alice performs X3DH with each device independently → separate shared secrets.
+4. Alice initializes a **separate Double Ratchet session per device**.
+5. Alice encrypts the message once per device and sends all ciphertext variants to the server.
+6. The server routes each encrypted variant to the appropriate device.
+
+```json
+{
+  "recipients": [
+    {
+      "device_id": "bob-device-1-uuid",
+      "sender_dik": "<base64>",
+      "ephemeral_key": "<base64>",
+      "prekey_id": 42,
+      "ratchet_header": "<base64>",
+      "ciphertext": "<base64>"
+    },
+    {
+      "device_id": "bob-device-2-uuid",
+      "sender_dik": "<base64>",
+      "ephemeral_key": "<base64>",
+      "prekey_id": 7,
+      "ratchet_header": "<base64>",
+      "ciphertext": "<base64>"
+    }
+  ]
+}
+```
+
+**MVP simplification:** MVP supports only one device per user, so there is always exactly one recipient entry. But the message format, API, and database schema already support multiple, so adding multi-device later requires no protocol changes.
+
+### 6.5 Message Encryption (Double Ratchet)
+
+- Each message encrypted with a unique key derived from ratchet state (per sender-device ↔ recipient-device pair).
+- Provides forward secrecy and break-in recovery.
+- The entire per-device payload is stored as an opaque `BYTEA` blob in the `messages` table.
+
+### 6.6 Group/Channel Encryption (Tiered Model)
+
+Different encryption protocols are used depending on channel size, because the performance characteristics diverge dramatically at scale:
+
+| Channel Size | Protocol | Member Change Cost | Per-Message Cost | Rationale |
+|-------------|----------|-------------------|-----------------|-----------|
+| ≤ 100 members | **Sender Keys** | O(n) — re-key to all members | O(1) — single symmetric encrypt | Simple, efficient for small groups. O(n) re-key cost is acceptable. |
+| > 100 members | **MLS (RFC 9420)** | O(log n) — tree-based update | O(1) — single symmetric encrypt | Logarithmic re-key cost is essential at scale. 5,000-member channel rotation: ~13 operations vs 5,000. |
+
+The server stores a `channel_type_crypto` field (determined at channel creation based on server max members, or dynamically upgraded when membership crosses the threshold).
+
+#### Sender Keys (≤ 100 members)
+
+1. Each member generates a `SenderKey` (symmetric + chain key pair).
+2. The SenderKey is distributed to all channel members encrypted via existing pairwise Double Ratchet sessions.
+3. Messages are encrypted once with the sender's SenderKey chain (AES-256-GCM).
+4. On member join: existing members share current SenderKeys with the new member (encrypted pairwise).
+5. On member leave/kick: all remaining members rotate their SenderKeys and redistribute.
+
+#### MLS (> 100 members)
+
+MLS (Message Layer Security, RFC 9420) uses a binary tree (ratchet tree) for group key agreement:
+
+1. **Group creation:** Channel creator initializes an MLS group, generating the initial group secret and ratchet tree.
+2. **Member add:** Creator sends an MLS `Welcome` message to the new member (encrypted to their device key bundle via X3DH). The Welcome contains the group secret and tree state.
+3. **Member remove:** Any member can propose removal. An MLS `Commit` updates the tree, deriving a new group secret that the removed member cannot compute. Cost: O(log n) — only the path from the removed leaf to the root needs updating.
+4. **Key update:** Members periodically update their leaf in the tree, providing post-compromise security. Cost: O(log n).
+5. **Message encrypt:** Messages are encrypted with the current group epoch key (AES-256-GCM). All members in the current epoch can decrypt.
+
+**Server's role in MLS:**
+- Stores the public ratchet tree (so new joiners can compute the group state).
+- Relays `Commit` and `Welcome` messages between members.
+- Tracks the current epoch number (for ordering).
+- **Never sees the group secret or message plaintext.**
+
+**MLS implementation:** Uses the `openmls` Rust crate on the server side (for tree validation and commit ordering) and a corresponding MLS library on the client (see client spec §4).
+
+#### Protocol Upgrade (Sender Keys → MLS)
+
+When a channel crosses the 100-member threshold:
+1. Server flags the channel for protocol upgrade.
+2. An MLS group is initialized by the server owner (or an authorized member).
+3. All current members receive MLS `Welcome` messages.
+4. Once all members have joined the MLS group, the channel switches to MLS.
+5. Old Sender Keys are retired after a grace period (5 minutes, to drain in-flight messages).
+
+### 6.7 Account Recovery
+
+#### Recovery Key
+
+At registration, the client generates a **recovery key**: a high-entropy 256-bit key encoded as a human-readable string (e.g., 24-word BIP39 mnemonic or a base58-encoded string). The user is required to store this safely (write it down, save in password manager).
+
+The recovery key is **not** derived from the user's password — it is independent entropy, so compromising the password does not compromise the backup.
+
+#### Backup Contents
+
+The encrypted backup blob contains:
+- Master Verify Key (private half)
+- Device Identity Key (private half) for the current device
+- All active Double Ratchet session states
+- All Sender Keys for joined channels
+- MLS group state (key packages, leaf secrets)
+
+#### Backup Encryption
+
+```
+Recovery Key (256-bit, user-held)
+    │
+    ├── HKDF(salt, "mercury-backup-v1") ──► Backup Encryption Key (AES-256)
+    │
+    └── Encrypt(backup_blob, BEK, random_nonce) ──► encrypted_backup
+```
+
+The `encrypted_backup` + `salt` are uploaded to the server via `PUT /users/me/key-backup`. The server stores it as an opaque blob — it cannot decrypt it without the recovery key.
+
+#### Recovery Flow
+
+When a user loses their device and registers a new one:
+
+1. User logs in with username + password (auth is independent of E2E keys).
+2. Client detects no local identity keys → prompts for recovery key.
+3. Client fetches `encrypted_backup` from server.
+4. Client derives Backup Encryption Key from recovery key + salt.
+5. Client decrypts backup → restores master verify key, identity key, sessions, sender keys.
+6. Client registers the new device, signs a new device list (removing old device, adding new).
+7. Sessions resume with existing ratchet state — no re-establishment needed.
+
+**If the user has no recovery key:**
+- Identity is effectively reset. New master verify key, new device identity key.
+- All existing sessions are lost. Contacts will see a "safety number changed" warning.
+- Message history (encrypted blobs on server) is permanently unreadable.
+- This is the correct security outcome — there is no backdoor.
+
+#### Backup Rotation
+
+The client automatically updates the backup on the server whenever significant crypto state changes:
+- New Double Ratchet session established
+- Sender Key rotation
+- MLS epoch advance
+- Signed pre-key rotation
+
+Updates are debounced (max once per 5 minutes) to avoid excessive uploads.
+
+### 6.8 Audio/Video Encryption
 
 - **Transport:** DTLS-SRTP (standard WebRTC encryption).
 - **Key management:** Insertable Streams API on the client side for true E2E encryption through the SFU.
 - **SFU role:** The SFU forwards encrypted media packets **without decrypting them**. It operates on RTP headers only (for routing, simulcast layer selection, bandwidth estimation).
 - **Frame-level E2E encryption:** Clients use a shared symmetric key (per call room, distributed via encrypted signaling) to encrypt/decrypt media frames before/after they pass through the SFU.
+- **Key distribution:** The call initiator generates the room key and distributes it to each participant's devices via their existing encrypted sessions (Double Ratchet).
 - **Key rotation:** Per-call symmetric key is rotated when participants join or leave.
 
 ```
@@ -869,10 +1148,15 @@ services:
       - MERCURY_DATABASE_URL=postgres://mercury:password@db:5432/mercury
       - MERCURY_REDIS_URL=redis://redis:6379
       - MERCURY_AUTH_JWT_SECRET=${JWT_SECRET}
+      - MERCURY_MEDIA_ICE_TURN_URLS=turn:coturn:3478
+      - MERCURY_MEDIA_ICE_TURN_USERNAME=mercury
+      - MERCURY_MEDIA_ICE_TURN_PASSWORD=${TURN_SECRET}
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_started
+      coturn:
         condition: service_started
     volumes:
       - ./config:/etc/mercury
@@ -896,24 +1180,92 @@ services:
     volumes:
       - redisdata:/data
 
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host                     # Required for TURN — needs real client IPs
+    volumes:
+      - ./config/turnserver.conf:/etc/turnserver.conf:ro
+      - certs:/etc/coturn/certs:ro
+    environment:
+      - TURN_SECRET=${TURN_SECRET:-mercury-turn-default-change-me}
+    command: >
+      -n
+      --log-file=stdout
+      --listening-port=3478
+      --tls-listening-port=5349
+      --min-port=49152
+      --max-port=49252
+      --use-auth-secret
+      --static-auth-secret=$${TURN_SECRET}
+      --realm=${PUBLIC_DOMAIN:-localhost}
+      --cert=/etc/coturn/certs/cert.pem
+      --pkey=/etc/coturn/certs/key.pem
+      --no-cli
+      --no-multicast-peers
+      --fingerprint
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:
   certs:
 ```
 
-### 9.3 Networking Considerations
+### 9.3 TURN Server (coturn)
 
-- **WebRTC UDP ports:** The SFU needs a range of UDP ports exposed for media traffic. Configure `10000-10100/udp` (adjustable).
-- **TURN server:** For clients behind restrictive NATs, deploy a TURN server (e.g., coturn) alongside or reference an external one. The server config should include TURN credentials:
+The Docker Compose stack includes **coturn** as a default-enabled TURN relay server. This is critical for voice/video to work when users are behind restrictive NATs, corporate firewalls, or CGNAT.
+
+**Why `network_mode: host`:** TURN relays media between clients. It must see real client IP addresses to function correctly, and it needs direct UDP port access. Docker's NAT would break TURN's relay logic.
+
+**Credential model:** Uses TURN REST API (shared-secret) authentication. The Mercury server generates time-limited TURN credentials for each client on call join:
+
+```rust
+// In mercury-media/src/turn.rs
+fn generate_turn_credentials(user_id: &str, secret: &str) -> TurnCredentials {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() + 86400; // 24h validity
+    let username = format!("{}:{}", timestamp, user_id);
+    let hmac = hmac_sha1(secret.as_bytes(), username.as_bytes());
+    TurnCredentials {
+        username,
+        credential: base64::encode(hmac),
+        urls: vec!["turn:your-server.com:3478".into()],
+        ttl: 86400,
+    }
+}
+```
+
+The client receives TURN credentials via the `CALL_CONFIG` WebSocket event when joining a call.
+
+**Operator configuration:**
 
 ```toml
 [media.ice]
 stun_urls = ["stun:stun.l.google.com:19302"]
-turn_urls = ["turn:your-turn-server.com:3478"]
-turn_username = "mercury"
-turn_password = "turnpassword"
+
+# TURN — auto-configured when using bundled coturn
+turn_enabled = true
+turn_urls = ["turn:${PUBLIC_DOMAIN}:3478", "turns:${PUBLIC_DOMAIN}:5349"]
+turn_secret = "${TURN_SECRET}"          # Shared secret with coturn, from env var
+turn_credential_ttl_seconds = 86400
+
+# Set to false to disable bundled coturn and use an external TURN server
+use_bundled_turn = true
 ```
+
+**Graceful degradation:** When TURN fails or is unavailable, the client should:
+1. Attempt direct STUN-only connectivity (works for ~80% of users).
+2. If STUN fails, show a clear diagnostic: "Voice/video unavailable — your network may be blocking UDP traffic. Contact your server operator."
+3. Text messaging remains fully functional regardless of TURN status.
+
+### 9.4 Networking Considerations
+
+- **WebRTC UDP ports:** The SFU needs a range of UDP ports exposed for media traffic. Configure `10000-10100/udp` (adjustable).
+- **TURN UDP ports:** coturn uses `49152-49252/udp` for relay traffic (configurable via `--min-port` / `--max-port`). These must be open on the host firewall.
+- **TLS certificates:** Both the Mercury server and coturn need valid TLS certificates for the public domain. The shared `certs` volume provides this. Use Let's Encrypt or bring your own.
+- **Public domain:** The `PUBLIC_DOMAIN` env var must be set to the server's publicly reachable hostname. This is used for ICE candidate generation and TURN realm.
 
 ---
 
@@ -1162,6 +1514,8 @@ All logs via `tracing` with JSON output:
 
 These are **not in MVP** but the architecture should not preclude them:
 
+- **Multi-device activation:** The per-device identity model and signed device lists are built into MVP (single device), but activating multi-device requires: a linked-device pairing flow (QR code or verification code), session fan-out (messages encrypted to all devices), cross-device sync of channel membership and read state, and a device management UI.
+- **Social recovery (alternative to recovery key):** k-of-n trusted contacts can reconstruct a recovery key via Shamir's Secret Sharing. Each trusted contact holds a share; k shares are needed to reconstruct. Requires a share distribution protocol and a recovery ceremony flow.
 - **Message franking (v2):** Sender commits to plaintext via HMAC included in the encrypted envelope. On report, the server can verify the reporter didn't fabricate the content. See [Facebook's message franking paper](https://eprint.iacr.org/2017/664) for the cryptographic construction. Requires changes to the message encryption format — the `message_blob` will include an additional `frankingTag` and `frankingKey` field.
 - **Designated moderator roles (v2):** Extend RBAC so the server owner can appoint moderators with scoped permissions (e.g., can mute/kick but not ban). Requires the roles & permissions system below.
 - **Moderator-specific moderation key (v2):** Instead of a single server-wide moderation keypair, designated moderators each have their own. Report evidence is encrypted to the assigned moderator's key, enabling delegation without sharing a single secret.
