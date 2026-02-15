@@ -155,30 +155,70 @@ The Mercury client is a cross-platform desktop application built with Electron, 
 | **Preload** | contextBridge — exposes safe API surface to renderer | Limited: only whitelisted IPC methods |
 
 **Critical rules:**
-- Private keys NEVER enter the renderer process. All crypto operations go through IPC to the crypto worker.
-- The **Main process is a thin IPC router** — it does NOT perform crypto operations directly. This prevents heavy crypto work (e.g., Sender Key rotation for 99 members = 99 pairwise encryptions + 99 SQLite writes) from blocking IPC handling, window dragging, or typing indicators.
+- Private keys NEVER enter the renderer process. All crypto operations go through the crypto worker.
+- The **Main process is a thin IPC router** — it does NOT perform crypto operations directly. This prevents heavy crypto work (e.g., lazy Sender Key rotation on first message after a member removal — up to 99 pairwise encryptions + SQLite writes) from blocking IPC handling, window dragging, or typing indicators.
 - The crypto worker communicates with the Main process via `worker_threads` `MessagePort`. The Main process proxies `safeStorage` calls to the worker since `safeStorage` is only available on the main thread.
+
+#### IPC Architecture: Direct MessagePort Channel
+
+The naive approach — routing all crypto IPC through Main (`Renderer → Main → Worker → Main → Renderer`) — forces V8 Structured Clone serialization at each hop. For large binary payloads (message history, ciphertext arrays), this blocks the Main thread during memory copying, causing UI stutter.
+
+**Solution:** The Main process creates a `MessageChannel` at startup and transfers one `MessagePort` to the Renderer (via `contextBridge`) and the other to the Crypto Worker. The hot path (ciphertext, decrypted content) flows **directly** between Worker and Renderer with zero-copy `ArrayBuffer` transfer semantics. The Main process only handles setup and `safeStorage` proxying.
+
+```
+                    ┌──────────────────────┐
+                    │    Main Process       │
+                    │                       │
+                    │  • App lifecycle      │
+                    │  • safeStorage proxy  │
+                    │  • MessageChannel     │
+                    │    factory (setup)    │
+                    └──┬───────────────┬────┘
+          safeStorage  │               │  safeStorage
+          proxy only   │               │  proxy only
+                    ┌──▼──┐         ┌──▼──────────┐
+                    │Crypto│◄══════►│  Renderer    │
+                    │Worker│ Direct │  (React UI)  │
+                    │      │ Message│              │
+                    │      │ Port   │              │
+                    └──────┘ (zero- └──────────────┘
+                             copy)
+```
 
 ```typescript
 // src/main/crypto-worker.ts (spawned at app launch)
 import { Worker } from 'worker_threads';
+import { MessageChannelMain } from 'electron';
 
 const cryptoWorker = new Worker(
   path.join(__dirname, 'workers/crypto-worker-entry.ts'),
   { workerData: { dbPath: '~/.mercury/keys.db' } }
 );
 
-// Route IPC calls from renderer → worker
-ipcMain.handle('crypto:encrypt', async (_, args) => {
-  return cryptoWorker.postMessage({ op: 'encrypt', ...args });
-});
+// Create a direct channel between Worker and Renderer
+const { port1: workerPort, port2: rendererPort } = new MessageChannelMain();
 
-// Proxy safeStorage calls from worker → main thread
+// Transfer ports to their respective processes
+cryptoWorker.postMessage({ op: 'init:port', port: workerPort }, [workerPort]);
+mainWindow.webContents.postMessage('crypto:port', null, [rendererPort]);
+
+// Main process ONLY handles safeStorage proxying (not crypto data)
 cryptoWorker.on('message', (msg) => {
   if (msg.op === 'safeStorage:encrypt') {
     const encrypted = safeStorage.encryptString(msg.data);
     cryptoWorker.postMessage({ op: 'safeStorage:result', id: msg.id, data: encrypted });
   }
+});
+```
+
+```typescript
+// In Renderer: receive the direct port and use zero-copy transfers
+ipcRenderer.on('crypto:port', (event) => {
+  const [port] = event.ports;
+  // Hot path: ciphertext and decrypted content flow directly
+  // Use transferable ArrayBuffers to avoid copying: postMessage(data, [data.buffer])
+  port.postMessage({ op: 'encrypt', plaintext: buffer }, [buffer]);
+  port.onmessage = (e) => { /* receive ciphertext with zero copy */ };
 });
 ```
 
@@ -396,13 +436,34 @@ Private keys are stored in a local SQLite database, encrypted at rest:
 
 On Linux, `safeStorage` depends on `libsecret` (GNOME Keyring) or KWallet. On minimal window managers, headless setups, or if the keyring daemon is not running, `safeStorage.isEncryptionAvailable()` returns `false`. Mercury **must not fail open** (silently storing the encryption key in plaintext).
 
-**Fallback behavior:**
+**AppImage caveat:** AppImage's sandbox isolation can prevent Electron from detecting or connecting to the host system's `libsecret` daemon even when GNOME Keyring is running perfectly. This causes false `safeStorage` failures. The **Flatpak** build target avoids this entirely — Flatpak's portal system (`org.freedesktop.secrets`) handles secure keystore access reliably across distros.
+
+**Password store detection:** Before falling back to a manual password prompt, attempt to force the correct keychain backend:
 
 ```typescript
-// src/main/safe-storage.ts
+// src/main/safe-storage.ts — run BEFORE app.whenReady()
+import { app } from 'electron';
+
+function configureLinuxKeychain(): void {
+  if (process.platform !== 'linux') return;
+
+  const desktop = process.env.XDG_CURRENT_DESKTOP?.toLowerCase() || '';
+  if (desktop.includes('gnome') || desktop.includes('unity') || desktop.includes('cinnamon')) {
+    app.commandLine.appendSwitch('password-store', 'gnome-libsecret');
+  } else if (desktop.includes('kde') || desktop.includes('plasma')) {
+    app.commandLine.appendSwitch('password-store', 'kwallet5');
+  }
+  // If neither detected, Electron will try its default detection
+}
+configureLinuxKeychain();
+```
+
+**Fallback behavior (if keychain is genuinely unavailable):**
+
+```typescript
 async function getDatabaseEncryptionKey(): Promise<Buffer> {
   if (safeStorage.isEncryptionAvailable()) {
-    // Happy path: OS keychain available
+    // Happy path: OS keychain available (or forced via --password-store)
     return safeStorage.decryptString(storedEncryptedKey);
   }
 
@@ -526,20 +587,16 @@ Recovery Key (24 words → 256-bit entropy)
 User types message
         │
         ▼
-  Renderer Process             Main (IPC Router)         Crypto Worker Thread
-  ─────────────────            ─────────────────         ────────────────────
-  1. Call crypto.encrypt() ──IPC──► 2. Forward ──Worker──► 3. Fetch recipient's
-                                                              device list
-                                                           4. For EACH device:
-                                                              a. Load/establish
-                                                                 session
-                                                              b. Double Ratchet
-                                                                 encrypt
-                                                              c. Persist ratchet
-                                                                 state (SQLite)
-                                                           5. Return ciphertexts
-  7. Receive ciphertexts  ◄──IPC── 6. Forward  ◄──Worker──
-  8. Send via WebSocket
+  Renderer Process             Crypto Worker Thread (direct MessagePort)
+  ─────────────────            ──────────────────────────────────────────
+  1. postMessage(               2. Fetch recipient's device list
+     { op: 'encrypt', ... },    3. For EACH device:
+     [plaintext.buffer])            a. Load/establish session
+     (zero-copy transfer) ─────►    b. Double Ratchet encrypt
+                                    c. Persist ratchet state (SQLite)
+                                 4. Return ciphertexts
+  5. Receive ciphertexts  ◄─────    (zero-copy ArrayBuffer transfer)
+  6. Send via WebSocket
      (MessagePack binary)
 ```
 
@@ -551,41 +608,35 @@ User types message
   WebSocket receives event (binary MessagePack → decoded)
         │
         ▼
-  Renderer Process             Main (IPC Router)         Crypto Worker Thread
-  ─────────────────            ─────────────────         ────────────────────
-  1. Call crypto.decrypt() ──IPC──► 2. Forward ──Worker──► 3. Load session for
-                                                              sender's device
-                                                           4. Double Ratchet
-                                                              decrypt
-                                                           5. Persist updated
-                                                              ratchet state
-                                                              (SQLite write
-                                                              BEFORE returning)
-                                                           6. Return plaintext
-  8. Receive plaintext    ◄──IPC── 7. Forward  ◄──Worker──
-  9. Store in messageStore
+  Renderer Process             Crypto Worker Thread (direct MessagePort)
+  ─────────────────            ──────────────────────────────────────────
+  1. postMessage(               2. Load session for sender's device
+     { op: 'decrypt', ... },    3. Double Ratchet decrypt
+     [ciphertext.buffer])       4. Persist updated ratchet state
+     (zero-copy transfer) ─────►   (SQLite write BEFORE returning)
+                                 5. Return plaintext
+  6. Receive plaintext    ◄─────    (zero-copy ArrayBuffer transfer)
+  7. Store in messageStore
      (in-memory only)
   8. Render in UI
 ```
 
-**Critical: Ratchet state persistence is atomic.** The main process writes the updated ratchet state to SQLite *before* returning the plaintext to the renderer. If the app crashes between decrypt and persist, the client re-requests the message and re-decrypts. Out-of-order or duplicate messages are handled by the Double Ratchet's built-in skipped message key mechanism (stores up to 1000 skipped keys).
+**Critical: Ratchet state persistence is atomic.** The worker writes the updated ratchet state to SQLite *before* returning the plaintext to the renderer. If the app crashes between decrypt and persist, the client re-requests the message and re-decrypts. Out-of-order or duplicate messages are handled by the Double Ratchet's built-in skipped message key mechanism (stores up to 1000 skipped keys).
 
 #### First Message to New Contact (X3DH)
 
 ```
-  Renderer              Main (Router)        Crypto Worker              Server
-  ────────              ─────────────        ─────────────              ──────
-  1. Initiate DM ──IPC──► Forward ──Worker──► 2. Request device list ──API──►
-                                              3. Verify signature     ◄──API──
-                                                 (master key)
-                                              4. For each device:
-                                                a. Fetch key bundle   ──API──►
-                                                b. X3DH agreement     ◄──API──
-                                                c. Init Double Ratchet
-                                              5. Encrypt first message
-                                                 (per-device)
-  7. Receive     ◄──IPC── 6. Forward ◄──Worker──
-  8. Send via WebSocket (MessagePack binary) ──────────────────────────────►
+  Renderer              Crypto Worker (direct MessagePort)             Server
+  ────────              ──────────────────────────────────             ──────
+  1. postMessage ──────► 2. Request device list ──────────────────API──►
+                          3. Verify signature (master key)       ◄──API──
+                          4. For each device:
+                            a. Fetch key bundle ──────────────────API──►
+                            b. X3DH agreement                    ◄──API──
+                            c. Init Double Ratchet
+                          5. Encrypt first message (per-device)
+  6. Receive     ◄──────
+  7. Send via WebSocket (MessagePack binary) ─────────────────────────►
 ```
 
 **Device list verification:** When fetching a user's device list for the first time, the client stores the master verify key (trust-on-first-use). On subsequent fetches, if the master verify key changes, the client shows a **safety number changed** warning — the user must manually approve the new identity.
@@ -606,7 +657,7 @@ Mercury uses a per-channel encryption mode chosen at creation time. The client h
 1. When joining a private channel, generate a `SenderKey` (symmetric + chain key).
 2. Distribute the SenderKey to all current members encrypted via pairwise Double Ratchet sessions (per-device fan-out).
 3. Messages are encrypted once with the sender's SenderKey chain (AES-256-GCM).
-4. On member leave/kick: all remaining members rotate their SenderKeys.
+4. On member leave/kick: **lazy rotation**. The server broadcasts the membership change and increments the channel's `sender_key_epoch`. Each remaining member generates a new Sender Key **only when they next send a message** — distributing it to the current member list before sending. This avoids the O(N²) storm of all members simultaneously rotating.
 5. On member join: existing members share current SenderKeys with new member. **New joiner cannot see messages from before they joined.**
 6. Hard cap of 100 members. If the channel is full, the server rejects additional joins.
 
@@ -1166,7 +1217,10 @@ linux:
       arch: [x64, arm64]
     - target: deb
     - target: rpm
+    - target: flatpak             # Preferred for keychain reliability (org.freedesktop.secrets portal)
   category: Network
+  # Flatpak's portal system handles secure keystore access (GNOME Keyring, KWallet)
+  # far more reliably than AppImage's sandbox isolation across distros
 
 publish:
   provider: generic
@@ -1215,7 +1269,7 @@ publish:
 | App launch to usable | < 3 seconds |
 | Message send latency (type → delivered) | < 200ms (excluding network) |
 | Message decrypt time | < 5ms per message |
-| Sender Key rotation (100-member private channel) | < 3 seconds total (worker thread, non-blocking to UI) |
+| Sender Key lazy rotation (first message after member removal, 99 recipients) | < 3 seconds total (worker thread, non-blocking to UI) |
 | Voice join-to-speaking | < 2 seconds |
 | Video frame render latency | < 100ms (E2E) |
 | UI responsiveness during heavy crypto | 0 dropped frames (crypto runs on worker thread) |
@@ -1255,6 +1309,7 @@ publish:
 These are **not in MVP** but the architecture should accommodate:
 
 - **Multi-device activation:** Per-device identity keys and signed device lists are already in the MVP data model. Activation requires: a linked-device pairing flow (QR code scanned on existing device to authorize new device), cross-device session fan-out (already supported by per-device encryption format), read-state sync, and a device management settings page.
+- **Cross-device E2E history sync (required for multi-device):** A newly authorized device cannot decrypt historical E2E messages (those ciphertexts were encrypted to device keys that didn't exist yet). An existing online device must package its local `messageStore` history, encrypt it to the new device's identity key, and transfer it. This is a significant protocol to design — the payload can be large (months of history), must be resumable if interrupted, and must handle the case where no other device is currently online (queue on server for later sync). Must be designed at multi-device activation time.
 - **Social recovery:** Alternative to recovery key. Split the recovery secret into k-of-n shares (Shamir's Secret Sharing) distributed to trusted contacts. Requires a share distribution ceremony UI and a recovery ceremony where k contacts provide their shares.
 - **Message franking (v2):** Extend the encryption envelope to include a franking tag (HMAC commitment to plaintext). When a user reports a message, the franking tag + key are included so the server can cryptographically verify the report is authentic. Requires changes to `double-ratchet.ts` and `sender-keys.ts` to produce the franking commitment alongside the ciphertext.
 - **Moderator role UI (v2):** When the server supports designated moderator roles, the client needs scoped moderation UI — moderators see the report queue and can act within their permissions, but don't see the full admin dashboard.

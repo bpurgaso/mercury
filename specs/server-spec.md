@@ -55,6 +55,7 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
 | Language | **Rust (stable)** | Memory safety, zero-cost abstractions, async performance |
+| Global allocator | **jemalloc** (`tikv-jemallocator` crate) | Thread-local arenas eliminate allocator lock contention between API and SFU runtimes. Critical for audio quality under API load. |
 | Async runtime | **Tokio** | Industry standard, mature ecosystem |
 | HTTP/WebSocket framework | **Axum** | Tower-based, composable middleware, first-class WebSocket support |
 | Serialization | **serde + serde_json** (REST API), **rmp-serde (MessagePack)** (WebSocket message payloads), **bincode** (internal) | JSON for REST, MessagePack for WS message bodies (~30% smaller than JSON+base64), binary for internal |
@@ -126,9 +127,16 @@ The MVP runs as a **single process** with internal task separation:
 - **Background workers** — Periodic tasks: session cleanup, stale presence pruning, key bundle rotation reminders, abuse signal detection.
 
 **SFU isolation details:**
+- **Memory allocator:** The process uses `jemalloc` as the global allocator. jemalloc uses thread-local arenas, so API threads and SFU threads never contend on allocator locks. Without this, heavy API-side MessagePack serialization can cause allocator lock contention that introduces jitter on SFU threads — completely defeating core pinning.
 - The SFU runtime is created with `tokio::runtime::Builder::new_multi_thread()` and its worker threads are pinned to dedicated CPU cores via `core_affinity` crate. On a 4-core system, cores 0-2 run the API runtime, core 3 runs the SFU. On 8+ cores, allocate 2-4 cores to the SFU.
 - Communication between API ↔ SFU uses `tokio::sync::mpsc` channels carrying only lightweight signaling messages (join/leave/config changes, ~100 bytes each). Media packets never cross this boundary — they flow directly from the network socket to the SFU runtime's forwarding loop.
 - The `mpsc` channel is bounded (capacity: 1024) to provide backpressure if the SFU falls behind.
+
+```rust
+// src/main.rs
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+```
 
 **Scaling trigger:** When Prometheus metrics show **API p99 latency > 100ms** or **SFU audio jitter > 20ms** sustained over 5 minutes, the operator should split API and Media into separate containers. The architecture supports this — both sides already communicate through Redis pub/sub for cross-instance signaling. Document this threshold in the operator guide.
 
@@ -169,11 +177,12 @@ mercury-server/
 │   ├── mercury-db/                 # Database layer
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── pool.rs         # Connection pool setup
+│   │       ├── pool.rs         # Connection pool setup (sqlx::PgPoolOptions + acquire_timeout)
 │   │       ├── users.rs        # User CRUD
 │   │       ├── devices.rs      # Device registration & management
 │   │       ├── servers.rs      # Server/channel CRUD
-│   │       ├── messages.rs     # Encrypted message storage
+│   │       ├── messages.rs     # Message metadata storage
+│   │       ├── message_recipients.rs # Per-device E2E ciphertext storage
 │   │       ├── key_bundles.rs  # Per-device E2E public key bundle storage
 │   │       └── key_backups.rs  # Encrypted key backup blob storage
 │   ├── mercury-auth/               # Authentication & authorization
@@ -285,6 +294,7 @@ CREATE TABLE channels (
     -- standard: server-readable, full history, searchable
     -- private:  E2E encrypted (Sender Keys), max 100 members, history from join only
     -- e2e_dm:   E2E encrypted (Double Ratchet), for DM channels only
+    sender_key_epoch BIGINT NOT NULL DEFAULT 0,        -- Incremented on member leave/kick; triggers lazy re-key
     max_members     INT,                               -- NULL = server default; private channels enforced ≤ 100
     topic           TEXT,
     position        INT NOT NULL DEFAULT 0,
@@ -302,31 +312,42 @@ CREATE TABLE server_members (
 );
 
 -- 003_create_messages.sql
--- Messages table supports both standard (server-readable) and E2E encrypted channels.
--- Standard channels: content is plaintext in `content`, `message_blob` is NULL.
--- Private/E2E channels: content is in `message_blob` (ciphertext), `content` is NULL.
+-- Messages table stores metadata for ALL messages and plaintext for standard channels.
+-- E2E ciphertexts are stored in message_recipients (per-device for DMs, broadcast for Sender Keys).
+-- This prevents clients from downloading N ciphertexts when only 1 is decryptable by their device.
 CREATE TABLE messages (
     id              UUID PRIMARY KEY,
     channel_id      UUID REFERENCES channels(id) ON DELETE CASCADE,
     dm_channel_id   UUID REFERENCES dm_channels(id) ON DELETE CASCADE,
     sender_id       UUID NOT NULL REFERENCES users(id),
-    content         TEXT,                                -- Plaintext (standard channels only)
-    message_blob    BYTEA,                               -- E2E encrypted payload (private/e2e_dm only)
+    content         TEXT,                                -- Plaintext (standard channels only, NULL for E2E)
     message_type    VARCHAR(16) DEFAULT 'text',          -- 'text', 'system'
     created_at      TIMESTAMPTZ DEFAULT now(),
     edited_at       TIMESTAMPTZ,
     CHECK (
         (channel_id IS NOT NULL AND dm_channel_id IS NULL) OR
         (channel_id IS NULL AND dm_channel_id IS NOT NULL)
-    ),
-    CHECK (
-        (content IS NOT NULL AND message_blob IS NULL) OR
-        (content IS NULL AND message_blob IS NOT NULL)
     )
 );
 
 CREATE INDEX idx_messages_channel ON messages (channel_id, created_at DESC);
 CREATE INDEX idx_messages_dm ON messages (dm_channel_id, created_at DESC);
+
+-- Per-device ciphertexts for E2E messages (DMs and private channels)
+-- For DMs (Double Ratchet): one row per recipient device (per-device fan-out)
+-- For private channels (Sender Keys): one row with device_id = NULL (any member can decrypt)
+CREATE TABLE message_recipients (
+    id              BIGSERIAL PRIMARY KEY,
+    message_id      UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    device_id       UUID REFERENCES devices(id) ON DELETE SET NULL,  -- NULL = broadcast (Sender Key)
+    ciphertext      BYTEA NOT NULL,                      -- E2E encrypted payload for this device
+    UNIQUE(message_id, device_id)
+);
+
+-- Critical index: history fetch only downloads ciphertexts for the requesting device
+-- Query: WHERE message_id IN (...) AND (device_id = $current_device OR device_id IS NULL)
+CREATE INDEX idx_msg_recipients_device ON message_recipients (device_id, message_id);
+CREATE INDEX idx_msg_recipients_message ON message_recipients (message_id);
 
 CREATE TABLE dm_channels (
     id              UUID PRIMARY KEY,
@@ -491,6 +512,7 @@ CREATE INDEX idx_abuse_signals_unreviewed ON abuse_signals (reviewed, severity) 
 ```
 session:{jwt_id}                → JSON { user_id, device_id, expires_at }   TTL: 7d
 presence:{user_id}              → JSON { status, last_seen, connected_devices[] }  TTL: 5min (refreshed by heartbeat)
+presence_offline_pending:{user_id} → "1"  TTL: 15s (presence debounce — see §5.4)
 typing:{channel_id}:{user_id}  → "1"  TTL: 5s
 call:{room_id}                  → JSON { participants[], created_at, channel_id }
 rate:{user_id}:{endpoint}      → counter  TTL: sliding window
@@ -776,6 +798,37 @@ async fn ws_upgrade(
 - Clients disconnected > 5 seconds start at 5s base instead of 1s.
 - Clients respect `Retry-After` headers from 503 responses.
 
+### 5.4 Presence Debounce
+
+In a 5,000-member server, a single user's brief network drop generates 10,000 WebSocket pushes (5,000 × "offline" + 5,000 × "online"). Under concentrated online patterns (gaming guilds, large communities), this becomes an avalanche.
+
+**Solution:** Delay offline broadcast by 15 seconds. If the user reconnects and resumes within that window, cancel the broadcast entirely.
+
+```
+User disconnects
+     │
+     ▼
+Server: SET presence_offline_pending:{user_id} "1" EX 15
+        (do NOT broadcast PRESENCE_UPDATE offline yet)
+     │
+     ├── User resumes within 15s ──► DEL presence_offline_pending:{user_id}
+     │                                (no broadcast — flap absorbed silently)
+     │
+     └── 15s expires ──► Background worker detects expiry
+                          ──► Broadcast PRESENCE_UPDATE { status: "offline" }
+                          ──► Update presence:{user_id}
+```
+
+**Implementation:** A background Tokio task polls `SCAN` for `presence_offline_pending:*` keys every 5 seconds. When a key is found to have expired (via TTL check or `EXISTS` returning false), the offline event is broadcast. Alternatively, use Redis keyspace notifications (`__keyevent@0__:expired`) for event-driven processing.
+
+**Online transitions are immediate** — when a user connects, the `PRESENCE_UPDATE { status: "online" }` event is broadcast without delay. Users expect to see someone appear instantly.
+
+```toml
+[server.presence]
+offline_debounce_seconds = 15       # Delay before broadcasting offline status
+idle_timeout_seconds = 300          # 5 min no heartbeat → idle
+```
+
 ---
 
 ## 6. End-to-End Encryption
@@ -891,7 +944,7 @@ When Alice wants to message Bob for the first time:
 
 - Each message encrypted with a unique key derived from ratchet state (per sender-device ↔ recipient-device pair).
 - Provides forward secrecy and break-in recovery.
-- The entire per-device payload is stored as an opaque `BYTEA` blob in the `messages` table.
+- Each per-device ciphertext is stored as a row in `message_recipients` (keyed by `message_id` + `device_id`). The `messages` table stores only metadata (sender, timestamp, channel). When fetching history, the server joins only the `message_recipients` row matching the requesting device, so clients never download ciphertext they can't decrypt.
 
 ### 6.6 Channel Encryption Modes
 
@@ -917,10 +970,11 @@ Mercury uses a **tiered encryption model** — the encryption level is a per-cha
 
 1. Each member generates a `SenderKey` (symmetric + chain key pair).
 2. The SenderKey is distributed to all channel members encrypted via existing pairwise Double Ratchet sessions (per-device fan-out).
-3. Messages are encrypted once with the sender's SenderKey chain (AES-256-GCM) and stored as `message_blob`.
+3. Messages are encrypted once with the sender's SenderKey chain (AES-256-GCM) and stored as a broadcast row in `message_recipients` (with `device_id = NULL`).
 4. On member join: existing members share current SenderKeys with the new member (encrypted pairwise). **New joiner cannot see pre-join history** (prior message blobs are undecryptable).
-5. On member leave/kick: all remaining members rotate their SenderKeys and redistribute.
-6. Hard cap of 100 members enforced by database CHECK constraint and API validation.
+5. On member leave/kick: **lazy rotation** (NOT eager). The server broadcasts the membership change, increments the channel's `sender_key_epoch`, and marks all current Sender Keys as stale. The next time each remaining member **sends a message**, they generate a new Sender Key, distribute it to the current member list, and then send their message. This avoids the O(N²) storm of 99 members simultaneously fanning out 98 pairwise encryptions each.
+6. The server **rejects** messages encrypted with a pre-removal Sender Key epoch to prevent the removed member's key material from being used after eviction.
+7. Hard cap of 100 members enforced by database CHECK constraint and API validation.
 
 #### E2E DMs (Double Ratchet, per-device)
 
@@ -1098,6 +1152,9 @@ public_url = "https://your-server.example.com"   # Required for WebRTC ICE
 url = "postgres://mercury:password@localhost:5432/mercury"
 max_connections = 50
 min_connections = 5
+acquire_timeout_seconds = 5                          # Fail fast on pool exhaustion (→ 503, not stall)
+idle_timeout_seconds = 600                           # Drop idle connections after 10 min
+max_lifetime_seconds = 1800                          # Recycle connections every 30 min
 
 [redis]
 url = "redis://localhost:6379"
@@ -1288,9 +1345,29 @@ use_bundled_turn = true
 ### 9.4 Networking Considerations
 
 - **WebRTC UDP ports:** The SFU needs a range of UDP ports exposed for media traffic. Configure `10000-10100/udp` (adjustable).
-- **TURN UDP ports:** coturn uses `49152-49252/udp` for relay traffic (configurable via `--min-port` / `--max-port`). These must be open on the host firewall.
+- **TURN UDP ports:** coturn uses `49152-49252/udp` by default (100 ports, configurable via `--min-port` / `--max-port`). These must be open on the host firewall. For small deployments (< 50 concurrent voice users), a range of 50 ports is sufficient.
 - **TLS certificates:** Both the Mercury server and coturn need valid TLS certificates for the public domain. The shared `certs` volume provides this. Use Let's Encrypt or bring your own.
 - **Public domain:** The `PUBLIC_DOMAIN` env var must be set to the server's publicly reachable hostname. This is used for ICE candidate generation and TURN realm.
+
+#### Prosumer Self-Hosting: Port Forwarding Guide
+
+Self-hosters deploying behind prosumer NAT/firewall equipment (UniFi, pfSense, OPNsense, consumer routers) must forward specific port ranges. Misconfiguration causes STUN to work but TURN to silently fail, leading to one-way audio nightmares.
+
+**Required port forwards (WAN → server LAN IP):**
+
+| Port(s) | Protocol | Service | Notes |
+|---------|----------|---------|-------|
+| 443 | TCP | Mercury API + WSS | Main API and WebSocket (HTTPS) |
+| 3478 | TCP+UDP | TURN/STUN | coturn listening port |
+| 5349 | TCP | TURNS | TLS-secured TURN |
+| 10000-10100 | UDP | SFU media | WebRTC media packets |
+| 49152-49252 | UDP | TURN relay | coturn relay traffic |
+
+**Common pitfalls:**
+- **UniFi USG/UDM:** Create a port forwarding rule for each range. Ensure "Enable UDP" is checked (it defaults to TCP-only on some firmware). Disable "Auto-detect" on WAN interface if using static IP.
+- **Double NAT:** If ISP provides a CGNAT address (100.64.x.x), you must request a public IP or use TURN TCP fallback (port 443, which traverses most NATs).
+- **UFW / iptables:** `sudo ufw allow 49152:49252/udp` — the colon syntax for ranges is critical (not a dash).
+- **Cloud VMs (AWS/GCP/Azure):** Security groups are *in addition to* OS firewalls. Open the ports in both the cloud security group AND `ufw`/`iptables`.
 
 ### 9.5 Connectivity Diagnostics
 
@@ -1528,6 +1605,7 @@ Expose `/metrics` endpoint:
 - `mercury_media_bandwidth_bytes` — gauge (upload/download)
 - `mercury_sfu_rooms_active` — gauge
 - `mercury_db_pool_connections` — gauge (active/idle)
+- `mercury_db_pool_acquire_timeouts_total` — counter (503s due to pool exhaustion)
 
 ### 12.2 Structured Logging
 
@@ -1582,8 +1660,9 @@ All logs via `tracing` with JSON output:
 These are **not in MVP** but the architecture should not preclude them:
 
 - **Multi-device activation:** The per-device identity model and signed device lists are built into MVP (single device), but activating multi-device requires: a linked-device pairing flow (QR code or verification code), session fan-out (messages encrypted to all devices), cross-device sync of channel membership and read state, and a device management UI.
+- **Cross-device E2E history sync (required for multi-device):** When a new device is authorized, it cannot decrypt historical E2E messages (those ciphertexts were encrypted to device keys that didn't exist yet). An existing online device must package its local message history, encrypt it to the new device's identity key, and transfer it via the server. This is a significant protocol: the transfer payload can be large (months of chat history), must be resumable, and must handle the case where no other device is currently online (queue for later sync). Design options include: streaming chunked transfer via a dedicated WebSocket channel, or storing the encrypted history bundle on the server temporarily. This protocol must be designed at multi-device activation time, not retrofitted.
 - **Social recovery (alternative to recovery key):** k-of-n trusted contacts can reconstruct a recovery key via Shamir's Secret Sharing. Each trusted contact holds a share; k shares are needed to reconstruct. Requires a share distribution protocol and a recovery ceremony flow.
-- **Message franking (v2):** Sender commits to plaintext via HMAC included in the encrypted envelope. On report, the server can verify the reporter didn't fabricate the content. See [Facebook's message franking paper](https://eprint.iacr.org/2017/664) for the cryptographic construction. Requires changes to the message encryption format — the `message_blob` will include an additional `frankingTag` and `frankingKey` field.
+- **Message franking (v2):** Sender commits to plaintext via HMAC included in the encrypted envelope. On report, the server can verify the reporter didn't fabricate the content. See [Facebook's message franking paper](https://eprint.iacr.org/2017/664) for the cryptographic construction. Requires changes to the encryption format — each `message_recipients.ciphertext` blob will include an additional `frankingTag` and `frankingKey` field.
 - **Designated moderator roles (v2):** Extend RBAC so the server owner can appoint moderators with scoped permissions (e.g., can mute/kick but not ban). Requires the roles & permissions system below.
 - **Moderator-specific moderation key (v2):** Instead of a single server-wide moderation keypair, designated moderators each have their own. Report evidence is encrypted to the assigned moderator's key, enabling delegation without sharing a single secret.
 - **MLS for large E2E channels:** If demand exists for E2E channels larger than 100 members, implement MLS (RFC 9420) via the `openmls` crate. MLS provides O(log n) member-change cost, enabling E2E groups of 1,000+ members. This would add `mls_groups`, `mls_welcome_messages`, and `mls_pending_commits` tables. The channel `encryption_mode` would gain a new `private_mls` variant. The 100-member Sender Key cap remains for simplicity; MLS channels would be a distinct type.
