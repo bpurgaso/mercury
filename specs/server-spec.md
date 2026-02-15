@@ -31,6 +31,11 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 | E2E encrypted text messaging | **MVP** |
 | E2E encrypted audio/video | **MVP** |
 | Configurable audio/video quality limits | **MVP** |
+| User-level controls (block, mute, restrict DMs) | **MVP** |
+| Server-operator moderation (ban, kick, channel mute) | **MVP** |
+| Client-side content reporting | **MVP** |
+| Metadata-based abuse detection | **MVP** |
+| Message franking (cryptographic report verification) | **v2** |
 | Screen sharing | Future |
 | File sharing & attachments | Future |
 | Message history & search (encrypted) | Future |
@@ -165,7 +170,10 @@ mercury-server/
 │   │       │   ├── servers.rs  # CRUD servers
 │   │       │   ├── channels.rs # CRUD channels within servers
 │   │       │   ├── messages.rs # Send/receive encrypted messages
-│   │       │   └── calls.rs    # Initiate/join/leave calls
+│   │       │   ├── calls.rs    # Initiate/join/leave calls
+│   │       │   ├── moderation.rs # Ban, kick, mute, unmute
+│   │       │   ├── reports.rs  # Report submission and review
+│   │       │   └── admin.rs    # Abuse signals, audit log, stats
 │   │       ├── ws/
 │   │       │   ├── mod.rs      # WebSocket upgrade handler
 │   │       │   ├── connection.rs # Per-connection state machine
@@ -181,12 +189,22 @@ mercury-server/
 │   │       ├── quality.rs      # Bandwidth/quality enforcement
 │   │       ├── codec.rs        # Codec negotiation & constraints
 │   │       └── metrics.rs      # Media quality metrics
-│   └── mercury-crypto/             # Cryptographic utilities
+│   ├── mercury-crypto/             # Cryptographic utilities
 │       └── src/
 │           ├── lib.rs
 │           ├── keys.rs         # Key generation, serialization
 │           ├── bundle.rs       # X3DH key bundle types
 │           └── verify.rs       # Signature verification for key uploads
+│   └── mercury-moderation/        # Moderation & trust/safety
+│       └── src/
+│           ├── lib.rs
+│           ├── blocks.rs       # User block list management
+│           ├── bans.rs         # Server ban enforcement
+│           ├── mutes.rs        # Channel mute enforcement
+│           ├── reports.rs      # Report intake and review
+│           ├── abuse.rs        # Metadata abuse signal detection
+│           ├── actions.rs      # Moderation action execution + audit logging
+│           └── config.rs       # Moderation thresholds and policy config
 └── src/
     └── main.rs                 # Entry point: load config, init tracing, start server
 ```
@@ -298,6 +316,93 @@ CREATE TABLE one_time_prekeys (
 );
 
 CREATE INDEX idx_otp_available ON one_time_prekeys (user_id, used) WHERE NOT used;
+
+-- 005_create_moderation.sql
+
+-- User-level blocks (client-driven, server-enforced)
+CREATE TABLE user_blocks (
+    blocker_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    blocked_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (blocker_id, blocked_id)
+);
+
+-- Server-level bans
+CREATE TABLE server_bans (
+    server_id       UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    banned_by       UUID NOT NULL REFERENCES users(id),
+    reason          TEXT,                              -- Plaintext (operator-visible only)
+    expires_at      TIMESTAMPTZ,                       -- NULL = permanent
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (server_id, user_id)
+);
+
+CREATE INDEX idx_bans_expiry ON server_bans (expires_at) WHERE expires_at IS NOT NULL;
+
+-- Channel-level mutes (user cannot send in channel for duration)
+CREATE TABLE channel_mutes (
+    channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    muted_by        UUID NOT NULL REFERENCES users(id),
+    reason          TEXT,
+    expires_at      TIMESTAMPTZ,                       -- NULL = permanent
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (channel_id, user_id)
+);
+
+-- Content reports (user-submitted, references opaque message IDs)
+CREATE TABLE reports (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    reporter_id     UUID NOT NULL REFERENCES users(id),
+    reported_user_id UUID NOT NULL REFERENCES users(id),
+    server_id       UUID REFERENCES servers(id),
+    channel_id      UUID REFERENCES channels(id),
+    message_id      UUID,                              -- Reference to reported message
+    category        VARCHAR(32) NOT NULL,              -- 'spam', 'harassment', 'illegal', 'csam', 'other'
+    description     TEXT,                              -- Reporter's description (plaintext)
+    evidence_blob   BYTEA,                             -- Optional: forwarded decrypted content (encrypted to server operator's public key)
+    status          VARCHAR(16) DEFAULT 'pending',     -- 'pending', 'reviewed', 'actioned', 'dismissed'
+    reviewed_by     UUID REFERENCES users(id),
+    reviewed_at     TIMESTAMPTZ,
+    action_taken    VARCHAR(32),                       -- 'none', 'warn', 'mute', 'kick', 'ban', 'escalate'
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_reports_status ON reports (status, created_at DESC);
+CREATE INDEX idx_reports_server ON reports (server_id, status);
+CREATE INDEX idx_reports_user ON reports (reported_user_id);
+
+-- Moderation audit log (append-only, immutable)
+CREATE TABLE mod_audit_log (
+    id              BIGSERIAL PRIMARY KEY,
+    server_id       UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    moderator_id    UUID NOT NULL REFERENCES users(id),
+    action          VARCHAR(32) NOT NULL,              -- 'ban', 'unban', 'kick', 'mute', 'unmute', 'report_review', 'warn'
+    target_user_id  UUID NOT NULL REFERENCES users(id),
+    target_channel_id UUID REFERENCES channels(id),
+    reason          TEXT,
+    metadata        JSONB,                             -- Action-specific extra data
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_audit_server ON mod_audit_log (server_id, created_at DESC);
+CREATE INDEX idx_audit_target ON mod_audit_log (target_user_id, created_at DESC);
+
+-- Metadata abuse signals (server-computed, no content access needed)
+CREATE TABLE abuse_signals (
+    id              BIGSERIAL PRIMARY KEY,
+    user_id         UUID NOT NULL REFERENCES users(id),
+    signal_type     VARCHAR(32) NOT NULL,              -- 'rapid_messaging', 'mass_dm', 'join_spam', 'report_threshold'
+    severity        VARCHAR(16) DEFAULT 'low',         -- 'low', 'medium', 'high', 'critical'
+    details         JSONB NOT NULL,                    -- Signal-specific metrics
+    auto_action     VARCHAR(32),                       -- Action taken automatically, if any
+    reviewed        BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_abuse_signals_user ON abuse_signals (user_id, created_at DESC);
+CREATE INDEX idx_abuse_signals_unreviewed ON abuse_signals (reviewed, severity) WHERE NOT reviewed;
 ```
 
 ### 4.2 Redis Key Schema
@@ -308,6 +413,15 @@ presence:{user_id}              → JSON { status, last_seen, connected_devices[
 typing:{channel_id}:{user_id}  → "1"  TTL: 5s
 call:{room_id}                  → JSON { participants[], created_at, channel_id }
 rate:{user_id}:{endpoint}      → counter  TTL: sliding window
+
+# Moderation
+blocked:{user_id}               → SET { blocked_user_ids }         (cache of user_blocks table)
+banned:{server_id}:{user_id}    → JSON { expires_at, reason }      TTL: matches expiry
+muted:{channel_id}:{user_id}    → JSON { expires_at }              TTL: matches expiry
+abuse:msg_rate:{user_id}        → counter  TTL: 60s               (messages per minute)
+abuse:dm_rate:{user_id}         → counter  TTL: 3600s             (new DMs per hour)
+abuse:join_rate:{user_id}       → counter  TTL: 3600s             (server joins per hour)
+abuse:report_count:{user_id}    → counter  TTL: 86400s            (reports received per day)
 ```
 
 ### 4.3 Domain Types (Rust)
@@ -334,6 +448,7 @@ typed_id!(ServerId);
 typed_id!(ChannelId);
 typed_id!(MessageId);
 typed_id!(DmChannelId);
+typed_id!(ReportId);
 ```
 
 ---
@@ -410,6 +525,45 @@ Messages are **sent via WebSocket**, not REST, for real-time delivery. REST is f
 
 Call join/leave/signaling is handled over WebSocket.
 
+#### User-Level Controls
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `PUT` | `/users/me/blocks/:userId` | Block a user | JWT |
+| `DELETE` | `/users/me/blocks/:userId` | Unblock a user | JWT |
+| `GET` | `/users/me/blocks` | List blocked users | JWT |
+| `PUT` | `/users/me/dm-policy` | Set DM restrictions (anyone, mutual servers, nobody) | JWT |
+
+Blocked users cannot: send DMs to the blocker, see the blocker's presence, or be matched in user search by the blocker. Enforcement is server-side — the blocked user receives no indication they are blocked (messages silently dropped).
+
+#### Server Moderation (Owner/Moderator only)
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/servers/:id/bans` | Ban a user from server | JWT + Owner |
+| `DELETE` | `/servers/:id/bans/:userId` | Unban a user | JWT + Owner |
+| `GET` | `/servers/:id/bans` | List banned users | JWT + Owner |
+| `POST` | `/servers/:id/kicks/:userId` | Kick user (remove without ban) | JWT + Owner |
+| `POST` | `/channels/:id/mutes` | Mute user in channel | JWT + Owner |
+| `DELETE` | `/channels/:id/mutes/:userId` | Unmute user in channel | JWT + Owner |
+| `GET` | `/servers/:id/audit-log` | Get moderation audit log (paginated) | JWT + Owner |
+
+#### Reporting
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/reports` | Submit a content report | JWT |
+| `GET` | `/servers/:id/reports` | List reports for a server (paginated) | JWT + Owner |
+| `PATCH` | `/reports/:id` | Review/action a report | JWT + Owner |
+
+#### Abuse Signals (Server Operator Dashboard)
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/admin/abuse-signals` | List flagged abuse signals | JWT + Server Admin |
+| `PATCH` | `/admin/abuse-signals/:id` | Mark signal as reviewed | JWT + Server Admin |
+| `GET` | `/admin/abuse-stats` | Aggregate abuse statistics | JWT + Server Admin |
+
 ### 5.2 WebSocket Protocol
 
 **Connection:** `wss://{host}/ws?token={jwt}`
@@ -453,6 +607,12 @@ All WebSocket messages use JSON envelope:
 | `WEBRTC_SIGNAL` | SDP/ICE relay | `{ "from_user", "signal": { ... } }` |
 | `HEARTBEAT_ACK` | Response to heartbeat | `{ }` |
 | `KEY_BUNDLE_UPDATE` | User updated keys | `{ "user_id" }` |
+| `USER_BANNED` | User was banned from server | `{ "server_id", "user_id" }` |
+| `USER_KICKED` | User was kicked from server | `{ "server_id", "user_id" }` |
+| `USER_MUTED` | User was muted in channel | `{ "channel_id", "user_id", "expires_at" }` |
+| `USER_UNMUTED` | User was unmuted in channel | `{ "channel_id", "user_id" }` |
+| `REPORT_CREATED` | New report submitted (to server owner only) | `{ "report": { "id", "category", "status" } }` |
+| `ABUSE_SIGNAL` | Automated abuse flag (to server owner only) | `{ "signal": { "user_id", "signal_type", "severity" } }` |
 
 ### 5.3 Rate Limiting
 
@@ -757,9 +917,162 @@ turn_password = "turnpassword"
 
 ---
 
-## 10. Security
+## 10. Moderation & Trust/Safety
 
-### 10.1 Server-Side Hardening
+### 10.1 Design Philosophy
+
+Mercury uses E2E encryption, which means the server is cryptographically blind to message content. Moderation must work **around** this constraint, not break it. The architecture follows four layers, each operating independently:
+
+```
+Layer 4: Metadata-Based Abuse Detection     (server-side, automated, no content access)
+Layer 3: Server-Operator Moderation Tools   (human moderators, server-scoped authority)
+Layer 2: Client-Side Reporting              (user-initiated, voluntary content disclosure)
+Layer 1: User-Level Controls                (self-service, per-user enforcement)
+```
+
+The self-hosted model means Mercury (the software) provides the tools, but **the server operator is the service provider** with legal responsibility. Mercury ships with a Terms of Service template and operator compliance guide (see §10.6).
+
+### 10.2 Layer 1 — User-Level Controls (MVP)
+
+Users can protect themselves without moderator intervention:
+
+| Control | Behavior |
+|---------|----------|
+| **Block user** | Blocked user's messages silently dropped (never delivered). Blocked user cannot see blocker's presence. Bidirectional DM channel is effectively dead. No notification to blocked user. |
+| **Mute user** | Messages still delivered but hidden in UI (client-side filter). |
+| **DM policy** | Per-user setting: accept DMs from `anyone`, `mutual_servers_only`, or `nobody`. Server enforces — rejects DM creation that violates policy. |
+
+**Server enforcement:** Block lists are cached in Redis for O(1) lookup on every message relay. When the server processes a `message_send` WebSocket op, it checks: is the sender blocked by the recipient? Is the recipient's DM policy violated? If so, the message is silently dropped — the sender receives a normal acknowledgment (no information leak about block status).
+
+### 10.3 Layer 2 — Client-Side Reporting (MVP)
+
+Users who receive abusive content can report it to server moderators:
+
+**Report flow:**
+
+```
+Reporter (Client)                    Server                    Server Owner (Client)
+      │                                │                              │
+      │  1. User right-clicks message  │                              │
+      │     and selects "Report"       │                              │
+      │                                │                              │
+      │  2. Client shows report dialog │                              │
+      │     (category, description)    │                              │
+      │                                │                              │
+      │  3. Optionally: client decrypts│                              │
+      │     message and re-encrypts    │                              │
+      │     to server operator's       │                              │
+      │     public "moderation key"    │                              │
+      │                                │                              │
+      │── POST /reports ──────────────►│                              │
+      │   { category, description,     │                              │
+      │     message_id, evidence_blob }│                              │
+      │                                │── WS: REPORT_CREATED ───────►│
+      │                                │                              │
+      │                                │  4. Operator reviews report  │
+      │                                │     decrypts evidence_blob   │
+      │                                │     with moderation key      │
+      │                                │                              │
+      │                                │◄── PATCH /reports/:id ───────│
+      │                                │    { action: "ban" }         │
+```
+
+**Key design decisions:**
+
+- **Evidence is opt-in.** The reporter chooses whether to include decrypted message content. Reports can be filed with only metadata (message ID, sender, timestamp) and a description.
+- **Moderation key.** The server operator generates a long-term "moderation keypair" during server setup. The public key is distributed to all members. Evidence blobs are encrypted to this key, so only the operator can decrypt them. This prevents any intermediary from reading report content.
+- **No franking in MVP.** In MVP, there is no cryptographic proof that the reported content is authentic — the reporter could fabricate it. The operator must use judgment (cross-reference metadata, patterns, multiple reports). Message franking (v2) will add sender accountability.
+
+### 10.4 Layer 3 — Server-Operator Moderation Tools (MVP)
+
+Server owners (and future: designated moderators via roles) have enforcement powers:
+
+| Action | Scope | Effect | Reversible |
+|--------|-------|--------|------------|
+| **Kick** | Server | User removed from server. Can rejoin with invite. | N/A (one-time) |
+| **Ban** | Server | User removed and cannot rejoin. Optional expiry (temp ban). | Yes (unban) |
+| **Channel mute** | Channel | User cannot send messages in channel for duration. Can still read. | Yes (unmute / expiry) |
+| **Warn** | Server | Logged action, no enforcement. Creates audit trail. | N/A |
+
+**Enforcement mechanics:**
+
+- **Ban check:** On every WebSocket `identify`, the server checks `banned:{server_id}:{user_id}` in Redis. If hit, connection is rejected for that server context. On REST calls to server endpoints, ban is checked via middleware.
+- **Channel mute check:** On every `message_send` to a channel, check `muted:{channel_id}:{user_id}` in Redis. If muted, reject with error code `CHANNEL_MUTED` (client shows UI feedback to the sender).
+- **Kick:** Immediate WebSocket disconnect for that server context + removal from `server_members` table.
+- **Audit log:** Every moderation action is appended to `mod_audit_log` (immutable, append-only). Operators can review their own and others' moderation history.
+
+### 10.5 Layer 4 — Metadata-Based Abuse Detection (MVP)
+
+The server can detect abuse patterns from metadata alone, without accessing message content:
+
+| Signal | Detection Method | Threshold (configurable) | Auto-Action |
+|--------|-----------------|-------------------------|-------------|
+| **Rapid messaging** | Messages per minute per user per channel | > 30 msg/min | Temporary rate limit (1 msg/5s for 10 min) |
+| **Mass DM spam** | New DM channels created per hour | > 20 new DMs/hour | Block new DM creation for 1 hour |
+| **Join spam** | Server joins per hour | > 10 joins/hour | Block new joins for 1 hour |
+| **Report threshold** | Reports received from distinct users per day | > 5 reports/day | Flag for operator review (high severity) |
+| **Coordinated join** | Multiple new accounts joining same server within minutes | > 10 accounts in 5 min with <24h account age | Flag for operator review |
+
+**Implementation:**
+
+- Counters tracked in Redis with sliding window TTLs.
+- Background task (`abuse_detector`) runs every 30 seconds, evaluates thresholds, writes to `abuse_signals` table, and optionally applies auto-actions.
+- Auto-actions are conservative — they rate-limit, never ban. Only operators ban.
+- All auto-actions are logged to `mod_audit_log` with `moderator_id` set to a system sentinel UUID.
+- Server operators configure thresholds and enable/disable auto-actions in config:
+
+```toml
+[moderation]
+enabled = true
+
+[moderation.auto_actions]
+enabled = true
+rapid_messaging_threshold = 30          # messages per minute
+rapid_messaging_cooldown_seconds = 600
+mass_dm_threshold = 20                  # new DMs per hour
+mass_dm_cooldown_seconds = 3600
+join_spam_threshold = 10                # joins per hour per user
+report_alert_threshold = 5             # reports per day to flag
+
+[moderation.reporting]
+# Operator's moderation public key (generated during setup, base64)
+# Used by clients to encrypt report evidence
+operator_moderation_pubkey = ""
+# Maximum reports per user per day (prevent report spam)
+max_reports_per_user_per_day = 20
+```
+
+### 10.6 Legal & Compliance Framework
+
+Since Mercury is self-hosted, legal responsibility sits with the server operator. Mercury provides:
+
+**Shipped with the software:**
+
+- **`OPERATOR_GUIDE.md`** — Plain-language guide explaining the operator's legal obligations including CSAM reporting (US: CyberTipline/NCMEC), EU DSA compliance, and data retention/deletion obligations.
+- **`TOS_TEMPLATE.md`** — Customizable Terms of Service template that operators can adapt for their community. Establishes prohibited conduct, reporting procedures, and the operator's right to take action.
+- **`PRIVACY_TEMPLATE.md`** — Privacy policy template explaining what data the server stores (metadata, encrypted blobs, key bundles) and what it cannot access (plaintext content).
+- **`DISCLAIMER.md`** — Software license disclaimer: Mercury is a tool, the project and its contributors are not service providers and accept no liability for operator misuse or failure to moderate.
+
+**First-run setup wizard (in server admin UI):**
+
+1. Operator must acknowledge they've read the operator guide.
+2. Operator must generate or import a moderation keypair.
+3. Operator must set a Terms of Service URL (or use the template).
+4. Operator must configure an abuse contact email.
+5. These are required before the server accepts user registrations.
+
+**CSAM considerations:**
+
+- Mercury cannot proactively scan for CSAM due to E2E encryption.
+- The operator guide clearly states that if CSAM is reported and confirmed via the reporting system, the operator is legally obligated to file with NCMEC (US) or equivalent authority and preserve evidence.
+- Mercury provides a `--preserve-evidence` flag on the moderation CLI that snapshots the relevant database rows and metadata for a reported user, suitable for law enforcement handoff.
+- Future (v2): Message franking will provide cryptographic proof that a sender produced specific content, strengthening the evidentiary chain.
+
+---
+
+## 11. Security
+
+### 11.1 Server-Side Hardening
 
 - **No plaintext access:** Server never sees unencrypted messages, media content, or private keys.
 - **Input validation:** All inputs validated with strict length/type constraints before touching the database.
@@ -769,14 +1082,14 @@ turn_password = "turnpassword"
 - **CSP:** Content-Security-Policy headers on all responses.
 - **Dependency auditing:** `cargo audit` in CI pipeline.
 
-### 10.2 Authentication Security
+### 11.2 Authentication Security
 
 - **Argon2id:** Memory-hard password hashing resistant to GPU attacks.
 - **JWT rotation:** Short-lived access tokens (60 min) + long-lived refresh tokens (30 days).
 - **Session revocation:** JWT IDs stored in Redis; revocation is immediate.
 - **Device tracking:** Each session is bound to a device ID for multi-device support and selective logout.
 
-### 10.3 Key Management Safety
+### 11.3 Key Management Safety
 
 - Server only ever stores **public** keys.
 - Key upload requires signing by the identity key — prevents unauthorized key replacement.
@@ -784,9 +1097,9 @@ turn_password = "turnpassword"
 
 ---
 
-## 11. Observability
+## 12. Observability
 
-### 11.1 Metrics (Prometheus)
+### 12.1 Metrics (Prometheus)
 
 Expose `/metrics` endpoint:
 
@@ -798,7 +1111,7 @@ Expose `/metrics` endpoint:
 - `mercury_sfu_rooms_active` — gauge
 - `mercury_db_pool_connections` — gauge (active/idle)
 
-### 11.2 Structured Logging
+### 12.2 Structured Logging
 
 All logs via `tracing` with JSON output:
 
@@ -815,7 +1128,7 @@ All logs via `tracing` with JSON output:
 }
 ```
 
-### 11.3 Health Check
+### 12.3 Health Check
 
 `GET /health` — returns `200 OK` with:
 
@@ -831,7 +1144,7 @@ All logs via `tracing` with JSON output:
 
 ---
 
-## 12. Testing Strategy
+## 13. Testing Strategy
 
 | Layer | Approach | Tools |
 |-------|----------|-------|
@@ -845,14 +1158,16 @@ All logs via `tracing` with JSON output:
 
 ---
 
-## 13. Future Considerations
+## 14. Future Considerations
 
 These are **not in MVP** but the architecture should not preclude them:
 
-- **Federation:** ActivityPub-inspired or custom protocol. User IDs are already `user@domain` ready.
+- **Message franking (v2):** Sender commits to plaintext via HMAC included in the encrypted envelope. On report, the server can verify the reporter didn't fabricate the content. See [Facebook's message franking paper](https://eprint.iacr.org/2017/664) for the cryptographic construction. Requires changes to the message encryption format — the `message_blob` will include an additional `frankingTag` and `frankingKey` field.
+- **Designated moderator roles (v2):** Extend RBAC so the server owner can appoint moderators with scoped permissions (e.g., can mute/kick but not ban). Requires the roles & permissions system below.
+- **Moderator-specific moderation key (v2):** Instead of a single server-wide moderation keypair, designated moderators each have their own. Report evidence is encrypted to the assigned moderator's key, enabling delegation without sharing a single secret.
+- **Federation:** ActivityPub-inspired or custom protocol. User IDs are already `user@domain` ready. Moderation federation (shared ban lists, cross-server reports) is a separate design challenge.
 - **Roles & permissions:** RBAC stored in a `roles` + `role_permissions` table. Channel-level overrides.
 - **Screen sharing:** Additional media track type through existing SFU infrastructure.
 - **File attachments:** Encrypted file upload to object storage (S3/MinIO), metadata in DB.
 - **Searchable encryption:** Client-side index generation, encrypted search tokens stored server-side.
 - **Mobile push notifications:** FCM/APNs integration with encrypted notification payloads.
-- **Audit logging:** Immutable append-only log of admin/moderation actions.

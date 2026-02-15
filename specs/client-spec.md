@@ -31,6 +31,11 @@ The Mercury client is a cross-platform desktop application built with Electron, 
 | Video calls (channel + DM, E2E encrypted) | **MVP** |
 | Presence & typing indicators | **MVP** |
 | Server-configurable media quality | **MVP** |
+| Block/mute users, DM privacy controls | **MVP** |
+| Content reporting with optional evidence | **MVP** |
+| Moderation dashboard (server owner) | **MVP** |
+| Abuse signal alerts (server owner) | **MVP** |
+| Message franking (cryptographic proof) | **v2** |
 | Screen sharing | Future |
 | File attachments | Future |
 | Message search | Future |
@@ -155,6 +160,7 @@ mercury-client/
 │   │   │   ├── double-ratchet.ts      # Double Ratchet implementation
 │   │   │   ├── sender-keys.ts         # Group/channel sender keys
 │   │   │   ├── media-keys.ts          # Media E2E frame encryption keys
+│   │   │   ├── report-crypto.ts      # Encrypt report evidence to operator moderation key
 │   │   │   └── utils.ts              # Key serialization, random bytes
 │   │   ├── store/
 │   │   │   ├── keystore.ts            # safeStorage-encrypted key persistence
@@ -205,10 +211,21 @@ mercury-client/
 │   │   │   ├── dm/
 │   │   │   │   ├── DmList.tsx
 │   │   │   │   └── DmConversation.tsx
+│   │   │   ├── moderation/
+│   │   │   │   ├── ReportDialog.tsx       # Report message/user modal
+│   │   │   │   ├── BlockConfirmDialog.tsx # Block user confirmation
+│   │   │   │   ├── ModerationDashboard.tsx # Server owner: reports, signals, bans
+│   │   │   │   ├── ReportQueue.tsx        # Pending reports list
+│   │   │   │   ├── ReportDetail.tsx       # Single report review + action
+│   │   │   │   ├── AbuseSignalList.tsx    # Automated abuse flags
+│   │   │   │   ├── BanList.tsx            # Manage server bans
+│   │   │   │   ├── AuditLog.tsx           # Moderation action history
+│   │   │   │   └── UserCard.tsx           # User info popover (block, mute, report actions)
 │   │   │   └── settings/
 │   │   │       ├── SettingsPage.tsx
 │   │   │       ├── AudioSettings.tsx
 │   │   │       ├── VideoSettings.tsx
+│   │   │       ├── PrivacySettings.tsx    # Block list, DM policy
 │   │   │       └── AccountSettings.tsx
 │   │   ├── hooks/
 │   │   │   ├── useWebSocket.ts        # WebSocket connection + events
@@ -216,6 +233,7 @@ mercury-client/
 │   │   │   ├── useMediaDevices.ts     # Camera/mic enumeration + selection
 │   │   │   ├── useCrypto.ts          # IPC bridge to crypto engine
 │   │   │   ├── usePresence.ts        # User presence tracking
+│   │   │   ├── useModeration.ts     # Block, mute, report actions
 │   │   │   └── useNotifications.ts   # Desktop notification handling
 │   │   ├── stores/
 │   │   │   ├── authStore.ts          # Auth state, tokens
@@ -223,6 +241,7 @@ mercury-client/
 │   │   │   ├── messageStore.ts       # Decrypted messages (in-memory only)
 │   │   │   ├── callStore.ts          # Active call state
 │   │   │   ├── presenceStore.ts      # Online/offline/idle status
+│   │   │   ├── moderationStore.ts   # Blocks, reports, bans, abuse signals
 │   │   │   └── settingsStore.ts      # User preferences
 │   │   ├── services/
 │   │   │   ├── api.ts                # REST API client (fetch wrapper)
@@ -235,12 +254,14 @@ mercury-client/
 │   │   │   ├── RegisterPage.tsx
 │   │   │   ├── ServerPage.tsx        # Main server view (channels + chat)
 │   │   │   ├── DmPage.tsx            # DM view
+│   │   │   ├── ModerationPage.tsx   # Server moderation dashboard (owner only)
 │   │   │   └── SettingsPage.tsx
 │   │   ├── types/
 │   │   │   ├── api.ts                # API request/response types
 │   │   │   ├── ws.ts                 # WebSocket event types
 │   │   │   ├── models.ts             # Domain models
-│   │   │   └── crypto.ts             # Crypto-related types
+│   │   │   ├── crypto.ts             # Crypto-related types
+│   │   │   └── moderation.ts         # Report, ban, abuse signal types
 │   │   └── utils/
 │   │       ├── formatters.ts         # Date, time, file size formatting
 │   │       ├── validators.ts         # Input validation
@@ -611,6 +632,7 @@ The client:
 | DM view | `/dm/:dmChannelId` | Direct message conversation |
 | Video call (expanded) | `/call/:roomId` | Full-screen video grid |
 | Settings | `/settings/:section` | User and app preferences |
+| Moderation | `/servers/:serverId/moderation` | Reports, bans, abuse signals, audit log (owner only) |
 
 ### 7.3 Component Design Decisions
 
@@ -705,6 +727,16 @@ export interface MercuryAPI {
     retrieve(key: string): Promise<string | null>;
     remove(key: string): Promise<void>;
   };
+
+  // Moderation (report evidence encryption)
+  moderation: {
+    // Encrypt decrypted message content to the server operator's moderation public key
+    // so only the operator can read it. Used when submitting reports with evidence.
+    encryptEvidence(
+      plaintext: string,
+      operatorModerationPubKey: string  // base64, fetched from server config
+    ): Promise<string>;  // base64 encrypted blob
+  };
 }
 
 // Exposed on window.mercuryAPI
@@ -770,6 +802,39 @@ interface CallState {
 interface PresenceState {
   presences: Map<string, UserPresence>;    // userId → presence
   updatePresence(userId: string, status: string): void;
+}
+
+// moderationStore — moderation state (server owners + user self-service)
+interface ModerationState {
+  // User-level
+  blockedUserIds: Set<string>;
+  dmPolicy: 'anyone' | 'mutual_servers' | 'nobody';
+  blockUser(userId: string): Promise<void>;
+  unblockUser(userId: string): Promise<void>;
+  setDmPolicy(policy: 'anyone' | 'mutual_servers' | 'nobody'): Promise<void>;
+
+  // Reporting
+  submitReport(report: {
+    reportedUserId: string;
+    messageId?: string;
+    channelId?: string;
+    category: 'spam' | 'harassment' | 'illegal' | 'csam' | 'other';
+    description: string;
+    includeEvidence: boolean;     // If true, decrypt + re-encrypt to operator key
+  }): Promise<void>;
+
+  // Server moderation (owner only)
+  reports: Map<string, Report>;           // reportId → Report
+  abuseSignals: AbuseSignal[];
+  bans: Map<string, Ban>;                // serverId:userId → Ban
+  auditLog: AuditLogEntry[];
+  fetchReports(serverId: string): Promise<void>;
+  reviewReport(reportId: string, action: string): Promise<void>;
+  banUser(serverId: string, userId: string, reason: string, expiresAt?: Date): Promise<void>;
+  unbanUser(serverId: string, userId: string): Promise<void>;
+  kickUser(serverId: string, userId: string, reason: string): Promise<void>;
+  muteInChannel(channelId: string, userId: string, duration?: number): Promise<void>;
+  fetchAuditLog(serverId: string): Promise<void>;
 }
 ```
 
@@ -897,6 +962,8 @@ publish:
 
 These are **not in MVP** but the architecture should accommodate:
 
+- **Message franking (v2):** Extend the encryption envelope to include a franking tag (HMAC commitment to plaintext). When a user reports a message, the franking tag + key are included so the server can cryptographically verify the report is authentic. Requires changes to `double-ratchet.ts` and `sender-keys.ts` to produce the franking commitment alongside the ciphertext.
+- **Moderator role UI (v2):** When the server supports designated moderator roles, the client needs scoped moderation UI — moderators see the report queue and can act within their permissions, but don't see the full admin dashboard.
 - **Multi-device sync:** Each device has its own identity key. Messages encrypted per-device. Session management across devices via a linked-devices protocol.
 - **Mobile apps:** Consider extracting the crypto engine into a shared Rust library (compiled via wasm-pack for Electron, native for mobile) to avoid reimplementing Signal Protocol.
 - **Plugin system:** Sandboxed renderer-side plugins for custom themes, bots, integrations.
