@@ -1,0 +1,12 @@
+[package]
+name = "mercury-db"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mercury-core.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

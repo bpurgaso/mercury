@@ -1,0 +1,42 @@
+[package]
+name = "mercury-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mercury-server"
+path = "src/main.rs"
+
+[dependencies]
+mercury-core.workspace = true
+mercury-api.workspace = true
+
+# Allocator
+tikv-jemallocator = "0.6"
+
+# Async runtime
+tokio.workspace = true
+
+# Web framework
+axum.workspace = true
+
+# TLS
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Config
+toml.workspace = true
+serde.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Hyper for low-level TLS serving
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
+tower = { version = "0.5", features = ["util"] }

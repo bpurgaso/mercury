@@ -1,0 +1,11 @@
+[package]
+name = "mercury-moderation"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mercury-core.workspace = true
+mercury-db.workspace = true
+serde.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

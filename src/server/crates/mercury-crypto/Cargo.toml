@@ -1,0 +1,11 @@
+[package]
+name = "mercury-crypto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mercury-core.workspace = true
+ring.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

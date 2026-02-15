@@ -1,0 +1,16 @@
+[server]
+host = "0.0.0.0"
+port = 8443
+
+[database]
+url = "postgres://mercury:mercury@localhost:5432/mercury"
+
+[redis]
+url = "redis://localhost:6379"
+
+[auth]
+jwt_secret = "dev-secret-change-in-production"
+
+[tls]
+cert_path = "./certs/cert.pem"
+key_path = "./certs/key.pem"

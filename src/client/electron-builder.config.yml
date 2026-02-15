@@ -1,0 +1,39 @@
+appId: com.mercury.client
+productName: Mercury
+directories:
+  output: release
+  buildResources: resources
+
+files:
+  - dist/**/*
+  - package.json
+
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.social-networking
+  hardenedRuntime: true
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+
+win:
+  target:
+    - nsis
+    - portable
+
+linux:
+  target:
+    - AppImage
+    - deb
+    - rpm
+    - flatpak
+  category: Network;InstantMessaging
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+publish:
+  provider: generic
+  url: https://updates.example.com
