@@ -261,6 +261,8 @@ docker compose exec redis redis-cli ping       # Should say "PONG"
 
 ### Run Database Migrations
 
+> **Bootstrapping a new repo?** If the `src/server/migrations/` directory doesn't exist yet, skip this step. Migration files are created in Phase 2 of `IMPLEMENTATION_PLAN.md`. Come back here once they're written.
+
 ```bash
 cd src/server
 
@@ -280,6 +282,8 @@ docker compose exec postgres psql -U mercury -d mercury -c "\dt"
 ```
 
 ### Install Client Dependencies
+
+> **Bootstrapping a new repo?** If `src/client/package.json` doesn't exist yet, skip this step. The client scaffold is created in Phase 1 of `IMPLEMENTATION_PLAN.md`.
 
 ```bash
 cd src/client
