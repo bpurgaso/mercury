@@ -700,20 +700,38 @@ interface MediaEncryptor {
   // Cleanup
   destroy(): void;
 }
+```
 
-// Implementation sketch:
-function setupSenderTransform(sender: RTCRtpSender, key: CryptoKey) {
+#### Key Rotation Epoch Tagging
+
+Because WebRTC media travels over UDP, packets arrive out of order during key rotation. Without epoch tagging, the receiver may try to decrypt a frame with the wrong key, producing severe audio artifacts (static, robotic screeching) or frozen video.
+
+**Frame layout:** Each encrypted frame carries an unencrypted `key_epoch` byte so the receiver knows which key to use:
+
+```
+┌──────────────────┬──────────┬──────────────────────────┐
+│  key_epoch (1B)  │  IV (12B) │  AES-GCM ciphertext     │
+│  (unencrypted)   │           │  (encrypted frame data)  │
+└──────────────────┴──────────┴──────────────────────────┘
+```
+
+```typescript
+// Sender transform: prepend key_epoch to every frame
+function setupSenderTransform(sender: RTCRtpSender, keyRing: MediaKeyRing) {
   const senderStreams = sender.createEncodedStreams();
   const transformStream = new TransformStream({
     transform(frame: RTCEncodedVideoFrame | RTCEncodedAudioFrame, controller) {
-      // 1. Read frame data
       const data = new Uint8Array(frame.data);
-      // 2. Generate IV (frame counter + SSRC)
       const iv = generateFrameIV(frame);
-      // 3. Encrypt with AES-GCM using shared room key
-      const encrypted = aesGcmEncrypt(key, iv, data);
-      // 4. Replace frame data
-      frame.data = encrypted.buffer;
+      const encrypted = aesGcmEncrypt(keyRing.currentKey, iv, data);
+
+      // Prepend 1-byte key_epoch (unencrypted, visible to SFU but useless without key)
+      const output = new Uint8Array(1 + iv.length + encrypted.length);
+      output[0] = keyRing.currentEpoch;       // uint8, wraps at 255
+      output.set(iv, 1);
+      output.set(encrypted, 1 + iv.length);
+
+      frame.data = output.buffer;
       controller.enqueue(frame);
     }
   });
@@ -721,14 +739,68 @@ function setupSenderTransform(sender: RTCRtpSender, key: CryptoKey) {
     .pipeThrough(transformStream)
     .pipeTo(senderStreams.writable);
 }
+
+// Receiver transform: read key_epoch to select correct decryption key
+function setupReceiverTransform(receiver: RTCRtpReceiver, keyRing: MediaKeyRing) {
+  const receiverStreams = receiver.createEncodedStreams();
+  const transformStream = new TransformStream({
+    transform(frame: RTCEncodedVideoFrame | RTCEncodedAudioFrame, controller) {
+      const data = new Uint8Array(frame.data);
+      const epoch = data[0];
+      const iv = data.slice(1, 13);
+      const ciphertext = data.slice(13);
+
+      const key = keyRing.getKeyForEpoch(epoch);
+      if (!key) {
+        // New key not yet received via signaling — drop frame silently.
+        // A few dropped frames (< 100ms audio) are imperceptible;
+        // garbled decryption output is not.
+        return;
+      }
+
+      const decrypted = aesGcmDecrypt(key, iv, ciphertext);
+      frame.data = decrypted.buffer;
+      controller.enqueue(frame);
+    }
+  });
+  receiverStreams.readable
+    .pipeThrough(transformStream)
+    .pipeTo(receiverStreams.writable);
+}
+
+// Key ring: holds current + previous keys for graceful rotation
+class MediaKeyRing {
+  private keys = new Map<number, { key: CryptoKey; expiresAt: number }>();
+  currentEpoch: number = 0;
+  currentKey: CryptoKey;
+
+  rotateKey(newKey: CryptoKey): void {
+    const oldEpoch = this.currentEpoch;
+    this.currentEpoch = (this.currentEpoch + 1) % 256;
+    this.currentKey = newKey;
+    this.keys.set(this.currentEpoch, { key: newKey, expiresAt: Infinity });
+
+    // Retain old key for 5 seconds to decrypt late-arriving UDP packets
+    if (this.keys.has(oldEpoch)) {
+      this.keys.get(oldEpoch)!.expiresAt = Date.now() + 5000;
+      setTimeout(() => this.keys.delete(oldEpoch), 5000);
+    }
+  }
+
+  getKeyForEpoch(epoch: number): CryptoKey | null {
+    const entry = this.keys.get(epoch);
+    if (!entry || Date.now() > entry.expiresAt) return null;
+    return entry.key;
+  }
+}
 ```
 
 #### Key Distribution for Calls
 
-1. Call initiator generates a random 256-bit symmetric key.
+1. Call initiator generates a random 256-bit symmetric key and sets `key_epoch = 0`.
 2. Key is distributed to each participant's devices via their existing encrypted sessions (Double Ratchet per-device fan-out).
-3. When a participant joins or leaves, a new key is generated and distributed.
-4. Old keys are retained briefly (2 seconds) for in-flight frame decryption during rotation.
+3. When a participant joins or leaves, a new key is generated, `key_epoch` is incremented, and the new key + epoch are distributed via signaling.
+4. Old keys are retained for **5 seconds** for in-flight frame decryption during rotation, then securely wiped from memory.
 
 ---
 

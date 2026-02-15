@@ -1055,16 +1055,36 @@ Updates are debounced (max once per 5 minutes) to avoid excessive uploads.
 - **Key distribution:** The call initiator generates the room key and distributes it to each participant's devices via their existing encrypted sessions (Double Ratchet).
 - **Key rotation:** Per-call symmetric key is rotated when participants join or leave.
 
+#### Key Rotation Epoch Tagging
+
+Because WebRTC media travels over UDP, packets arrive out of order. During key rotation, the receiver may receive frames encrypted with the **new** key before the WebSocket signaling channel has delivered that new key. Attempting decryption with the wrong key produces audio static, robotic screeching, or frozen video.
+
+**Solution:** Each encrypted frame carries an unencrypted `key_epoch` tag in the frame header. The SFU can see this tag (it's outside the encrypted payload) but cannot use it to derive the key.
+
+```
+Encrypted Frame Layout (Insertable Streams payload):
+┌──────────────────┬──────────┬──────────────────────────┐
+│  key_epoch (1B)  │  IV (12B) │  AES-GCM ciphertext     │
+│  (unencrypted)   │           │  (encrypted frame data)  │
+└──────────────────┴──────────┴──────────────────────────┘
+```
+
+- **Sender:** Prepends the current `key_epoch` (uint8, wraps at 255) to every frame before encryption. Increments epoch when rotating to a new key.
+- **Receiver:** Reads the `key_epoch` byte, looks up the corresponding key in a local key ring (current + previous keys). Decrypts with the matching key.
+- **Key retention:** Clients retain the previous key for **5 seconds** after rotation to handle late-arriving UDP packets from the prior epoch. After 5 seconds, the old key is securely wiped from memory.
+- **Graceful degradation:** If a frame arrives with an unknown `key_epoch` (new key not yet received via signaling), the frame is **dropped silently** rather than producing audio artifacts. A few dropped frames (< 100ms of audio) are imperceptible; garbled decryption output is not.
+
 ```
 Sender Client                   SFU                    Receiver Client
      │                           │                           │
-     │── Encrypt frame ──►       │                           │
-     │   (E2E key)               │                           │
+     │── [epoch=2] + Encrypt ──►│                           │
+     │   (new key)               │                           │
      │── DTLS-SRTP ─────────────►│                           │
      │                           │── DTLS-SRTP ─────────────►│
-     │                           │   (still E2E encrypted)   │
-     │                           │                     ◄── Decrypt frame
-     │                           │                         (E2E key)
+     │                           │   (epoch visible,         │
+     │                           │    payload opaque)        │
+     │                           │                   Read epoch ──► select key
+     │                           │                   Decrypt with key[2]
 ```
 
 ---
