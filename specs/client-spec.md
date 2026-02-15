@@ -14,7 +14,7 @@ The Mercury client is a cross-platform desktop application built with Electron, 
 
 ### 1.1 Design Principles
 
-- **Client-side encryption is law:** All encryption/decryption happens locally. Private keys never leave the device.
+- **Client-side encryption where it matters:** DMs and private channels are fully E2E encrypted — all crypto happens locally, private keys never leave the device. Standard community channels use server-side encryption for full history and searchability. The encryption mode is visually clear to users at all times.
 - **Offline-capable crypto:** Key generation, ratchet state, and session management work offline. Messages queue for delivery.
 - **Native feel:** Despite being Electron, the app should feel responsive with smooth animations, native OS integrations (notifications, tray icon, system theme), and minimal memory footprint.
 - **Multi-device ready (future):** Data model and key management support multiple devices per user from day one, even though MVP targets single-device.
@@ -33,6 +33,7 @@ The Mercury client is a cross-platform desktop application built with Electron, 
 | Server-configurable media quality | **MVP** |
 | Account recovery via recovery key | **MVP** |
 | Per-device identity keys (single device MVP) | **MVP** |
+| Tiered channel encryption (standard / private E2E / DM E2E) | **MVP** |
 | Block/mute users, DM privacy controls | **MVP** |
 | Content reporting with optional evidence | **MVP** |
 | Moderation dashboard (server owner) | **MVP** |
@@ -161,7 +162,6 @@ mercury-client/
 │   │   │   ├── x3dh.ts               # X3DH key agreement (per-device)
 │   │   │   ├── double-ratchet.ts      # Double Ratchet implementation
 │   │   │   ├── sender-keys.ts         # Group/channel sender keys (≤100 members)
-│   │   │   ├── mls-client.ts          # MLS group operations (>100 members, WASM bridge)
 │   │   │   ├── media-keys.ts          # Media E2E frame encryption keys
 │   │   │   ├── report-crypto.ts       # Encrypt report evidence to operator moderation key
 │   │   │   ├── recovery.ts            # Recovery key generation, backup encrypt/decrypt
@@ -203,7 +203,8 @@ mercury-client/
 │   │   │   │   ├── VoicePanel.tsx     # Connected voice channel panel
 │   │   │   │   ├── VoiceControls.tsx  # Mute, deafen, disconnect
 │   │   │   │   ├── ParticipantTile.tsx # Participant audio/video tile
-│   │   │   │   └── CallOverlay.tsx    # Incoming/outgoing call overlay
+│   │   │   │   ├── CallOverlay.tsx    # Incoming/outgoing call overlay
+│   │   │   │   └── ConnectivityDiag.tsx # ICE diagnostic panel (STUN/TURN status)
 │   │   │   ├── video/
 │   │   │   │   ├── VideoGrid.tsx      # Video call grid layout
 │   │   │   │   ├── VideoTile.tsx      # Single participant video
@@ -221,11 +222,17 @@ mercury-client/
 │   │   │   │   ├── BlockConfirmDialog.tsx # Block user confirmation
 │   │   │   │   ├── ModerationDashboard.tsx # Server owner: reports, signals, bans
 │   │   │   │   ├── ReportQueue.tsx        # Pending reports list
-│   │   │   │   ├── ReportDetail.tsx       # Single report review + action
+│   │   │   │   ├── ReportDetail.tsx       # Single report review + action + framing warning
+│   │   │   │   ├── UnverifiedReportBanner.tsx # "⚠️ Cannot be cryptographically verified" warning
+│   │   │   │   ├── MetadataCorroboration.tsx  # Accused user's metadata context panel
 │   │   │   │   ├── AbuseSignalList.tsx    # Automated abuse flags
 │   │   │   │   ├── BanList.tsx            # Manage server bans
 │   │   │   │   ├── AuditLog.tsx           # Moderation action history
 │   │   │   │   └── UserCard.tsx           # User info popover (block, mute, report actions)
+│   │   │   ├── channel/
+│   │   │   │   ├── ChannelCreateModal.tsx  # Channel creation with encryption mode choice
+│   │   │   │   ├── EncryptionBadge.tsx    # 🔒/🛡️ icon with tooltip per encryption mode
+│   │   │   │   └── E2EJoinNotice.tsx      # "Messages before you joined are not visible"
 │   │   │   └── settings/
 │   │   │       ├── SettingsPage.tsx
 │   │   │       ├── AudioSettings.tsx
@@ -243,7 +250,7 @@ mercury-client/
 │   │   ├── stores/
 │   │   │   ├── authStore.ts          # Auth state, tokens
 │   │   │   ├── serverStore.ts        # Servers, channels, members
-│   │   │   ├── messageStore.ts       # Decrypted messages (in-memory only)
+│   │   │   ├── messageStore.ts       # Messages in-memory (plaintext for standard, decrypted for E2E)
 │   │   │   ├── callStore.ts          # Active call state
 │   │   │   ├── presenceStore.ts      # Online/offline/idle status
 │   │   │   ├── moderationStore.ts   # Blocks, reports, bans, abuse signals
@@ -315,8 +322,7 @@ Per-Device:
               ├── Signed Pre-Key (X25519, rotated weekly)
               ├── One-Time Pre-Keys (X25519, batch of 100)
               ├── Double Ratchet session states (per recipient device)
-              ├── Sender Keys (for channels ≤100 members)
-              └── MLS group state (for channels >100 members)
+              ├── Sender Keys (for private channels ≤100 members)
 ```
 
 ### 4.2 Key Generation & Registration Flow
@@ -369,9 +375,6 @@ interface KeyStore {
   getSenderKey(channelId: string, userId: string, deviceId: string): Promise<SenderKey | null>;
   storeSenderKey(channelId: string, userId: string, deviceId: string, key: SenderKey): Promise<void>;
 
-  // MLS state (group channels >100 members)
-  getMlsGroupState(channelId: string): Promise<MlsGroupState | null>;
-  storeMlsGroupState(channelId: string, state: MlsGroupState): Promise<void>;
 
   // Media keys
   getMediaKey(roomId: string): Promise<Uint8Array | null>;
@@ -402,8 +405,7 @@ Recovery Key (24 words → 256-bit entropy)
          masterVerifyKey,        // private half
          deviceIdentityKey,      // private half
          sessions,               // all Double Ratchet states
-         senderKeys,             // all channel sender keys
-         mlsGroupStates          // all MLS leaf secrets
+         senderKeys              // all private channel sender keys
        }) ──► encrypted_backup
     
     Upload encrypted_backup + salt to server (PUT /users/me/key-backup)
@@ -507,37 +509,39 @@ User types message
 
 **Device list verification:** When fetching a user's device list for the first time, the client stores the master verify key (trust-on-first-use). On subsequent fetches, if the master verify key changes, the client shows a **safety number changed** warning — the user must manually approve the new identity.
 
-### 4.6 Channel (Group) Encryption — Tiered Model
+### 4.6 Channel Encryption — Tiered Model
 
-The client determines which protocol to use based on the channel's member count:
+Mercury uses a per-channel encryption mode chosen at creation time. The client handles each mode differently:
 
-#### Sender Keys (channels ≤ 100 members)
+#### Standard Channels (`standard`)
 
-1. When joining a channel, generate a `SenderKey` (symmetric + chain key).
+- Messages are sent as plaintext over the WebSocket (TLS-encrypted in transit).
+- The server stores plaintext in the `content` column — full history, searchable, moderatable.
+- New joiners see complete message history.
+- No client-side encryption/decryption required beyond TLS.
+
+#### Private E2E Channels (`private`, Sender Keys, ≤ 100 members)
+
+1. When joining a private channel, generate a `SenderKey` (symmetric + chain key).
 2. Distribute the SenderKey to all current members encrypted via pairwise Double Ratchet sessions (per-device fan-out).
 3. Messages are encrypted once with the sender's SenderKey chain (AES-256-GCM).
 4. On member leave/kick: all remaining members rotate their SenderKeys.
-5. On member join: existing members share current SenderKeys with new member.
+5. On member join: existing members share current SenderKeys with new member. **New joiner cannot see messages from before they joined.**
+6. Hard cap of 100 members. If the channel is full, the server rejects additional joins.
 
-#### MLS (channels > 100 members)
+#### E2E DMs (`e2e_dm`, Double Ratchet)
 
-Uses a client-side MLS library (e.g., `@nicolo-ribaudo/mls` or a compiled WASM build of `openmls`):
+- Full per-device Double Ratchet as described in §4.5. Always E2E.
 
-1. **Join:** Client receives an MLS `Welcome` message (fetched via `GET /channels/:id/mls/welcome`), processes it to derive the group secret and ratchet tree state.
-2. **Send:** Encrypt message with current epoch key (AES-256-GCM). Single encryption regardless of group size.
-3. **Receive:** Decrypt with epoch key. Process any `Commit` messages to advance epoch.
-4. **Member change:** Client processes MLS `Commit` messages received via WebSocket (`MLS_COMMIT` event). Cost: O(log n) tree update.
-5. **Key update:** Periodically (every 24h or on app restart), update own leaf in the tree for post-compromise security. Submit via `POST /channels/:id/mls/commit`.
+#### UI Requirements
 
-**State storage:** MLS group state (leaf secret, ratchet tree cache, pending proposals) is stored in the local encrypted SQLite database and included in backup blobs.
+The client must make encryption modes visually clear:
 
-#### Protocol Transitions
-
-When a channel crosses the 100-member threshold, the server sends a `CHANNEL_CRYPTO_UPGRADE` WebSocket event. The client:
-1. Joins the new MLS group (processes the Welcome message).
-2. Continues accepting Sender Key messages for a 5-minute grace period (to drain in-flight messages).
-3. Switches to sending via MLS after confirming MLS group membership.
-4. Discards old Sender Keys after the grace period.
+- **Standard channels:** No special indicator. Normal channel appearance.
+- **Private E2E channels:** 🔒 lock icon next to channel name. Tooltip explains E2E encryption and the history limitation.
+- **E2E DMs:** 🛡️ shield icon next to conversation name.
+- **Channel creation flow:** When creating a channel, show a clear choice between "Community Channel" (standard — full history, searchable) and "Private Channel" (E2E — limited history, 100 member cap). Explain tradeoffs in plain language. The choice is permanent.
+- **New joiner notice:** When a user joins a private E2E channel, display a system message: "Messages in this channel are end-to-end encrypted. You can only see messages sent after you joined."
 
 ### 4.7 Media E2E Encryption
 
@@ -803,13 +807,15 @@ The client:
 | Private keys (identity, pre-keys) | SQLite (`keys.db`) | Yes (safeStorage) | Permanent |
 | Session/ratchet state | SQLite (`sessions.db`) | Yes (safeStorage) | Permanent |
 | Auth tokens (JWT, refresh) | Electron safeStorage | Yes (OS-level) | Until logout |
-| Decrypted messages | In-memory (Zustand) | N/A (RAM only) | Session only |
+| E2E messages (decrypted) | In-memory (Zustand) | N/A (RAM only) | Session only |
+| Standard channel messages | In-memory (Zustand) | N/A (RAM only) | Session only |
 | User preferences | `electron-store` (JSON) | No (non-sensitive) | Permanent |
 | App cache (avatars, etc.) | Electron cache dir | No | Clearable |
 
 ### 8.2 Security Constraints
 
-- **No plaintext messages on disk.** Decrypted messages exist only in renderer memory. When the app closes, they're gone. Message history is re-fetched and re-decrypted on next launch.
+- **No E2E plaintext on disk.** Decrypted messages from private channels and DMs exist only in renderer memory. When the app closes, they're gone. History is re-fetched from the server and re-decrypted on next launch.
+- **Standard channel messages are also in-memory only** in MVP, but since the server holds the plaintext, they could be cached to disk in a future version for offline access (non-sensitive — the server already has them).
 - **Key material isolation.** All private keys in the main process only, accessed via IPC.
 - **Screen capture protection.** Set `setContentProtection(true)` on BrowserWindow to prevent screen capture by other apps (OS-level, best-effort).
 
@@ -839,14 +845,10 @@ export interface MercuryAPI {
     encryptMessage(recipientId: string, plaintext: string): Promise<PerDeviceEnvelope[]>;
     decryptMessage(senderDeviceId: string, envelope: EncryptedEnvelope): Promise<string>;
 
-    // Group encryption (auto-selects Sender Keys or MLS based on channel)
+    // Group encryption (Sender Keys for private E2E channels)
     encryptGroupMessage(channelId: string, plaintext: string): Promise<EncryptedGroupEnvelope>;
     decryptGroupMessage(channelId: string, senderDeviceId: string, envelope: EncryptedGroupEnvelope): Promise<string>;
 
-    // MLS operations (channels >100 members)
-    processMlsWelcome(channelId: string, welcome: Uint8Array): Promise<void>;
-    processMlsCommit(channelId: string, commit: Uint8Array): Promise<void>;
-    createMlsKeyUpdate(channelId: string): Promise<Uint8Array>;  // Periodic leaf update
 
     // Session management
     initializeSession(userId: string, deviceId: string, keyBundle: PublicKeyBundle): Promise<void>;
@@ -951,12 +953,18 @@ interface ServerState {
   joinServer(inviteCode: string): Promise<void>;
 }
 
-// messageStore — decrypted messages (in-memory only)
+// messageStore — messages (in-memory only, regardless of encryption mode)
 interface MessageState {
-  messages: Map<string, Message[]>;       // channelId → messages (decrypted)
+  messages: Map<string, Message[]>;       // channelId → messages (plaintext for standard, decrypted for E2E)
   sendMessage(channelId: string, content: string): Promise<void>;
+  // For standard channels: sends plaintext via WS, server stores it
+  // For private channels: encrypts via IPC (Sender Keys), sends ciphertext
+  // For DMs: encrypts via IPC (Double Ratchet per-device), sends ciphertext
   receiveMessage(event: MessageCreateEvent): Promise<void>;
   fetchHistory(channelId: string, before?: string): Promise<void>;
+  // Standard channels: server returns plaintext, displayed directly
+  // E2E channels: server returns ciphertext blobs, decrypted via IPC before display
+  // E2E channels: history only available from user's join point forward
 }
 
 // callStore — active call state
@@ -1142,7 +1150,9 @@ These are **not in MVP** but the architecture should accommodate:
 - **Social recovery:** Alternative to recovery key. Split the recovery secret into k-of-n shares (Shamir's Secret Sharing) distributed to trusted contacts. Requires a share distribution ceremony UI and a recovery ceremony where k contacts provide their shares.
 - **Message franking (v2):** Extend the encryption envelope to include a franking tag (HMAC commitment to plaintext). When a user reports a message, the franking tag + key are included so the server can cryptographically verify the report is authentic. Requires changes to `double-ratchet.ts` and `sender-keys.ts` to produce the franking commitment alongside the ciphertext.
 - **Moderator role UI (v2):** When the server supports designated moderator roles, the client needs scoped moderation UI — moderators see the report queue and can act within their permissions, but don't see the full admin dashboard.
-- **Mobile apps:** Consider extracting the crypto engine into a shared Rust library (compiled via wasm-pack for Electron, native for mobile via FFI) to avoid reimplementing the Signal Protocol and MLS stack. The per-device identity model already supports this — each mobile device gets its own identity key.
+- **MLS for large private channels:** If demand exists for E2E channels larger than 100 members, implement MLS (RFC 9420) client-side via WASM build of `openmls`. Adds a new `mls-client.ts` module. The 100-member Sender Key cap remains; MLS channels are a distinct encryption mode.
+- **Mobile apps:** Extract the crypto engine into a shared Rust library (compiled via wasm-pack for Electron, native for mobile via FFI). Per-device identity model already supports this — each mobile device gets its own device identity key. Push notifications for standard channels can include message content; E2E channel/DM notifications are metadata-only ("New message from Alice") unless a Notification Service Extension (iOS) or background service (Android) decrypts the preview.
+- **Server-side search (standard channels):** Standard channels store plaintext, so full-text search can be implemented server-side. E2E channels require client-side search (either local indexing or searchable encryption — much harder).
 - **Plugin system:** Sandboxed renderer-side plugins for custom themes, bots, integrations.
 - **Offline message queue:** Queue encrypted messages locally when disconnected; send on reconnect. Requires careful handling of ratchet state for queued messages.
 - **Rich embeds/markdown:** Render markdown in messages, URL preview embeds (fetched client-side to preserve privacy).

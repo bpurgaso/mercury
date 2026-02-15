@@ -14,7 +14,7 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 
 ### 1.1 Design Principles
 
-- **Zero-trust architecture:** The server never has access to plaintext message content. All E2E encryption keys are managed client-side.
+- **Tiered trust architecture:** DMs and private channels use full E2E encryption — the server never has access to their plaintext content. Standard community channels use server-side encryption (TLS + at-rest) to enable full history, search, and moderation. Encryption mode is per-channel, chosen at creation, and immutable.
 - **Self-hosted first:** Single `docker compose up` deployment with sane defaults and minimal configuration.
 - **Configurable media quality:** Server operators can set bandwidth/quality limits for audio and video to match their infrastructure.
 - **Federation-ready:** MVP is standalone, but all internal APIs and data models should be designed with future server-to-server federation in mind. Use globally unique identifiers (e.g., `user@server.domain`) even in MVP.
@@ -33,7 +33,7 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 | Configurable audio/video quality limits | **MVP** |
 | Account recovery via recovery key | **MVP** |
 | Per-device identity keys (single device MVP) | **MVP** |
-| Tiered group encryption (Sender Keys + MLS) | **MVP** |
+| Tiered channel encryption (standard / private E2E / DM E2E) | **MVP** |
 | Bundled TURN server (coturn) | **MVP** |
 | User-level controls (block, mute, restrict DMs) | **MVP** |
 | Server-operator moderation (ban, kick, channel mute) | **MVP** |
@@ -67,7 +67,6 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 | Signaling | **WebSocket (Axum)** | WebRTC signaling, real-time events, presence |
 | Authentication | **Argon2id** (passwords) + **JWT** (sessions) | Argon2id is current best practice for password hashing; JWT for stateless auth with Redis-backed revocation |
 | E2E Key Exchange | **X3DH + Double Ratchet** (server facilitates key bundles only) | Signal Protocol model — server stores public key bundles, never sees plaintext |
-| Group E2E (large channels) | **OpenMLS** (`openmls` crate) | IETF MLS (RFC 9420) for scalable group key agreement — O(log n) member change cost |
 | TURN server | **coturn** (bundled in Docker Compose) | NAT traversal relay for WebRTC media when direct/STUN connectivity fails |
 | Cryptographic library | **ring** or **RustCrypto** crates | Audited, no OpenSSL dependency |
 | Configuration | **TOML** (file) + **env vars** (override) | Human-readable config with 12-factor app env override |
@@ -123,8 +122,23 @@ Mercury is a self-hosted, end-to-end encrypted communication platform supporting
 The MVP runs as a **single process** with internal task separation:
 
 - **HTTP/WebSocket task pool** — Handles REST endpoints and persistent WebSocket connections via Tokio.
-- **Media SFU task pool** — Handles WebRTC connections, DTLS-SRTP, and selective forwarding. Runs within the same process but on a dedicated Tokio runtime or thread pool to isolate media processing from API latency.
-- **Background workers** — Periodic tasks: session cleanup, stale presence pruning, key bundle rotation reminders.
+- **Media SFU task pool** — Handles WebRTC connections, DTLS-SRTP, and selective forwarding. Runs within the same process on a **dedicated Tokio runtime** with **CPU core affinity** (pinned threads). This prevents the API runtime from stealing SFU thread time during load spikes.
+- **Background workers** — Periodic tasks: session cleanup, stale presence pruning, key bundle rotation reminders, abuse signal detection.
+
+**SFU isolation details:**
+- The SFU runtime is created with `tokio::runtime::Builder::new_multi_thread()` and its worker threads are pinned to dedicated CPU cores via `core_affinity` crate. On a 4-core system, cores 0-2 run the API runtime, core 3 runs the SFU. On 8+ cores, allocate 2-4 cores to the SFU.
+- Communication between API ↔ SFU uses `tokio::sync::mpsc` channels carrying only lightweight signaling messages (join/leave/config changes, ~100 bytes each). Media packets never cross this boundary — they flow directly from the network socket to the SFU runtime's forwarding loop.
+- The `mpsc` channel is bounded (capacity: 1024) to provide backpressure if the SFU falls behind.
+
+**Scaling trigger:** When Prometheus metrics show **API p99 latency > 100ms** or **SFU audio jitter > 20ms** sustained over 5 minutes, the operator should split API and Media into separate containers. The architecture supports this — both sides already communicate through Redis pub/sub for cross-instance signaling. Document this threshold in the operator guide.
+
+```toml
+[server.sfu]
+# CPU cores dedicated to the SFU runtime (0-indexed)
+# Default: auto (last N cores based on total available)
+dedicated_cores = []
+# Set explicitly for production, e.g.: dedicated_cores = [6, 7]
+```
 
 Future scaling: Split API and Media into separate processes/containers communicating via Redis pub/sub.
 
@@ -143,8 +157,7 @@ mercury-server/
 │   ├── 002_create_servers_channels.sql
 │   ├── 003_create_messages.sql
 │   ├── 004_create_devices_and_keys.sql
-│   ├── 005_create_moderation.sql
-│   └── 006_create_mls.sql
+│   └── 005_create_moderation.sql
 ├── crates/
 │   ├── mercury-core/               # Shared types, error handling, config
 │   │   └── src/
@@ -162,8 +175,7 @@ mercury-server/
 │   │       ├── servers.rs      # Server/channel CRUD
 │   │       ├── messages.rs     # Encrypted message storage
 │   │       ├── key_bundles.rs  # Per-device E2E public key bundle storage
-│   │       ├── key_backups.rs  # Encrypted key backup blob storage
-│   │       └── mls_groups.rs   # MLS group state, welcome messages, commits
+│   │       └── key_backups.rs  # Encrypted key backup blob storage
 │   ├── mercury-auth/               # Authentication & authorization
 │   │   └── src/
 │   │       ├── lib.rs
@@ -264,10 +276,16 @@ CREATE TABLE channels (
     server_id       UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     name            VARCHAR(100) NOT NULL,
     channel_type    VARCHAR(16) NOT NULL,              -- 'text', 'voice', 'video'
+    encryption_mode VARCHAR(16) NOT NULL DEFAULT 'standard',  -- 'standard', 'private', 'e2e_dm'
+    -- standard: server-readable, full history, searchable
+    -- private:  E2E encrypted (Sender Keys), max 100 members, history from join only
+    -- e2e_dm:   E2E encrypted (Double Ratchet), for DM channels only
+    max_members     INT,                               -- NULL = server default; private channels enforced ≤ 100
     topic           TEXT,
     position        INT NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ DEFAULT now(),
-    UNIQUE(server_id, name)
+    UNIQUE(server_id, name),
+    CHECK (encryption_mode != 'private' OR max_members <= 100)
 );
 
 CREATE TABLE server_members (
@@ -279,18 +297,26 @@ CREATE TABLE server_members (
 );
 
 -- 003_create_messages.sql
--- NOTE: message_blob is E2E encrypted ciphertext. Server cannot read content.
+-- Messages table supports both standard (server-readable) and E2E encrypted channels.
+-- Standard channels: content is plaintext in `content`, `message_blob` is NULL.
+-- Private/E2E channels: content is in `message_blob` (ciphertext), `content` is NULL.
 CREATE TABLE messages (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     channel_id      UUID REFERENCES channels(id) ON DELETE CASCADE,
     dm_channel_id   UUID REFERENCES dm_channels(id) ON DELETE CASCADE,
     sender_id       UUID NOT NULL REFERENCES users(id),
-    message_blob    BYTEA NOT NULL,                   -- E2E encrypted payload
-    message_type    VARCHAR(16) DEFAULT 'text',       -- 'text', 'system'
+    content         TEXT,                                -- Plaintext (standard channels only)
+    message_blob    BYTEA,                               -- E2E encrypted payload (private/e2e_dm only)
+    message_type    VARCHAR(16) DEFAULT 'text',          -- 'text', 'system'
     created_at      TIMESTAMPTZ DEFAULT now(),
+    edited_at       TIMESTAMPTZ,
     CHECK (
         (channel_id IS NOT NULL AND dm_channel_id IS NULL) OR
         (channel_id IS NULL AND dm_channel_id IS NOT NULL)
+    ),
+    CHECK (
+        (content IS NOT NULL AND message_blob IS NULL) OR
+        (content IS NULL AND message_blob IS NOT NULL)
     )
 );
 
@@ -366,41 +392,6 @@ CREATE TABLE key_backups (
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now()
 );
-
--- MLS group state (for large channels using MLS protocol)
-CREATE TABLE mls_groups (
-    channel_id      UUID PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
-    group_id        BYTEA NOT NULL UNIQUE,            -- MLS group identifier
-    epoch           BIGINT NOT NULL DEFAULT 0,        -- Current MLS epoch
-    ratchet_tree    BYTEA,                            -- Serialized public ratchet tree (for new joiners)
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    updated_at      TIMESTAMPTZ DEFAULT now()
-);
-
--- MLS welcome messages (for users joining an MLS group)
-CREATE TABLE mls_welcome_messages (
-    id              BIGSERIAL PRIMARY KEY,
-    channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-    target_user_id  UUID NOT NULL REFERENCES users(id),
-    target_device_id UUID NOT NULL REFERENCES devices(id),
-    welcome_message BYTEA NOT NULL,                   -- MLS Welcome message (encrypted to joining device)
-    consumed        BOOLEAN DEFAULT FALSE,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX idx_mls_welcome ON mls_welcome_messages (target_device_id, consumed) WHERE NOT consumed;
-
--- MLS pending commits (queued proposals and commits for group members to process)
-CREATE TABLE mls_pending_commits (
-    id              BIGSERIAL PRIMARY KEY,
-    channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-    epoch           BIGINT NOT NULL,
-    commit_data     BYTEA NOT NULL,                   -- Serialized MLS Commit message
-    author_id       UUID NOT NULL REFERENCES users(id),
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX idx_mls_commits ON mls_pending_commits (channel_id, epoch);
 
 -- 005_create_moderation.sql
 
@@ -504,8 +495,6 @@ devices:{user_id}               → SET { device_ids }              (cache of de
 device_keys:{device_id}         → JSON { identity_key, signed_prekey }  TTL: 1h (cache, DB is source of truth)
 device_list:{user_id}           → JSON { signed_list, signature }  (cache of device_lists table)
 
-# MLS group cache
-mls_epoch:{channel_id}          → INT (current epoch)             TTL: none (evicted on update)
 
 # Moderation
 blocked:{user_id}               → SET { blocked_user_ids }         (cache of user_blocks table)
@@ -591,14 +580,6 @@ Base path: `/api/v1`
 | `PUT` | `/users/me/key-backup` | Upload encrypted key backup blob | JWT |
 | `GET` | `/users/me/key-backup` | Download encrypted key backup blob | JWT |
 | `DELETE` | `/users/me/key-backup` | Delete key backup | JWT |
-
-#### MLS Group Management
-
-| Method | Path | Description | Auth |
-|--------|------|-------------|------|
-| `GET` | `/channels/:id/mls/group-info` | Fetch MLS group info + ratchet tree (for joining) | JWT + Member |
-| `GET` | `/channels/:id/mls/welcome` | Fetch pending MLS Welcome messages for current device | JWT + Member |
-| `POST` | `/channels/:id/mls/commit` | Submit an MLS Commit (membership change, key update) | JWT + Member |
 
 #### Servers
 
@@ -729,8 +710,6 @@ All WebSocket messages use JSON envelope:
 | `HEARTBEAT_ACK` | Response to heartbeat | `{ }` |
 | `KEY_BUNDLE_UPDATE` | User updated keys | `{ "user_id" }` |
 | `DEVICE_LIST_UPDATE` | User's device list changed | `{ "user_id", "signed_list" }` |
-| `MLS_WELCOME` | MLS Welcome message available | `{ "channel_id" }` |
-| `MLS_COMMIT` | MLS group state updated | `{ "channel_id", "epoch" }` |
 | `USER_BANNED` | User was banned from server | `{ "server_id", "user_id" }` |
 | `USER_KICKED` | User was kicked from server | `{ "server_id", "user_id" }` |
 | `USER_MUTED` | User was muted in channel | `{ "channel_id", "user_id", "expires_at" }` |
@@ -866,51 +845,49 @@ When Alice wants to message Bob for the first time:
 - Provides forward secrecy and break-in recovery.
 - The entire per-device payload is stored as an opaque `BYTEA` blob in the `messages` table.
 
-### 6.6 Group/Channel Encryption (Tiered Model)
+### 6.6 Channel Encryption Modes
 
-Different encryption protocols are used depending on channel size, because the performance characteristics diverge dramatically at scale:
+Mercury uses a **tiered encryption model** — the encryption level is a per-channel property chosen at channel creation time.
 
-| Channel Size | Protocol | Member Change Cost | Per-Message Cost | Rationale |
-|-------------|----------|-------------------|-----------------|-----------|
-| ≤ 100 members | **Sender Keys** | O(n) — re-key to all members | O(1) — single symmetric encrypt | Simple, efficient for small groups. O(n) re-key cost is acceptable. |
-| > 100 members | **MLS (RFC 9420)** | O(log n) — tree-based update | O(1) — single symmetric encrypt | Logarithmic re-key cost is essential at scale. 5,000-member channel rotation: ~13 operations vs 5,000. |
+| Mode | Encryption | History | Max Members | Use Case |
+|------|-----------|---------|-------------|----------|
+| **`standard`** | TLS in transit + AES-256 at rest (server-readable) | Full history for all members (including new joiners) | Unlimited | Community channels: #general, #announcements, #help |
+| **`private`** | E2E via Sender Keys | From join point forward only | **100** (hard cap) | Sensitive group discussions, private teams |
+| **`e2e_dm`** | E2E via Double Ratchet (per-device) | From session establishment forward | 2 (1:1) or small group | Direct messages — always E2E, non-negotiable |
 
-The server stores a `channel_type_crypto` field (determined at channel creation based on server max members, or dynamically upgraded when membership crosses the threshold).
+**Why not E2E everything?** A 5,000-member public channel where everyone has the key material does not meaningfully benefit from E2E encryption — the attack surface is the members themselves. E2E on large channels would prevent message history for new joiners (the primary value of a community platform), prevent server-side search, and prevent effective moderation. The tiered model gives users genuine privacy where it matters (DMs, private groups) while preserving the community platform experience for public channels.
 
-#### Sender Keys (≤ 100 members)
+#### Standard Channels
+
+- Messages are stored as plaintext in the `content` column of the `messages` table.
+- Server can index, search, and moderate content.
+- Full message history is available to any member, including new joiners.
+- Server operator can implement content filtering, keyword alerts, and automated moderation.
+- Still encrypted in transit (TLS) and at rest (database encryption).
+
+#### Private E2E Channels (Sender Keys, ≤ 100 members)
 
 1. Each member generates a `SenderKey` (symmetric + chain key pair).
-2. The SenderKey is distributed to all channel members encrypted via existing pairwise Double Ratchet sessions.
-3. Messages are encrypted once with the sender's SenderKey chain (AES-256-GCM).
-4. On member join: existing members share current SenderKeys with the new member (encrypted pairwise).
+2. The SenderKey is distributed to all channel members encrypted via existing pairwise Double Ratchet sessions (per-device fan-out).
+3. Messages are encrypted once with the sender's SenderKey chain (AES-256-GCM) and stored as `message_blob`.
+4. On member join: existing members share current SenderKeys with the new member (encrypted pairwise). **New joiner cannot see pre-join history** (prior message blobs are undecryptable).
 5. On member leave/kick: all remaining members rotate their SenderKeys and redistribute.
+6. Hard cap of 100 members enforced by database CHECK constraint and API validation.
 
-#### MLS (> 100 members)
+#### E2E DMs (Double Ratchet, per-device)
 
-MLS (Message Layer Security, RFC 9420) uses a binary tree (ratchet tree) for group key agreement:
+- Full Signal Protocol as described in §6.4 and §6.5.
+- Always E2E — there is no "standard" option for DMs.
+- Per-device encryption ensures messages are delivered to all of the recipient's devices.
 
-1. **Group creation:** Channel creator initializes an MLS group, generating the initial group secret and ratchet tree.
-2. **Member add:** Creator sends an MLS `Welcome` message to the new member (encrypted to their device key bundle via X3DH). The Welcome contains the group secret and tree state.
-3. **Member remove:** Any member can propose removal. An MLS `Commit` updates the tree, deriving a new group secret that the removed member cannot compute. Cost: O(log n) — only the path from the removed leaf to the root needs updating.
-4. **Key update:** Members periodically update their leaf in the tree, providing post-compromise security. Cost: O(log n).
-5. **Message encrypt:** Messages are encrypted with the current group epoch key (AES-256-GCM). All members in the current epoch can decrypt.
+#### UI Requirements
 
-**Server's role in MLS:**
-- Stores the public ratchet tree (so new joiners can compute the group state).
-- Relays `Commit` and `Welcome` messages between members.
-- Tracks the current epoch number (for ordering).
-- **Never sees the group secret or message plaintext.**
+Channels must be visually distinguishable by encryption mode:
+- **Standard channels:** Normal appearance (no special indicator).
+- **Private E2E channels:** 🔒 lock icon next to channel name. Tooltip: "End-to-end encrypted. Messages are only readable by channel members."
+- **E2E DMs:** 🛡️ shield icon. Tooltip: "End-to-end encrypted. Only you and the recipient can read these messages."
 
-**MLS implementation:** Uses the `openmls` Rust crate on the server side (for tree validation and commit ordering) and a corresponding MLS library on the client (see client spec §4).
-
-#### Protocol Upgrade (Sender Keys → MLS)
-
-When a channel crosses the 100-member threshold:
-1. Server flags the channel for protocol upgrade.
-2. An MLS group is initialized by the server owner (or an authorized member).
-3. All current members receive MLS `Welcome` messages.
-4. Once all members have joined the MLS group, the channel switches to MLS.
-5. Old Sender Keys are retired after a grace period (5 minutes, to drain in-flight messages).
+Channel creation UI must clearly explain the tradeoffs (history availability, member cap, searchability) when selecting the encryption mode. The mode **cannot be changed after creation** — this prevents accidental downgrade of security expectations.
 
 ### 6.7 Account Recovery
 
@@ -926,8 +903,7 @@ The encrypted backup blob contains:
 - Master Verify Key (private half)
 - Device Identity Key (private half) for the current device
 - All active Double Ratchet session states
-- All Sender Keys for joined channels
-- MLS group state (key packages, leaf secrets)
+- All Sender Keys for joined private channels
 
 #### Backup Encryption
 
@@ -964,7 +940,6 @@ When a user loses their device and registers a new one:
 The client automatically updates the backup on the server whenever significant crypto state changes:
 - New Double Ratchet session established
 - Sender Key rotation
-- MLS epoch advance
 - Signed pre-key rotation
 
 Updates are debounced (max once per 5 minutes) to avoid excessive uploads.
@@ -1267,13 +1242,47 @@ use_bundled_turn = true
 - **TLS certificates:** Both the Mercury server and coturn need valid TLS certificates for the public domain. The shared `certs` volume provides this. Use Let's Encrypt or bring your own.
 - **Public domain:** The `PUBLIC_DOMAIN` env var must be set to the server's publicly reachable hostname. This is used for ICE candidate generation and TURN realm.
 
+### 9.5 Connectivity Diagnostics
+
+TURN misconfigurations (especially missing cloud firewall rules on AWS/GCP) cause silent call failures that are extremely hard to debug. Mercury includes built-in diagnostics for both operators and users.
+
+**Server-side (operator dashboard):**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /admin/connectivity-check` | Runs a diagnostic sequence: test TURN UDP reachability from an external probe, verify STUN binding response, check TLS cert validity on TURNS port. Returns pass/fail per check. |
+| `GET /admin/call-stats` | Aggregate ICE connectivity success rates: % of calls using direct/STUN/TURN, % of failed ICE negotiations, p50/p95 time-to-connected. |
+
+The **first-run setup wizard** automatically runs the connectivity check and warns the operator if TURN ports are unreachable. This catches the "forgot to open UDP in the AWS security group" problem before any user encounters it.
+
+**Client-side (call failure diagnostic):**
+
+When a WebRTC connection fails to establish within 10 seconds, the client displays a diagnostic panel instead of a generic error:
+
+```
+Connection Diagnostic:
+  ✓ WebSocket signaling ......... connected
+  ✓ STUN binding ................ reachable
+  ✗ TURN relay (UDP) ............ failed
+  ✗ TURN relay (TCP fallback) ... failed
+
+  Your network may be blocking UDP traffic. Try:
+  • Switching to a different network
+  • Contacting your server administrator
+```
+
+The client also reports ICE connection state back to the server via WebSocket (`ICE_DIAGNOSTIC` event) so the operator can see aggregate connectivity health across all users in their admin dashboard.
+
 ---
 
 ## 10. Moderation & Trust/Safety
 
 ### 10.1 Design Philosophy
 
-Mercury uses E2E encryption, which means the server is cryptographically blind to message content. Moderation must work **around** this constraint, not break it. The architecture follows four layers, each operating independently:
+Mercury uses a tiered encryption model: standard channels are server-readable, while private channels and DMs are E2E encrypted (server is cryptographically blind to their content). Moderation works differently across these tiers:
+
+- **Standard channels:** Server has full plaintext access. Content filtering, keyword detection, and automated moderation are possible.
+- **E2E channels/DMs:** Server sees only metadata (who, when, where — not what). Moderation must work around this constraint using the four-layer architecture below.
 
 ```
 Layer 4: Metadata-Based Abuse Detection     (server-side, automated, no content access)
@@ -1333,7 +1342,14 @@ Reporter (Client)                    Server                    Server Owner (Cli
 
 - **Evidence is opt-in.** The reporter chooses whether to include decrypted message content. Reports can be filed with only metadata (message ID, sender, timestamp) and a description.
 - **Moderation key.** The server operator generates a long-term "moderation keypair" during server setup. The public key is distributed to all members. Evidence blobs are encrypted to this key, so only the operator can decrypt them. This prevents any intermediary from reading report content.
-- **No franking in MVP.** In MVP, there is no cryptographic proof that the reported content is authentic — the reporter could fabricate it. The operator must use judgment (cross-reference metadata, patterns, multiple reports). Message franking (v2) will add sender accountability.
+- **Standard channels are different.** For reports against messages in `standard` channels, the server already has the plaintext. The report automatically includes the original message content — no moderation key encryption needed. Only E2E channel/DM reports require the opt-in evidence flow.
+- **No franking in MVP — fabrication risk.** In MVP, there is no cryptographic proof that reported E2E content is authentic. A malicious user could fabricate an abusive message, attribute it to another user, and submit a false report. **The moderation dashboard MUST address this:**
+
+  **Required UI elements for E2E report review:**
+  - Prominent, non-dismissible banner: *"⚠️ Unverified Report — This message was reported from an end-to-end encrypted channel. The reported content cannot be cryptographically verified and may have been altered or fabricated by the reporter. Cross-reference with metadata before taking action."*
+  - Automatic metadata corroboration panel showing: did the accused user actually send a message in that channel at the reported timestamp? What is their message frequency pattern? How many distinct users have reported them? What is the reporter's own report history (frequent false reporters)?
+  - Reports from `standard` channels should be visually marked as "Verified — server has original content" since the server holds the plaintext.
+  - Message franking (v2) will add cryptographic sender accountability for E2E reports.
 
 ### 10.4 Layer 3 — Server-Operator Moderation Tools (MVP)
 
@@ -1426,7 +1442,7 @@ Since Mercury is self-hosted, legal responsibility sits with the server operator
 
 ### 11.1 Server-Side Hardening
 
-- **No plaintext access:** Server never sees unencrypted messages, media content, or private keys.
+- **Tiered plaintext access:** For E2E channels and DMs, the server never sees unencrypted messages or private keys. For standard channels, the server stores plaintext to enable history, search, and moderation — but access is restricted to the channel's server operator and logged in the audit trail. Media E2E keys are never accessible to the server regardless of channel type.
 - **Input validation:** All inputs validated with strict length/type constraints before touching the database.
 - **SQL injection:** Parameterized queries via sqlx (compile-time verified).
 - **Rate limiting:** Per-user and per-IP limits on all endpoints.
@@ -1490,6 +1506,7 @@ All logs via `tracing` with JSON output:
   "version": "0.1.0",
   "database": "connected",
   "redis": "connected",
+  "turn": "reachable",
   "uptime_seconds": 86400
 }
 ```
@@ -1519,9 +1536,10 @@ These are **not in MVP** but the architecture should not preclude them:
 - **Message franking (v2):** Sender commits to plaintext via HMAC included in the encrypted envelope. On report, the server can verify the reporter didn't fabricate the content. See [Facebook's message franking paper](https://eprint.iacr.org/2017/664) for the cryptographic construction. Requires changes to the message encryption format — the `message_blob` will include an additional `frankingTag` and `frankingKey` field.
 - **Designated moderator roles (v2):** Extend RBAC so the server owner can appoint moderators with scoped permissions (e.g., can mute/kick but not ban). Requires the roles & permissions system below.
 - **Moderator-specific moderation key (v2):** Instead of a single server-wide moderation keypair, designated moderators each have their own. Report evidence is encrypted to the assigned moderator's key, enabling delegation without sharing a single secret.
+- **MLS for large E2E channels:** If demand exists for E2E channels larger than 100 members, implement MLS (RFC 9420) via the `openmls` crate. MLS provides O(log n) member-change cost, enabling E2E groups of 1,000+ members. This would add `mls_groups`, `mls_welcome_messages`, and `mls_pending_commits` tables. The channel `encryption_mode` would gain a new `private_mls` variant. The 100-member Sender Key cap remains for simplicity; MLS channels would be a distinct type.
 - **Federation:** ActivityPub-inspired or custom protocol. User IDs are already `user@domain` ready. Moderation federation (shared ban lists, cross-server reports) is a separate design challenge.
 - **Roles & permissions:** RBAC stored in a `roles` + `role_permissions` table. Channel-level overrides.
 - **Screen sharing:** Additional media track type through existing SFU infrastructure.
 - **File attachments:** Encrypted file upload to object storage (S3/MinIO), metadata in DB.
-- **Searchable encryption:** Client-side index generation, encrypted search tokens stored server-side.
-- **Mobile push notifications:** FCM/APNs integration with encrypted notification payloads.
+- **Searchable encryption:** Client-side index generation, encrypted search tokens stored server-side. Note: only applicable to E2E channels — standard channels are already server-searchable.
+- **Mobile push notifications:** Standard channels can include message content in push payloads (server has plaintext). E2E channels/DMs send metadata-only notifications ("New message from Alice in #private"). For content preview on E2E messages, iOS clients would need a Notification Service Extension to decrypt in the background (seconds of execution time, notoriously flaky). Recommendation: ship metadata-only notifications first, add content preview as a best-effort enhancement.
