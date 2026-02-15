@@ -1,0 +1,39 @@
+# Local TLS Certificates
+*.pem
+certs/
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Rust Server (Backend)
+src/server/target/
+**/*.rs.bk
+
+# Node & Electron Client (Frontend)
+src/client/node_modules/
+src/client/dist/
+src/client/out/
+src/client/release/
+src/client/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Client Local E2E SQLite Databases 
+# Prevents accidentally committing local keys.db or messages.db
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
