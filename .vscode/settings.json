@@ -1,0 +1,92 @@
+{
+  // ── Rust (rust-analyzer) ────────────────────────────────────────────────
+
+  // Point rust-analyzer at the server workspace so it finds all crates
+  "rust-analyzer.linkedProjects": ["src/server/Cargo.toml"],
+
+  // Run clippy instead of plain check — catches more issues on save
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--", "-D", "warnings"],
+
+  // Format Rust on save with rustfmt
+  "[rust]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+
+  // ── TypeScript / JavaScript ─────────────────────────────────────────────
+
+  "[typescript]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[typescriptreact]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[javascript]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+
+  // ── Other file types ────────────────────────────────────────────────────
+
+  "[json]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[jsonc]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[yaml]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[css]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[toml]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+
+  // ── ESLint ──────────────────────────────────────────────────────────────
+
+  // Scope ESLint to the client directory only (Rust files don't need it)
+  "eslint.workingDirectories": ["src/client"],
+
+  // ── Tailwind CSS ────────────────────────────────────────────────────────
+
+  "tailwindCSS.rootFontSize": 16,
+
+  // ── Editor defaults ─────────────────────────────────────────────────────
+
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.rulers": [100],
+  "editor.renderWhitespace": "trailing",
+
+  // ── File associations ───────────────────────────────────────────────────
+
+  "files.associations": {
+    "*.toml": "toml",
+    ".env*": "properties"
+  },
+
+  // ── Search exclusions ───────────────────────────────────────────────────
+
+  "search.exclude": {
+    "**/target": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/certs": true
+  },
+
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/node_modules/**": true,
+    "**/dist/**": true
+  }
+}
