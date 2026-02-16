@@ -7,7 +7,7 @@ edition.workspace = true
 mercury-core.workspace = true
 mercury-db.workspace = true
 mercury-auth.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["ws"] }
 axum-extra.workspace = true
 tower.workspace = true
 tower-http.workspace = true
@@ -22,6 +22,9 @@ chrono.workspace = true
 fred.workspace = true
 rand.workspace = true
 sqlx.workspace = true
+dashmap.workspace = true
+futures-util.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

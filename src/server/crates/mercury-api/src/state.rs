@@ -3,6 +3,8 @@ use mercury_core::config::{AuthConfig, TurnConfig};
 use sqlx::PgPool;
 use std::sync::Arc;
 
+use crate::ws::{ConnectionManager, GlobalWsRateLimiter};
+
 /// Shared application state available to all handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -10,4 +12,6 @@ pub struct AppState {
     pub redis: RedisClient,
     pub auth_config: Arc<AuthConfig>,
     pub turn_config: Arc<TurnConfig>,
+    pub ws_manager: Arc<ConnectionManager>,
+    pub ws_rate_limiter: Arc<GlobalWsRateLimiter>,
 }

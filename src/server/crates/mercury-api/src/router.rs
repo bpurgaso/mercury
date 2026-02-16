@@ -26,6 +26,7 @@ pub fn create_router(state: AppState) -> Router {
     // Combine all routes
     Router::new()
         .route("/health", get(health))
+        .route("/ws", get(handlers::websocket::ws_upgrade))
         .nest("/auth", auth_routes)
         .nest("/users", user_routes)
         .with_state(state)

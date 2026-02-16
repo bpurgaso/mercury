@@ -21,10 +21,15 @@ license = "MIT"
 tokio = { version = "1", features = ["full"] }
 
 # Web framework
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors"] }
+
+# Concurrency
+dashmap = "6"
+futures-util = "0.3"
+parking_lot = "0.12"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

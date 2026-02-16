@@ -12,7 +12,7 @@ use tower::Service;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use mercury_api::{create_router, AppState};
+use mercury_api::{create_router, AppState, ConnectionManager, GlobalWsRateLimiter};
 use mercury_core::config::AppConfig;
 use mercury_db::pool::create_pool;
 
@@ -118,12 +118,18 @@ async fn main() -> Result<()> {
     // Connect to Redis
     let redis = connect_redis(&config.redis.url).await?;
 
+    // Initialize WebSocket subsystem
+    let ws_manager = Arc::new(ConnectionManager::new());
+    let ws_rate_limiter = Arc::new(GlobalWsRateLimiter::new(200));
+
     // Build application state
     let state = AppState {
         db: db_pool,
-        redis,
+        redis: redis.clone(),
         auth_config: Arc::new(config.auth),
         turn_config: Arc::new(config.turn),
+        ws_manager: ws_manager.clone(),
+        ws_rate_limiter,
     };
 
     let tls_config = load_tls_config(&config.tls.cert_path, &config.tls.key_path)?;
@@ -160,7 +166,7 @@ async fn main() -> Result<()> {
             if let Err(e) = hyper_util::server::conn::auto::Builder::new(
                 hyper_util::rt::TokioExecutor::new(),
             )
-            .serve_connection(io, service)
+            .serve_connection_with_upgrades(io, service)
             .await
             {
                 tracing::debug!("connection error from {remote_addr}: {e}");
