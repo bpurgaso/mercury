@@ -5,9 +5,23 @@ edition.workspace = true
 
 [dependencies]
 mercury-core.workspace = true
+mercury-db.workspace = true
+mercury-auth.workspace = true
 axum.workspace = true
+axum-extra.workspace = true
+tower.workspace = true
+tower-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+fred.workspace = true
+rand.workspace = true
+sqlx.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

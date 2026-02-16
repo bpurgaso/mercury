@@ -10,7 +10,18 @@ url = "redis://localhost:6379"
 
 [auth]
 jwt_secret = "dev-secret-change-in-production"
+jwt_expiry_minutes = 60
+refresh_token_expiry_days = 30
+argon2_memory_kib = 65536
+argon2_iterations = 3
+argon2_parallelism = 4
 
 [tls]
 cert_path = "./certs/cert.pem"
 key_path = "./certs/key.pem"
+
+[turn]
+enabled = false
+secret = ""
+urls = []
+credential_ttl_seconds = 86400

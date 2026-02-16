@@ -10,6 +10,8 @@ path = "src/main.rs"
 [dependencies]
 mercury-core.workspace = true
 mercury-api.workspace = true
+mercury-db.workspace = true
+sqlx.workspace = true
 
 # Allocator
 tikv-jemallocator = "0.6"
@@ -35,6 +37,9 @@ serde.workspace = true
 
 # Error handling
 anyhow.workspace = true
+
+# Redis
+fred.workspace = true
 
 # Hyper for low-level TLS serving
 hyper = { version = "1", features = ["server", "http1", "http2"] }
