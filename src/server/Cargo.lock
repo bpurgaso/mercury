@@ -1008,6 +1008,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror",
  "toml",
  "tracing",
@@ -1033,6 +1034,8 @@ dependencies = [
  "mercury-core",
  "sqlx",
  "thiserror",
+ "tokio",
+ "toml",
  "tracing",
  "uuid",
 ]
