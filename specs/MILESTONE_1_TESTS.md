@@ -178,14 +178,33 @@ test_ws_cross_user_presence
 
 ## Running the Tests
 
+### Prerequisites
+
+Docker Compose infrastructure must be running (`docker compose up -d`). Create the
+test database (one-time setup):
+
 ```bash
-cd src/server
-export DATABASE_URL="postgres://mercury:mercury@localhost:5432/mercury_test"
-cargo nextest run --test milestone_1 -- --test-threads=1
+docker compose exec postgres psql -U mercury -c "CREATE DATABASE mercury_test;"
 ```
 
-Tests must run sequentially (--test-threads=1) because they share Postgres and Redis
-state. Each test truncates tables and flushes Redis in its setup.
+### Run
+
+From the workspace root (`src/server/`):
+
+```bash
+export DATABASE_URL="postgres://mercury:mercury@localhost:5432/mercury_test"
+cargo test --test milestone_1 -- --test-threads=1
+```
+
+Or with nextest:
+
+```bash
+export DATABASE_URL="postgres://mercury:mercury@localhost:5432/mercury_test"
+cargo nextest run --test milestone_1 -j 1
+```
+
+Tests **must** run sequentially because they share Postgres and Redis state. Each test
+truncates tables and flushes Redis in its setup.
 
 ## Implementation Notes
 
