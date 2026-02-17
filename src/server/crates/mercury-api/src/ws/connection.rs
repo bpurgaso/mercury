@@ -247,7 +247,7 @@ async fn handle_identify(
         servers: vec![],
         dm_channels: vec![],
         session_id: session_id.clone(),
-        heartbeat_interval: HEARTBEAT_INTERVAL_SECS,
+        heartbeat_interval: state.heartbeat_interval_secs,
     };
 
     let ready_msg = ServerMessage {
@@ -399,7 +399,7 @@ async fn run_event_loop(
 ) {
     tracing::debug!("run_event_loop: entered for user={user_id} session={session_id}");
 
-    let heartbeat_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+    let heartbeat_interval = Duration::from_secs(state.heartbeat_interval_secs);
     let heartbeat_timeout = heartbeat_interval * HEARTBEAT_MISS_LIMIT;
     let mut last_heartbeat = Instant::now();
     let mut heartbeat_check = time::interval(heartbeat_interval);

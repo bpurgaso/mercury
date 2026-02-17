@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
         turn_config: Arc::new(config.turn),
         ws_manager: ws_manager.clone(),
         ws_rate_limiter,
+        heartbeat_interval_secs: config.server.heartbeat_interval_secs,
     };
 
     let tls_config = load_tls_config(&config.tls.cert_path, &config.tls.key_path)?;

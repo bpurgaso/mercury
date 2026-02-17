@@ -14,4 +14,6 @@ pub struct AppState {
     pub turn_config: Arc<TurnConfig>,
     pub ws_manager: Arc<ConnectionManager>,
     pub ws_rate_limiter: Arc<GlobalWsRateLimiter>,
+    /// Heartbeat interval in seconds (sent to clients in READY, used for timeout checks).
+    pub heartbeat_interval_secs: u64,
 }

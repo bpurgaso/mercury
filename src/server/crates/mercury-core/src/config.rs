@@ -15,6 +15,12 @@ pub struct AppConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    #[serde(default = "default_heartbeat_interval_secs")]
+    pub heartbeat_interval_secs: u64,
+}
+
+fn default_heartbeat_interval_secs() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize)]

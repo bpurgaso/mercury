@@ -3,14 +3,23 @@ name = "mercury-server"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "mercury_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mercury-server"
 path = "src/main.rs"
+
+[[test]]
+name = "milestone_1"
+path = "../../tests/milestone_1.rs"
 
 [dependencies]
 mercury-core.workspace = true
 mercury-api.workspace = true
 mercury-db.workspace = true
+mercury-auth.workspace = true
 sqlx.workspace = true
 
 # Allocator
@@ -34,6 +43,7 @@ tracing-subscriber.workspace = true
 # Config
 toml.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 # Error handling
 anyhow.workspace = true
@@ -45,3 +55,11 @@ fred.workspace = true
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
 tower = { version = "0.5", features = ["util"] }
+
+[dev-dependencies]
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+uuid.workspace = true
+futures-util.workspace = true
+chrono.workspace = true
+jsonwebtoken.workspace = true

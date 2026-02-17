@@ -71,6 +71,10 @@ tokio-rustls = "0.26"
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
 
+# Testing
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls"] }
+
 # Workspace crates
 mercury-core = { path = "crates/mercury-core" }
 mercury-db = { path = "crates/mercury-db" }
