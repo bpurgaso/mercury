@@ -112,6 +112,8 @@ echo -e "${CYAN}==> [3/5] Building server (release)...${NC}"
 echo -e "${CYAN}==> [4/5] Starting server...${NC}"
 export MERCURY_DATABASE_URL="postgres://mercury:mercury@localhost:5432/mercury"
 export MERCURY_REDIS_URL="redis://localhost:6379"
+export MERCURY_TLS_CERT_PATH="$REPO_ROOT/certs/cert.pem"
+export MERCURY_TLS_KEY_PATH="$REPO_ROOT/certs/key.pem"
 export RUST_LOG="mercury=info"
 
 (cd "$SERVER_DIR" && cargo run --release) &

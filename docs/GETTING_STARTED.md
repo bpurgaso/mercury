@@ -313,6 +313,8 @@ Open three terminal tabs/panes. The recommended workflow is to start infrastruct
 cd src/server
 export MERCURY_DATABASE_URL="postgres://mercury:mercury@localhost:5432/mercury"
 export MERCURY_REDIS_URL="redis://localhost:6379"
+export MERCURY_TLS_CERT_PATH="../../certs/cert.pem"
+export MERCURY_TLS_KEY_PATH="../../certs/key.pem"
 
 # cargo-watch recompiles and restarts on any .rs file change
 cargo watch -x run

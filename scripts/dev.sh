@@ -180,6 +180,8 @@ if [[ "$SKIP_SERVER" == false ]]; then
     echo -e "${CYAN}==> Starting Rust server (cargo watch)...${NC}"
     export MERCURY_DATABASE_URL="postgres://mercury:mercury@localhost:5432/mercury"
     export MERCURY_REDIS_URL="redis://localhost:6379"
+    export MERCURY_TLS_CERT_PATH="$REPO_ROOT/certs/cert.pem"
+    export MERCURY_TLS_KEY_PATH="$REPO_ROOT/certs/key.pem"
     export RUST_LOG="${RUST_LOG:-mercury=debug,tower_http=debug}"
 
     (cd "$SERVER_DIR" && cargo watch -x run 2>&1) \
