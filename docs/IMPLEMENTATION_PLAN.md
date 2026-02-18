@@ -233,25 +233,60 @@ At this point you have: a server that starts, accepts registrations, authenticat
 
 ### Phase 5: Electron Client Shell
 
-**What to build:**
+> **Important:** This is a full-stack phase. Phases 1–4 only built auth and the WebSocket control plane. The server has no REST endpoints for servers, channels, or messages yet, and no `message_send` WebSocket op. The client would have nothing to talk to. This phase is split into two sessions — server-side first, then client-side.
+
+**Phase 5a — Server-Side REST & Messaging Endpoints:**
+- Server CRUD: `POST/GET/PATCH/DELETE /servers`, `POST /servers/join`, `DELETE /servers/:id/members/me`
+- Channel CRUD: `POST/GET/PATCH/DELETE` channels within a server (encryption_mode set at creation, immutable)
+- Message history: `GET /channels/:id/messages` (paginated, cursor-based)
+- WebSocket `message_send` op: client sends plaintext message for standard channels, server stores and broadcasts `MESSAGE_CREATE` to connected members
+- Invite codes: generated on server creation, used for `POST /servers/join`
+- Membership extractors: reusable Axum extractors for "JWT + Member" and "JWT + Owner" authorization
+- Update READY event: populate servers and channels from database (currently returns empty arrays)
+- Broadcast `MEMBER_ADD` / `MEMBER_REMOVE` events on join/leave
+
+**Phase 5b — Electron Client Shell:**
 - Electron main process: app lifecycle, system tray, window management
-- Crypto Worker Thread: spawns at app launch, MessagePort setup between Worker ↔ Renderer, safeStorage proxy from Worker → Main
+- Crypto Worker Thread: spawns at app launch, MessagePort setup between Worker ↔ Renderer, safeStorage proxy from Worker → Main. No crypto implementation yet — just lifecycle and a ping/pong echo to verify the channel works
 - Linux safeStorage fallback: `isEncryptionAvailable()` check, `--password-store` flag detection, Argon2id app password fallback
-- Preload script: contextBridge API surface with typed IPC channels
-- React app shell: login page, registration page, basic layout (sidebar + channel list + chat area), Zustand stores (authStore, serverStore, settingsStore)
-- WebSocket manager: connect, identify, heartbeat, reconnect with 120s max delay + jitter + Retry-After respect
-- REST API client: fetch wrapper with JWT auth header injection and token refresh
-- Standard channel messaging (plaintext): send via WebSocket, receive via WebSocket event, display in UI. No encryption yet.
+- Preload script: contextBridge API surface with typed IPC channels (explicit allowlist, no wildcard)
+- React app shell: login page, registration page, three-column layout (server sidebar, channel list, chat area), Zustand stores (authStore, serverStore, messageStore, presenceStore)
+- WebSocket manager: connect, identify, heartbeat, reconnect with exponential backoff (1s–120s, ±20% jitter, Retry-After respect), resume-first strategy, event dispatch to stores
+- REST API client: fetch wrapper with JWT auth header injection, 401 → auto-refresh → retry
+- Standard channel messaging (plaintext): send via WebSocket, receive via WebSocket event, display in virtualized message list. No encryption yet.
 
 **What to give Claude Code:**
+
+Session 1 (server-side):
+- Server spec §5.1 (REST API — Servers, Channels, Messages sections)
+- Server spec §5.2 (WebSocket Protocol — `message_send` and `MESSAGE_CREATE` ops)
+- Server spec §4 (database schemas — servers, channels, server_members, messages tables)
+
+Session 2 (client-side):
 - Client spec §3 (Architecture — the full Worker Thread architecture, MessagePort diagrams)
-- Client spec §4.3 (Local Key Storage — safeStorage fallback section)
-- Client spec §5 (WebSocket Manager — connection lifecycle, reconnection strategy, event dispatch with hybrid JSON/MessagePack)
+- Client spec §4.3 and §4.4 (Local Key Storage — safeStorage fallback, Linux keychain detection)
+- Client spec §5 (WebSocket Manager — connection lifecycle, reconnection strategy, event dispatch)
 - Client spec §9 (IPC API Surface)
 - Client spec §10 (Zustand Stores — authStore, serverStore, messageStore interfaces)
-- Server spec §5.1 (REST API — Server and Channel endpoints, so the client knows what to call)
 
 **Verification:**
+
+Automated (run after both sessions):
+```bash
+# Server integration tests (new endpoints)
+cd src/server
+export DATABASE_URL="postgres://mercury:mercury@localhost:5432/mercury_test"
+cargo nextest run --test phase_5 -j 1
+
+# Client unit tests (stores, WebSocket manager, API client)
+cd src/client
+pnpm test
+
+# Client E2E smoke test (requires running server)
+pnpm test:e2e
+```
+
+Manual spot-check:
 ```
 1. Launch the app → login screen appears
 2. Register a new account → redirected to main UI
@@ -349,6 +384,8 @@ Test each sub-phase independently:
 ---
 
 ### Phase 7: E2E Messaging Integration
+
+> **Note:** Phase 5a already built the `message_send` WebSocket op and `MESSAGE_CREATE` broadcast for standard (plaintext) channels. This phase adds E2E encryption on top of that infrastructure — MessagePack binary framing for encrypted payloads, per-device ciphertext fan-out, and the client-side crypto integration.
 
 **What to build:**
 - Wire the crypto engine into the message send/receive flow
@@ -560,10 +597,13 @@ Phase 3 (Auth)                                        │
     ▼                                                 │
 Phase 4 (WebSocket) ─── Milestone 1 ✓                │
     │                                                 │
+    ▼                                                 │
+Phase 5a (Server CRUD + Messaging Endpoints)          │
+    │                                                 │
     ├──────────────┐                                  │
     ▼              ▼                                  │
-Phase 5        Phase 6                                │
-(Client)       (Crypto Engine)                        │
+Phase 5b       Phase 6                                │
+(Client Shell) (Crypto Engine)                        │
     │              │                                  │
     └──────┬───────┘                                  │
            ▼                                          │
@@ -579,7 +619,9 @@ Phase 5        Phase 6                                │
            Phase 10 (Production) ─── Milestone 3 ✓
 ```
 
-Note that **Phases 5 and 6 can be worked in parallel** — the client shell (Phase 5) doesn't depend on the crypto engine (Phase 6), and vice versa. They converge in Phase 7. Similarly, **Phases 8 and 9 can be worked in parallel** after Phase 7 is complete.
+**Phase 5a must complete before 5b or 6.** The client shell (5b) needs the server CRUD and messaging endpoints to function. The crypto engine (6) needs the key bundle upload/fetch endpoints that depend on the server's routing infrastructure built in 5a.
+
+**Phases 5b and 6 can be worked in parallel** — the client shell doesn't depend on the crypto engine, and vice versa. They converge in Phase 7. Similarly, **Phases 8 and 9 can be worked in parallel** after Phase 7 is complete.
 
 ---
 
