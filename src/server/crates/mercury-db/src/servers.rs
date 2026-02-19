@@ -69,6 +69,31 @@ pub async fn delete_server(pool: &PgPool, id: ServerId) -> Result<bool, sqlx::Er
     Ok(result.rows_affected() > 0)
 }
 
+pub async fn update_server(
+    pool: &PgPool,
+    id: ServerId,
+    name: Option<&str>,
+    description: Option<&str>,
+    icon_url: Option<&str>,
+) -> Result<Option<Server>, sqlx::Error> {
+    sqlx::query_as::<_, Server>(
+        r#"
+        UPDATE servers SET
+            name = COALESCE($2, name),
+            description = COALESCE($3, description),
+            icon_url = COALESCE($4, icon_url)
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .bind(name)
+    .bind(description)
+    .bind(icon_url)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn add_member(
     pool: &PgPool,
     user_id: UserId,
@@ -98,4 +123,44 @@ pub async fn remove_member(
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)
+}
+
+pub async fn is_member(
+    pool: &PgPool,
+    user_id: UserId,
+    server_id: ServerId,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 as n FROM server_members WHERE user_id = $1 AND server_id = $2",
+    )
+    .bind(user_id)
+    .bind(server_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
+pub async fn get_member_user_ids(
+    pool: &PgPool,
+    server_id: ServerId,
+) -> Result<Vec<UserId>, sqlx::Error> {
+    let rows: Vec<(UserId,)> =
+        sqlx::query_as("SELECT user_id FROM server_members WHERE server_id = $1")
+            .bind(server_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Get the server_id for a channel (used for ownership/membership checks on channel routes).
+pub async fn get_server_id_for_channel(
+    pool: &PgPool,
+    channel_id: mercury_core::ids::ChannelId,
+) -> Result<Option<ServerId>, sqlx::Error> {
+    let row: Option<(ServerId,)> =
+        sqlx::query_as("SELECT server_id FROM channels WHERE id = $1")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(id,)| id))
 }

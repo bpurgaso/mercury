@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "milestone_1"
 path = "../../tests/milestone_1.rs"
 
+[[test]]
+name = "phase_5"
+path = "../../tests/phase_5.rs"
+
 [dependencies]
 mercury-core.workspace = true
 mercury-api.workspace = true

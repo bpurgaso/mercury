@@ -62,3 +62,34 @@ impl FromRequestParts<AppState> for AuthUser {
         })
     }
 }
+
+/// Check that a user is a member of the given server. Returns 403 if not.
+pub async fn require_membership(
+    state: &AppState,
+    user_id: UserId,
+    server_id: mercury_core::ids::ServerId,
+) -> Result<(), MercuryError> {
+    let is_member = mercury_db::servers::is_member(&state.db, user_id, server_id)
+        .await
+        .map_err(|e| MercuryError::Database(e))?;
+    if !is_member {
+        return Err(MercuryError::Forbidden("not a member of this server".into()));
+    }
+    Ok(())
+}
+
+/// Check that a user is the owner of the given server. Returns 403 if not.
+pub async fn require_ownership(
+    state: &AppState,
+    user_id: UserId,
+    server_id: mercury_core::ids::ServerId,
+) -> Result<(), MercuryError> {
+    let server = mercury_db::servers::get_server_by_id(&state.db, server_id)
+        .await
+        .map_err(|e| MercuryError::Database(e))?
+        .ok_or_else(|| MercuryError::NotFound("server not found".into()))?;
+    if server.owner_id != user_id {
+        return Err(MercuryError::Forbidden("not the server owner".into()));
+    }
+    Ok(())
+}

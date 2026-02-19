@@ -45,6 +45,8 @@ pub enum ServerEvent {
     HEARTBEAT_ACK,
     KEY_BUNDLE_UPDATE,
     DEVICE_LIST_UPDATE,
+    MEMBER_ADD,
+    MEMBER_REMOVE,
     USER_BANNED,
     USER_KICKED,
     USER_MUTED,
@@ -103,6 +105,7 @@ pub struct TypingStartPayload {
 pub struct ReadyPayload {
     pub user: ReadyUser,
     pub servers: Vec<serde_json::Value>,
+    pub channels: Vec<serde_json::Value>,
     pub dm_channels: Vec<serde_json::Value>,
     pub session_id: String,
     pub heartbeat_interval: u64,
@@ -130,6 +133,37 @@ pub struct ResumedPayload {
 pub struct PresenceUpdateEvent {
     pub user_id: String,
     pub status: String,
+}
+
+/// Payload for the `message_send` client op (standard channel — JSON text frame).
+#[derive(Debug, Deserialize)]
+pub struct MessageSendPayload {
+    pub channel_id: String,
+    pub content: Option<String>,
+}
+
+/// Payload for the MESSAGE_CREATE server event (standard channel).
+#[derive(Debug, Serialize)]
+pub struct MessageCreatePayload {
+    pub id: String,
+    pub channel_id: String,
+    pub sender_id: String,
+    pub content: Option<String>,
+    pub created_at: String,
+}
+
+/// Payload for MEMBER_ADD server event.
+#[derive(Debug, Serialize)]
+pub struct MemberAddPayload {
+    pub server_id: String,
+    pub user_id: String,
+}
+
+/// Payload for MEMBER_REMOVE server event.
+#[derive(Debug, Serialize)]
+pub struct MemberRemovePayload {
+    pub server_id: String,
+    pub user_id: String,
 }
 
 /// WebSocket close codes used by Mercury.
@@ -189,6 +223,8 @@ mod tests {
             (ServerEvent::HEARTBEAT_ACK, "\"HEARTBEAT_ACK\""),
             (ServerEvent::KEY_BUNDLE_UPDATE, "\"KEY_BUNDLE_UPDATE\""),
             (ServerEvent::DEVICE_LIST_UPDATE, "\"DEVICE_LIST_UPDATE\""),
+            (ServerEvent::MEMBER_ADD, "\"MEMBER_ADD\""),
+            (ServerEvent::MEMBER_REMOVE, "\"MEMBER_REMOVE\""),
             (ServerEvent::USER_BANNED, "\"USER_BANNED\""),
             (ServerEvent::USER_KICKED, "\"USER_KICKED\""),
             (ServerEvent::USER_MUTED, "\"USER_MUTED\""),

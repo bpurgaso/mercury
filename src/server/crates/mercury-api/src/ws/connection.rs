@@ -4,8 +4,8 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use fred::prelude::*;
 use futures_util::{SinkExt, StreamExt};
 use mercury_auth::jwt;
-use mercury_core::ids::UserId;
-use mercury_db::users;
+use mercury_core::ids::{ChannelId, MessageId, UserId};
+use mercury_db::{channels, users};
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Instant};
 
@@ -234,6 +234,39 @@ async fn handle_identify(
 
     tracing::debug!("handle_identify: session created, sending READY");
 
+    // Query user's actual servers and channels for READY payload
+    let user_servers = mercury_db::servers::list_servers_for_user(&state.db, user_id)
+        .await
+        .unwrap_or_default();
+    let user_channels = channels::list_channels_for_user(&state.db, user_id)
+        .await
+        .unwrap_or_default();
+
+    let servers_json: Vec<serde_json::Value> = user_servers
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id.to_string(),
+                "name": s.name,
+                "owner_id": s.owner_id.to_string(),
+                "invite_code": s.invite_code,
+            })
+        })
+        .collect();
+
+    let channels_json: Vec<serde_json::Value> = user_channels
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.id.to_string(),
+                "server_id": c.server_id.to_string(),
+                "name": c.name,
+                "channel_type": c.channel_type,
+                "encryption_mode": c.encryption_mode,
+            })
+        })
+        .collect();
+
     // Build and send READY payload
     let ready = ReadyPayload {
         user: ReadyUser {
@@ -244,10 +277,11 @@ async fn handle_identify(
             avatar_url: user.avatar_url,
             status: user.status,
         },
-        servers: vec![],
+        servers: servers_json,
         dm_channels: vec![],
         session_id: session_id.clone(),
         heartbeat_interval: state.heartbeat_interval_secs,
+        channels: channels_json,
     };
 
     let ready_msg = ServerMessage {
@@ -494,7 +528,11 @@ async fn run_event_loop(
                                     state.ws_manager.send_to_users(&connected, &event);
                                 }
                             }
-                            // Other ops not yet implemented in Phase 4
+                            ClientOp::MessageSend => {
+                                if let Ok(payload) = serde_json::from_value::<MessageSendPayload>(client_msg.d) {
+                                    handle_message_send(&state, user_id, payload).await;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -525,6 +563,80 @@ async fn run_event_loop(
     // Connection ended — cleanup
     tracing::debug!("run_event_loop: exited for user={user_id} session={session_id}");
     cleanup_connection(&state, &session_id, user_id, &device_id).await;
+}
+
+/// Handle a message_send op: validate membership, store in DB, broadcast MESSAGE_CREATE.
+async fn handle_message_send(
+    state: &AppState,
+    sender_id: UserId,
+    payload: MessageSendPayload,
+) {
+    // Parse channel_id
+    let channel_uuid = match uuid::Uuid::parse_str(&payload.channel_id) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    let channel_id = ChannelId(channel_uuid);
+
+    // Look up the channel to get server_id and encryption_mode
+    let channel = match channels::get_channel_by_id(&state.db, channel_id).await {
+        Ok(Some(c)) => c,
+        _ => return,
+    };
+
+    // Verify sender is a member of this server
+    let is_member = mercury_db::servers::is_member(&state.db, sender_id, channel.server_id)
+        .await
+        .unwrap_or(false);
+    if !is_member {
+        return;
+    }
+
+    // For standard channels, store plaintext content
+    let content = match channel.encryption_mode.as_str() {
+        "standard" => payload.content.as_deref(),
+        _ => None, // E2E channels: content stays None, ciphertext handled in Phase 7
+    };
+
+    let message_id = MessageId::new();
+    let message = match mercury_db::messages::create_message(
+        &state.db,
+        message_id,
+        channel_id,
+        sender_id,
+        content,
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("failed to store message: {e}");
+            return;
+        }
+    };
+
+    // Build MESSAGE_CREATE event
+    let event = ServerMessage {
+        t: ServerEvent::MESSAGE_CREATE,
+        d: serde_json::to_value(MessageCreatePayload {
+            id: message.id.to_string(),
+            channel_id: channel_id.to_string(),
+            sender_id: sender_id.to_string(),
+            content: message.content,
+            created_at: message
+                .created_at
+                .map(|t| t.to_rfc3339())
+                .unwrap_or_default(),
+        })
+        .unwrap_or_default(),
+        seq: None,
+    };
+
+    // Broadcast to all connected members of this server
+    let member_ids = mercury_db::servers::get_member_user_ids(&state.db, channel.server_id)
+        .await
+        .unwrap_or_default();
+    state.ws_manager.send_to_users(&member_ids, &event);
 }
 
 /// Clean up after a connection closes.

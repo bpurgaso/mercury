@@ -338,6 +338,43 @@ impl TestClient {
         (status, rbody)
     }
 
+    pub async fn patch_authed(
+        &self,
+        path: &str,
+        body: &Value,
+    ) -> (reqwest::StatusCode, Value) {
+        let token = self
+            .access_token
+            .as_ref()
+            .expect("no access token — login first");
+        let resp = self
+            .client
+            .patch(format!("{}{}", self.base_url, path))
+            .header("Authorization", format!("Bearer {}", token))
+            .json(body)
+            .send()
+            .await
+            .expect("PATCH authed request failed");
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(json!({}));
+        (status, body)
+    }
+
+    pub async fn delete_authed(&self, path: &str) -> reqwest::StatusCode {
+        let token = self
+            .access_token
+            .as_ref()
+            .expect("no access token — login first");
+        let resp = self
+            .client
+            .delete(format!("{}{}", self.base_url, path))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .expect("DELETE authed request failed");
+        resp.status()
+    }
+
     /// Send a raw POST with custom headers — returns (status, headers, body).
     pub async fn post_raw(
         &self,
