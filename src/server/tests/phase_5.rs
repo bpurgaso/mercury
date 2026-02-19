@@ -22,7 +22,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 
 fn server() -> &'static TestServer {
     static SERVER: OnceLock<TestServer> = OnceLock::new();
-    SERVER.get_or_init(|| runtime().block_on(TestServer::start()))
+    SERVER.get_or_init(|| runtime().block_on(TestServer::start_with_auth_rate_limit(100)))
 }
 
 /// Register a user and return a TestClient with tokens set.

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::extractors::{require_membership, require_ownership, AuthUser};
 use crate::state::AppState;
+use crate::ws::protocol::*;
 
 // ── Request/Response types ─────────────────────────────────
 
@@ -106,6 +107,25 @@ pub async fn create_channel(
     )
     .await?;
 
+    // Broadcast CHANNEL_CREATE to all connected members of this server
+    let member_ids = mercury_db::servers::get_member_user_ids(&state.db, server_id).await?;
+    let event = ServerMessage {
+        t: ServerEvent::CHANNEL_CREATE,
+        d: serde_json::to_value(ChannelCreatePayload {
+            id: channel.id.to_string(),
+            server_id: channel.server_id.to_string(),
+            name: channel.name.clone(),
+            channel_type: channel.channel_type.clone(),
+            encryption_mode: channel.encryption_mode.clone(),
+            position: channel.position,
+            topic: channel.topic.clone(),
+            created_at: channel.created_at.map(|t| t.to_rfc3339()),
+        })
+        .unwrap_or_default(),
+        seq: None,
+    };
+    state.ws_manager.send_to_users(&member_ids, &event);
+
     Ok((StatusCode::CREATED, Json(ChannelResponse::from(channel))))
 }
 
@@ -150,6 +170,25 @@ pub async fn update_channel(
         .await?
         .ok_or_else(|| MercuryError::NotFound("channel not found".into()))?;
 
+    // Broadcast CHANNEL_UPDATE to all connected members of this server
+    let member_ids = mercury_db::servers::get_member_user_ids(&state.db, server_id).await?;
+    let event = ServerMessage {
+        t: ServerEvent::CHANNEL_UPDATE,
+        d: serde_json::to_value(ChannelUpdatePayload {
+            id: channel.id.to_string(),
+            server_id: channel.server_id.to_string(),
+            name: channel.name.clone(),
+            channel_type: channel.channel_type.clone(),
+            encryption_mode: channel.encryption_mode.clone(),
+            position: channel.position,
+            topic: channel.topic.clone(),
+            created_at: channel.created_at.map(|t| t.to_rfc3339()),
+        })
+        .unwrap_or_default(),
+        seq: None,
+    };
+    state.ws_manager.send_to_users(&member_ids, &event);
+
     Ok(Json(ChannelResponse::from(channel)))
 }
 
@@ -168,6 +207,19 @@ pub async fn delete_channel(
     require_ownership(&state, auth_user.user_id, server_id).await?;
 
     mercury_db::channels::delete_channel(&state.db, channel_id).await?;
+
+    // Broadcast CHANNEL_DELETE to all connected members of this server
+    let member_ids = mercury_db::servers::get_member_user_ids(&state.db, server_id).await?;
+    let event = ServerMessage {
+        t: ServerEvent::CHANNEL_DELETE,
+        d: serde_json::to_value(ChannelDeletePayload {
+            id: channel_id.to_string(),
+            server_id: server_id.to_string(),
+        })
+        .unwrap_or_default(),
+        seq: None,
+    };
+    state.ws_manager.send_to_users(&member_ids, &event);
 
     Ok(StatusCode::NO_CONTENT)
 }

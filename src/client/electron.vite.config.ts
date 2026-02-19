@@ -8,7 +8,10 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: resolve(__dirname, 'src/main/index.ts'),
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          'workers/crypto-worker': resolve(__dirname, 'src/main/workers/crypto-worker-entry.ts'),
+        },
       },
     },
   },

@@ -1,8 +1,10 @@
 use axum::{
+    http::Method,
     middleware as axum_middleware,
     routing::{delete, get, patch, post},
     Router,
 };
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::handlers;
 use crate::middleware::rate_limit_auth;
@@ -53,6 +55,17 @@ pub fn create_router(state: AppState) -> Router {
             get(handlers::messages::get_messages),
         );
 
+    let cors = CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(Any)
+        .allow_origin(Any);
+
     // Combine all routes
     Router::new()
         .route("/health", get(health))
@@ -61,6 +74,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/users", user_routes)
         .nest("/servers", server_routes)
         .nest("/channels", channel_routes)
+        .layer(cors)
         .with_state(state)
 }
 

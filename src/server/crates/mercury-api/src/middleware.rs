@@ -29,7 +29,7 @@ pub async fn rate_limit_auth(
 ) -> Response {
     let ip = addr.ip().to_string();
     let key = format!("rate:auth:{ip}");
-    let max_requests: u64 = 5;
+    let max_requests: u64 = state.auth_rate_limit_per_min;
     let window_seconds: u64 = 60;
 
     match check_rate_limit(&state.redis, &key, max_requests, window_seconds).await {

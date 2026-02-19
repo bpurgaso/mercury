@@ -45,6 +45,9 @@ pub enum ServerEvent {
     HEARTBEAT_ACK,
     KEY_BUNDLE_UPDATE,
     DEVICE_LIST_UPDATE,
+    CHANNEL_CREATE,
+    CHANNEL_UPDATE,
+    CHANNEL_DELETE,
     MEMBER_ADD,
     MEMBER_REMOVE,
     USER_BANNED,
@@ -152,6 +155,39 @@ pub struct MessageCreatePayload {
     pub created_at: String,
 }
 
+/// Payload for CHANNEL_CREATE server event.
+#[derive(Debug, Serialize)]
+pub struct ChannelCreatePayload {
+    pub id: String,
+    pub server_id: String,
+    pub name: String,
+    pub channel_type: String,
+    pub encryption_mode: String,
+    pub position: i32,
+    pub topic: Option<String>,
+    pub created_at: Option<String>,
+}
+
+/// Payload for CHANNEL_UPDATE server event.
+#[derive(Debug, Serialize)]
+pub struct ChannelUpdatePayload {
+    pub id: String,
+    pub server_id: String,
+    pub name: String,
+    pub channel_type: String,
+    pub encryption_mode: String,
+    pub position: i32,
+    pub topic: Option<String>,
+    pub created_at: Option<String>,
+}
+
+/// Payload for CHANNEL_DELETE server event.
+#[derive(Debug, Serialize)]
+pub struct ChannelDeletePayload {
+    pub id: String,
+    pub server_id: String,
+}
+
 /// Payload for MEMBER_ADD server event.
 #[derive(Debug, Serialize)]
 pub struct MemberAddPayload {
@@ -223,6 +259,9 @@ mod tests {
             (ServerEvent::HEARTBEAT_ACK, "\"HEARTBEAT_ACK\""),
             (ServerEvent::KEY_BUNDLE_UPDATE, "\"KEY_BUNDLE_UPDATE\""),
             (ServerEvent::DEVICE_LIST_UPDATE, "\"DEVICE_LIST_UPDATE\""),
+            (ServerEvent::CHANNEL_CREATE, "\"CHANNEL_CREATE\""),
+            (ServerEvent::CHANNEL_UPDATE, "\"CHANNEL_UPDATE\""),
+            (ServerEvent::CHANNEL_DELETE, "\"CHANNEL_DELETE\""),
             (ServerEvent::MEMBER_ADD, "\"MEMBER_ADD\""),
             (ServerEvent::MEMBER_REMOVE, "\"MEMBER_REMOVE\""),
             (ServerEvent::USER_BANNED, "\"USER_BANNED\""),

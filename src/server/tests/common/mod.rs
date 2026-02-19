@@ -30,6 +30,10 @@ pub struct TestServer {
 
 impl TestServer {
     pub async fn start() -> Self {
+        Self::start_with_auth_rate_limit(5).await
+    }
+
+    pub async fn start_with_auth_rate_limit(auth_rate_limit_per_min: u64) -> Self {
         let database_url = std::env::var("DATABASE_URL")
             .or_else(|_| std::env::var("MERCURY_DATABASE_URL"))
             .unwrap_or_else(|_| {
@@ -43,6 +47,7 @@ impl TestServer {
                 host: "127.0.0.1".to_string(),
                 port: 0,
                 heartbeat_interval_secs: 5,
+                auth_rate_limit_per_min,
             },
             database: DatabaseConfig {
                 url: database_url.clone(),

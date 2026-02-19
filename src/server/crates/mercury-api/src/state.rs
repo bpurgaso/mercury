@@ -16,4 +16,6 @@ pub struct AppState {
     pub ws_rate_limiter: Arc<GlobalWsRateLimiter>,
     /// Heartbeat interval in seconds (sent to clients in READY, used for timeout checks).
     pub heartbeat_interval_secs: u64,
+    /// Max auth requests per IP per minute.
+    pub auth_rate_limit_per_min: u64,
 }

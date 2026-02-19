@@ -17,6 +17,12 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_heartbeat_interval_secs")]
     pub heartbeat_interval_secs: u64,
+    #[serde(default = "default_auth_rate_limit_per_min")]
+    pub auth_rate_limit_per_min: u64,
+}
+
+fn default_auth_rate_limit_per_min() -> u64 {
+    5
 }
 
 fn default_heartbeat_interval_secs() -> u64 {

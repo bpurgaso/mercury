@@ -131,6 +131,7 @@ async fn main() -> Result<()> {
         ws_manager: ws_manager.clone(),
         ws_rate_limiter,
         heartbeat_interval_secs: config.server.heartbeat_interval_secs,
+        auth_rate_limit_per_min: config.server.auth_rate_limit_per_min,
     };
 
     let tls_config = load_tls_config(&config.tls.cert_path, &config.tls.key_path)?;

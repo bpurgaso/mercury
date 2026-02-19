@@ -48,6 +48,7 @@ pub async fn start_server(config: AppConfig) -> Result<SocketAddr> {
         ws_manager,
         ws_rate_limiter,
         heartbeat_interval_secs: config.server.heartbeat_interval_secs,
+        auth_rate_limit_per_min: config.server.auth_rate_limit_per_min,
     };
 
     let app = create_router(state);

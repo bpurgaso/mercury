@@ -263,6 +263,9 @@ async fn handle_identify(
                 "name": c.name,
                 "channel_type": c.channel_type,
                 "encryption_mode": c.encryption_mode,
+                "position": c.position,
+                "topic": c.topic,
+                "created_at": c.created_at.map(|t| t.to_rfc3339()),
             })
         })
         .collect();
