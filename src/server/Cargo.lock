@@ -1279,6 +1279,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-extra",
+ "base64",
  "chrono",
  "dashmap",
  "fred",
@@ -1388,6 +1389,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "fred",
  "futures-util",

@@ -344,6 +344,48 @@ impl TestClient {
         (status, rbody)
     }
 
+    pub async fn put_authed(
+        &self,
+        path: &str,
+        body: &Value,
+    ) -> (reqwest::StatusCode, Value) {
+        let token = self
+            .access_token
+            .as_ref()
+            .expect("no access token — login first");
+        let resp = self
+            .client
+            .put(format!("{}{}", self.base_url, path))
+            .header("Authorization", format!("Bearer {}", token))
+            .json(body)
+            .send()
+            .await
+            .expect("PUT authed request failed");
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(json!({}));
+        (status, body)
+    }
+
+    pub async fn put_authed_status(
+        &self,
+        path: &str,
+        body: &Value,
+    ) -> reqwest::StatusCode {
+        let token = self
+            .access_token
+            .as_ref()
+            .expect("no access token — login first");
+        let resp = self
+            .client
+            .put(format!("{}{}", self.base_url, path))
+            .header("Authorization", format!("Bearer {}", token))
+            .json(body)
+            .send()
+            .await
+            .expect("PUT authed request failed");
+        resp.status()
+    }
+
     pub async fn patch_authed(
         &self,
         path: &str,

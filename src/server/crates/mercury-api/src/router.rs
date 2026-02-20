@@ -1,7 +1,7 @@
 use axum::{
     http::Method,
     middleware as axum_middleware,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -46,6 +46,13 @@ pub fn create_router(state: AppState) -> Router {
             get(handlers::channels::list_channels),
         );
 
+    // Device routes — require authentication
+    let device_routes = Router::new()
+        .route("/", post(handlers::devices::create_device))
+        .route("/", get(handlers::devices::list_devices))
+        .route("/{id}", delete(handlers::devices::delete_device))
+        .route("/{id}/keys", put(handlers::devices::upload_keys));
+
     // Channel routes (not nested under servers — addressed by channel ID directly)
     let channel_routes = Router::new()
         .route("/{id}", patch(handlers::channels::update_channel))
@@ -59,6 +66,7 @@ pub fn create_router(state: AppState) -> Router {
         .allow_methods([
             Method::GET,
             Method::POST,
+            Method::PUT,
             Method::PATCH,
             Method::DELETE,
             Method::OPTIONS,
@@ -73,7 +81,21 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/auth", auth_routes)
         .nest("/users", user_routes)
         .nest("/servers", server_routes)
+        .nest("/devices", device_routes)
         .nest("/channels", channel_routes)
+        // Key bundle fetch routes nested under /users (any authenticated user can fetch)
+        .route(
+            "/users/{user_id}/devices/{device_id}/keys",
+            get(handlers::devices::fetch_key_bundle),
+        )
+        .route(
+            "/users/{user_id}/keys",
+            get(handlers::devices::fetch_all_bundles),
+        )
+        .route(
+            "/users/{user_id}/devices/{device_id}/keys/one-time",
+            post(handlers::devices::claim_otp),
+        )
         .layer(cors)
         .with_state(state)
 }

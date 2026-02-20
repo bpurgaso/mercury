@@ -1,0 +1,6 @@
+[profile.default]
+# Integration tests share a single Postgres + Redis instance.
+# Each test calls setup() which truncates all tables and flushes Redis,
+# so they must run serially to avoid interfering with each other.
+# Unit tests (inside lib crates) are safe to parallelize.
+test-threads = 1

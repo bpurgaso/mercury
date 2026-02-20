@@ -1,4 +1,5 @@
 pub mod channels;
+pub mod devices;
 pub mod messages;
 pub mod pool;
 pub mod servers;

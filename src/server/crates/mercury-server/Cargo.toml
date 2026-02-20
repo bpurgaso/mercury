@@ -19,6 +19,10 @@ path = "../../tests/milestone_1.rs"
 name = "phase_5"
 path = "../../tests/phase_5.rs"
 
+[[test]]
+name = "phase_6b"
+path = "../../tests/phase_6b.rs"
+
 [dependencies]
 mercury-core.workspace = true
 mercury-api.workspace = true
@@ -67,3 +71,4 @@ uuid.workspace = true
 futures-util.workspace = true
 chrono.workspace = true
 jsonwebtoken.workspace = true
+base64.workspace = true

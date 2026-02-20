@@ -107,6 +107,7 @@ pub struct DeviceIdentityKey {
     pub user_id: UserId,
     pub identity_key: Vec<u8>,
     pub signed_prekey: Vec<u8>,
+    pub signed_prekey_id: i32,
     pub prekey_signature: Vec<u8>,
     pub updated_at: Option<DateTime<Utc>>,
 }
