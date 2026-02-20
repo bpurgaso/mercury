@@ -148,13 +148,13 @@ function setupMessagePort(win: BrowserWindow, worker: Worker): void {
   // Bridge: Worker → Main → Renderer
   worker.on('message', (msg: { op: string; [key: string]: unknown }) => {
     // Only forward worker crypto responses to renderer, not safeStorage requests
-    if (msg.op === 'pong' || msg.op === 'crypto:result') {
+    if (msg.op === 'pong' || msg.op === 'crypto:result' || msg.op === 'crypto:error') {
       mainPort.postMessage(msg)
     }
   })
 
-  // Tell the worker it's ready (no port transfer needed — it uses parentPort)
-  worker.postMessage({ op: 'init:ready' })
+  // Tell the worker it's ready and provide the data directory for databases
+  worker.postMessage({ op: 'init:ready', dataDir: app.getPath('userData') })
 }
 
 function registerIpcHandlers(): void {
