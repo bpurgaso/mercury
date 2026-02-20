@@ -2,6 +2,7 @@
 // All operations require sodium to be initialized via ensureSodium().
 
 import sodium from 'libsodium-wrappers'
+import { createHmac } from 'crypto'
 import type { KeyPair, SigningKeyPair } from './types'
 
 let initialized = false
@@ -66,6 +67,65 @@ export function identityKeyToX25519(kp: SigningKeyPair): KeyPair {
 /** Perform raw X25519 Diffie-Hellman: shared = myPrivate * theirPublic. */
 export function x25519DH(myPrivateKey: Uint8Array, theirPublicKey: Uint8Array): Uint8Array {
   return sodium.crypto_scalarmult(myPrivateKey, theirPublicKey)
+}
+
+// --- HKDF-SHA256 ---
+
+/**
+ * HMAC-SHA256 using Node.js crypto (available in worker threads).
+ * libsodium-wrappers (non-sumo) does not include crypto_auth_hmacsha256.
+ */
+function hmacSha256(key: Uint8Array, message: Uint8Array): Uint8Array {
+  const hmac = createHmac('sha256', key)
+  hmac.update(message)
+  return new Uint8Array(hmac.digest())
+}
+
+/**
+ * HKDF-SHA256 key derivation (RFC 5869).
+ *
+ * @param ikm - Input keying material (arbitrary length)
+ * @param salt - Salt value (arbitrary length; if empty, defaults to 32 zero bytes)
+ * @param info - Context/application-specific info string
+ * @param length - Desired output length in bytes (max 255 * 32)
+ */
+export function hkdfSha256(
+  ikm: Uint8Array,
+  salt: Uint8Array,
+  info: Uint8Array,
+  length: number,
+): Uint8Array {
+  if (length < 1 || length > 255 * 32) {
+    throw new Error('HKDF output length out of range')
+  }
+
+  // Extract: PRK = HMAC-SHA256(salt, IKM)
+  const prk = hmacSha256(salt, ikm)
+
+  // Expand: T(i) = HMAC-SHA256(PRK, T(i-1) || info || i)
+  const n = Math.ceil(length / 32)
+  const okm = new Uint8Array(n * 32)
+  let prev = new Uint8Array(0)
+
+  for (let i = 1; i <= n; i++) {
+    const input = new Uint8Array(prev.length + info.length + 1)
+    input.set(prev, 0)
+    input.set(info, prev.length)
+    input[prev.length + info.length] = i
+
+    const oldPrev = prev
+    prev = hmacSha256(prk, input)
+    okm.set(prev, (i - 1) * 32)
+
+    // Zero intermediate keying material
+    if (oldPrev.length > 0) sodium.memzero(oldPrev)
+    sodium.memzero(input)
+  }
+
+  sodium.memzero(prk)
+  // Zero the final prev (copy is already in okm)
+  sodium.memzero(prev)
+  return length === okm.length ? okm : okm.slice(0, length)
 }
 
 // --- Key serialization ---

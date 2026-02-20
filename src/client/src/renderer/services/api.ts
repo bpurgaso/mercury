@@ -208,6 +208,18 @@ export const channels = {
     request<void>(`/channels/${id}`, { method: 'DELETE' }),
 }
 
+// Device / key bundle endpoints
+export const devices = {
+  uploadKeyBundle: (deviceId: string, bundle: unknown) =>
+    request<void>(`/devices/${deviceId}/keys`, {
+      method: 'PUT',
+      body: JSON.stringify(bundle),
+    }),
+
+  fetchKeyBundle: (userId: string, deviceId: string) =>
+    request<unknown>(`/users/${userId}/devices/${deviceId}/keys`),
+}
+
 // Message endpoints
 export const messages = {
   getHistory: (channelId: string, params?: MessageHistoryParams) => {

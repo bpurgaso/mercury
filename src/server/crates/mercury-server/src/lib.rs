@@ -38,7 +38,7 @@ pub async fn start_server(config: AppConfig) -> Result<SocketAddr> {
         .context("failed to connect to Redis")?;
 
     let ws_manager = Arc::new(ConnectionManager::new());
-    let ws_rate_limiter = Arc::new(GlobalWsRateLimiter::new(200));
+    let ws_rate_limiter = Arc::new(GlobalWsRateLimiter::new(config.server.ws_rate_limit_per_sec));
 
     let state = AppState {
         db: db_pool,

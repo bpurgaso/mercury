@@ -27,6 +27,27 @@ export interface PreKey {
   keyPair: KeyPair
 }
 
+/** Key bundle fetched from server for X3DH key exchange */
+export interface KeyBundle {
+  identityKey: Uint8Array // Ed25519 public key (32 bytes) — used for SPK signature verification, converted to X25519 for DH
+  signedPreKey: {
+    keyId: number
+    publicKey: Uint8Array // X25519 public key (32 bytes)
+    signature: Uint8Array // Ed25519 detached signature over publicKey (64 bytes)
+  }
+  oneTimePreKey?: {
+    keyId: number
+    publicKey: Uint8Array // X25519 public key (32 bytes)
+  }
+}
+
+/** Result of X3DH key exchange (initiator side) */
+export interface X3DHResult {
+  sharedSecret: Uint8Array // 32 bytes derived via HKDF
+  ephemeralPublicKey: Uint8Array // X25519 ephemeral public key sent to responder
+  usedPreKeyId?: number // ID of consumed one-time pre-key, if used
+}
+
 /** Serialized Double Ratchet session state (Phase 6c) */
 export interface SessionState {
   data: Uint8Array
@@ -65,6 +86,7 @@ export interface IKeyStore {
   storeOneTimePreKeys(prekeys: PreKey[]): void
   markOneTimePreKeyUsed(keyId: number): void
   getUnusedOneTimePreKeyCount(): number
+  getUnusedOneTimePreKeys(): PreKey[]
   getNextPreKeyId(): number
 
   // Sessions — keyed by (userId, deviceId) pair

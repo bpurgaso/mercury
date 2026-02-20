@@ -221,6 +221,19 @@ export class KeyStore implements IKeyStore {
     return row.count
   }
 
+  getUnusedOneTimePreKeys(): PreKey[] {
+    const rows = this.db
+      .prepare('SELECT key_id, public_key, private_key FROM one_time_prekeys WHERE used = 0 ORDER BY key_id')
+      .all() as Array<{ key_id: number; public_key: Buffer; private_key: Buffer }>
+    return rows.map((row) => ({
+      keyId: row.key_id,
+      keyPair: {
+        publicKey: new Uint8Array(row.public_key),
+        privateKey: new Uint8Array(row.private_key),
+      },
+    }))
+  }
+
   getNextPreKeyId(): number {
     const row = this.db
       .prepare('SELECT MAX(key_id) as max_id FROM one_time_prekeys')

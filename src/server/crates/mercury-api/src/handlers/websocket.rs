@@ -21,7 +21,7 @@ pub struct WsQueryParams {
 /// WebSocket upgrade handler at `/ws?token={jwt}`.
 ///
 /// Flow:
-/// 1. Check global WS rate limiter (200/sec) → 503 if saturated
+/// 1. Check global WS rate limiter (configurable, default 200/sec) → 503 if saturated
 /// 2. Validate JWT from query parameter
 /// 3. If invalid: upgrade then immediately close with 4008
 /// 4. If valid: upgrade and hand off to connection handler

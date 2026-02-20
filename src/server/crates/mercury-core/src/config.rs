@@ -19,10 +19,16 @@ pub struct ServerConfig {
     pub heartbeat_interval_secs: u64,
     #[serde(default = "default_auth_rate_limit_per_min")]
     pub auth_rate_limit_per_min: u64,
+    #[serde(default = "default_ws_rate_limit_per_sec")]
+    pub ws_rate_limit_per_sec: u64,
 }
 
 fn default_auth_rate_limit_per_min() -> u64 {
     5
+}
+
+fn default_ws_rate_limit_per_sec() -> u64 {
+    200
 }
 
 fn default_heartbeat_interval_secs() -> u64 {

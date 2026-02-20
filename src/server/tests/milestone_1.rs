@@ -948,10 +948,12 @@ fn test_ws_upgrade_rate_limiting() {
 
         // Send real WS upgrade requests — plain HTTP GETs don't trigger the
         // WebSocketUpgrade extractor so the rate limiter is never reached.
+        // Test server sets ws_rate_limit_per_sec=10, so 20 attempts should
+        // reliably exceed the limit within a single 1-second window.
         let ws_url = srv.ws_url(&token);
         let mut saw_rate_limit = false;
 
-        for _ in 0..210 {
+        for _ in 0..20 {
             match tokio_tungstenite::connect_async(&ws_url).await {
                 Ok((_ws, _)) => {
                     // Successful upgrade; drop the connection immediately.

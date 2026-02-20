@@ -190,10 +190,13 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         for (const pk of otpKeys) memzero(pk.keyPair.privateKey)
 
         // Return only public key material for server upload
+        // Includes both Ed25519 (for signature verification) and X25519 (for DH)
+        // forms of the device identity key.
         result = {
           masterVerifyPublicKey: Array.from(masterKP.publicKey),
           deviceId,
           deviceIdentityPublicKey: Array.from(deviceX25519.publicKey),
+          deviceIdentityEd25519PublicKey: Array.from(deviceKP.publicKey),
           signedPreKey: {
             keyId: spk.keyId,
             publicKey: Array.from(spk.keyPair.publicKey),

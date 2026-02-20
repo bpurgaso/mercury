@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
 
     // Initialize WebSocket subsystem
     let ws_manager = Arc::new(ConnectionManager::new());
-    let ws_rate_limiter = Arc::new(GlobalWsRateLimiter::new(200));
+    let ws_rate_limiter = Arc::new(GlobalWsRateLimiter::new(config.server.ws_rate_limit_per_sec));
 
     // Build application state
     let state = AppState {

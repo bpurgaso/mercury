@@ -48,6 +48,7 @@ impl TestServer {
                 port: 0,
                 heartbeat_interval_secs: 5,
                 auth_rate_limit_per_min,
+                ws_rate_limit_per_sec: 10,
             },
             database: DatabaseConfig {
                 url: database_url.clone(),
