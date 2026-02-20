@@ -234,6 +234,44 @@ describe('X3DH signature verification', () => {
   })
 })
 
+describe('X3DH memory safety', () => {
+  it('respondX3DH zeroes the consumed one-time pre-key private key', async () => {
+    const aliceIdentity = await generateDeviceIdentityKeyPair()
+    const bobIdentity = await generateDeviceIdentityKeyPair()
+    const bobSPK = await generateSignedPreKey(bobIdentity, 1)
+    const bobOTPs = await generateOneTimePreKeys(0, 1)
+
+    const bundle: KeyBundle = {
+      identityKey: bobIdentity.publicKey,
+      signedPreKey: {
+        keyId: bobSPK.keyId,
+        publicKey: bobSPK.keyPair.publicKey,
+        signature: bobSPK.signature,
+      },
+      oneTimePreKey: {
+        keyId: bobOTPs[0].keyId,
+        publicKey: bobOTPs[0].keyPair.publicKey,
+      },
+    }
+
+    const aliceResult = performX3DH(aliceIdentity, bundle)
+
+    // Keep a reference to the OTP object passed into respondX3DH
+    const otpForBob = bobOTPs[0]
+    respondX3DH(
+      bobIdentity,
+      bobSPK,
+      otpForBob,
+      aliceIdentity.publicKey,
+      aliceResult.ephemeralPublicKey,
+    )
+
+    // The OTP private key should be zeroed after respondX3DH returns
+    const allZero = otpForBob.keyPair.privateKey.every((b) => b === 0)
+    expect(allZero).toBe(true)
+  })
+})
+
 describe('HKDF-SHA256', () => {
   it('produces deterministic output for the same inputs', () => {
     const ikm = new Uint8Array(64).fill(0xab)

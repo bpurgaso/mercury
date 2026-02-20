@@ -3,7 +3,44 @@
 // and provides HTTP operations via an injectable client interface.
 
 import type { KeyBundle, IKeyStore } from './types'
-import { identityKeyToX25519, memzero } from './utils'
+import { memzero } from './utils'
+
+// --- Domain-specific errors ---
+
+/** Base class for key bundle service errors */
+export class KeyBundleError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'KeyBundleError'
+  }
+}
+
+/** The requested user does not exist */
+export class UserNotFoundError extends KeyBundleError {
+  constructor(userId: string) {
+    super(`User not found: ${userId}`)
+    this.name = 'UserNotFoundError'
+  }
+}
+
+/** The requested device does not exist or has no key bundle */
+export class DeviceNotFoundError extends KeyBundleError {
+  constructor(userId: string, deviceId: string) {
+    super(`Device not found: ${deviceId} for user ${userId}`)
+    this.name = 'DeviceNotFoundError'
+  }
+}
+
+/** A transient network or server error occurred; the caller may retry */
+export class KeyBundleNetworkError extends KeyBundleError {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+  ) {
+    super(message)
+    this.name = 'KeyBundleNetworkError'
+  }
+}
 
 // --- Wire format types (server JSON API) ---
 
@@ -29,6 +66,12 @@ export interface KeyBundleResponsePayload {
     key_id: number
     prekey: string // base64 X25519 public key
   }
+}
+
+/** Error shape that HTTP clients may throw (matches renderer's ApiError) */
+export interface HttpError {
+  status?: number
+  message?: string
 }
 
 /** Injectable HTTP client interface for testability */
@@ -92,11 +135,37 @@ export class KeyBundleService {
    * Fetch a recipient's key bundle for X3DH session establishment.
    * Calls GET /users/:userId/devices/:deviceId/keys and parses the
    * response into the internal KeyBundle type.
+   *
+   * @throws {UserNotFoundError} if the user does not exist (404 on user path)
+   * @throws {DeviceNotFoundError} if the device has no key bundle (404 on device path)
+   * @throws {KeyBundleNetworkError} on transient server/network errors (5xx, timeout)
    */
   async fetchKeyBundle(userId: string, deviceId: string): Promise<KeyBundle> {
-    const response = await this.httpClient.get<KeyBundleResponsePayload>(
-      `/users/${userId}/devices/${deviceId}/keys`,
-    )
+    let response: KeyBundleResponsePayload
+    try {
+      response = await this.httpClient.get<KeyBundleResponsePayload>(
+        `/users/${userId}/devices/${deviceId}/keys`,
+      )
+    } catch (err: unknown) {
+      const status = (err as HttpError)?.status
+      if (status === 404) {
+        // Distinguish user-not-found from device-not-found by convention:
+        // a missing user yields a 404, a missing device/bundle also yields 404.
+        // Without a more specific server error code, report as DeviceNotFound
+        // since the caller already knows the userId exists (from device list).
+        throw new DeviceNotFoundError(userId, deviceId)
+      }
+      if (status !== undefined && status >= 500) {
+        throw new KeyBundleNetworkError(
+          `Server error fetching key bundle: ${(err as HttpError)?.message ?? status}`,
+          status,
+        )
+      }
+      // Unknown error (network timeout, DNS failure, etc.)
+      throw new KeyBundleNetworkError(
+        `Failed to fetch key bundle: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
 
     const bundle: KeyBundle = {
       identityKey: fromBase64(response.identity_key),

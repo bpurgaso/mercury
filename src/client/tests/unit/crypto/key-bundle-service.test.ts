@@ -8,6 +8,8 @@ import {
 import {
   KeyBundleService,
   formatKeyBundleForUpload,
+  DeviceNotFoundError,
+  KeyBundleNetworkError,
   type KeyBundleHttpClient,
   type KeyBundleUploadPayload,
   type KeyBundleResponsePayload,
@@ -209,6 +211,63 @@ describe('KeyBundleService.fetchKeyBundle', () => {
 
     const bundle = await service.fetchKeyBundle('user-1', 'device-1')
     expect(bundle.oneTimePreKey).toBeUndefined()
+  })
+})
+
+describe('KeyBundleService.fetchKeyBundle error classification', () => {
+  it('throws DeviceNotFoundError on 404', async () => {
+    const identity = await generateDeviceIdentityKeyPair()
+    const spk = await generateSignedPreKey(identity, 1)
+
+    const mockClient: KeyBundleHttpClient = {
+      put: vi.fn(),
+      get: vi.fn().mockRejectedValue({ status: 404, message: 'Not Found' }),
+    }
+
+    const keyStore = createMockKeyStore('unused', identity, spk, [])
+    const service = new KeyBundleService(mockClient, keyStore)
+
+    await expect(service.fetchKeyBundle('user-1', 'device-1')).rejects.toThrow(DeviceNotFoundError)
+    await expect(service.fetchKeyBundle('user-1', 'device-1')).rejects.toThrow(
+      'Device not found: device-1 for user user-1',
+    )
+  })
+
+  it('throws KeyBundleNetworkError with status on 5xx', async () => {
+    const identity = await generateDeviceIdentityKeyPair()
+    const spk = await generateSignedPreKey(identity, 1)
+
+    const mockClient: KeyBundleHttpClient = {
+      put: vi.fn(),
+      get: vi.fn().mockRejectedValue({ status: 503, message: 'Service Unavailable' }),
+    }
+
+    const keyStore = createMockKeyStore('unused', identity, spk, [])
+    const service = new KeyBundleService(mockClient, keyStore)
+
+    try {
+      await service.fetchKeyBundle('user-1', 'device-1')
+      expect.unreachable('should have thrown')
+    } catch (err) {
+      expect(err).toBeInstanceOf(KeyBundleNetworkError)
+      expect((err as KeyBundleNetworkError).statusCode).toBe(503)
+    }
+  })
+
+  it('throws KeyBundleNetworkError on unknown errors (network failure)', async () => {
+    const identity = await generateDeviceIdentityKeyPair()
+    const spk = await generateSignedPreKey(identity, 1)
+
+    const mockClient: KeyBundleHttpClient = {
+      put: vi.fn(),
+      get: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+    }
+
+    const keyStore = createMockKeyStore('unused', identity, spk, [])
+    const service = new KeyBundleService(mockClient, keyStore)
+
+    await expect(service.fetchKeyBundle('user-1', 'device-1')).rejects.toThrow(KeyBundleNetworkError)
+    await expect(service.fetchKeyBundle('user-1', 'device-1')).rejects.toThrow('ECONNREFUSED')
   })
 })
 

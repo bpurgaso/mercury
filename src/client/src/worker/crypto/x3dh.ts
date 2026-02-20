@@ -23,11 +23,33 @@ import {
   hkdfSha256,
 } from './utils'
 
-const X3DH_INFO = new TextEncoder().encode('mercury-x3dh-v1')
+const X3DH_INFO_PREFIX = new TextEncoder().encode('mercury-x3dh-v1')
 const HKDF_SALT = new Uint8Array(32) // 32 zero bytes per Signal X3DH spec
 const DH_OUTPUT_SIZE = 32
+const IDENTITY_KEY_SIZE = 32
 // Signal X3DH spec §3.3: prepend 32 bytes of 0xFF for domain separation
 const FF_PREFIX = new Uint8Array(DH_OUTPUT_SIZE).fill(0xff)
+
+/**
+ * Build the HKDF info parameter with both parties' identity keys bound in.
+ * Format: "mercury-x3dh-v1" || initiatorIdentityKey || responderIdentityKey
+ *
+ * Binding both identity public keys into the info string prevents
+ * Unknown Key-Share (UKS) and identity misbinding attacks by
+ * cryptographically tying the derived shared secret to both parties.
+ */
+function buildX3dhInfo(
+  initiatorIdentityKey: Uint8Array,
+  responderIdentityKey: Uint8Array,
+): Uint8Array {
+  const info = new Uint8Array(
+    X3DH_INFO_PREFIX.length + IDENTITY_KEY_SIZE + IDENTITY_KEY_SIZE,
+  )
+  info.set(X3DH_INFO_PREFIX, 0)
+  info.set(initiatorIdentityKey, X3DH_INFO_PREFIX.length)
+  info.set(responderIdentityKey, X3DH_INFO_PREFIX.length + IDENTITY_KEY_SIZE)
+  return info
+}
 
 // --- Initial session serialization ---
 // Binary format for the initial Double Ratchet session state (Phase 6c will consume this):
@@ -112,7 +134,10 @@ export function performX3DH(
   }
 
   // 5. Derive shared secret via HKDF-SHA256
-  const sharedSecret = hkdfSha256(dhConcat, HKDF_SALT, X3DH_INFO, 32)
+  // Bind both parties' identity keys into the info to prevent UKS attacks.
+  // Initiator = ourIdentityKey, Responder = theirKeyBundle.identityKey
+  const info = buildX3dhInfo(ourIdentityKey.publicKey, theirKeyBundle.identityKey)
+  const sharedSecret = hkdfSha256(dhConcat, HKDF_SALT, info, 32)
 
   // 6. Zero all intermediate secrets
   memzero(dh1)
@@ -196,14 +221,21 @@ export function respondX3DH(
   }
 
   // Derive shared secret via HKDF-SHA256
-  const sharedSecret = hkdfSha256(dhConcat, HKDF_SALT, X3DH_INFO, 32)
+  // Bind both parties' identity keys into the info to prevent UKS attacks.
+  // Initiator = theirIdentityKey, Responder = ourIdentityKey
+  const info = buildX3dhInfo(theirIdentityKey, ourIdentityKey.publicKey)
+  const sharedSecret = hkdfSha256(dhConcat, HKDF_SALT, info, 32)
 
-  // Zero intermediate secrets (only our allocations, not caller-owned keys)
+  // Zero intermediate secrets
   memzero(dh1)
   memzero(dh2)
   memzero(dh3)
   memzero(dhConcat)
   memzero(ourIdentityX25519.privateKey)
+  // Zero the consumed OTP private key — it must never be reused
+  if (ourOneTimePreKey) {
+    memzero(ourOneTimePreKey.keyPair.privateKey)
+  }
 
   return sharedSecret
 }
