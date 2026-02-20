@@ -7,7 +7,7 @@ import {
   generateX25519KeyPair,
   sign,
 } from './utils'
-import type { SigningKeyPair, KeyPair, SignedPreKey, PreKey } from './types'
+import type { SigningKeyPair, SignedPreKey, PreKey } from './types'
 
 /**
  * Generate the Master Verify Key (Ed25519 signing keypair).
@@ -19,12 +19,12 @@ export async function generateMasterVerifyKeyPair(): Promise<SigningKeyPair> {
 }
 
 /**
- * Generate a Device Identity Key (X25519 key agreement keypair).
- * Used for X3DH key exchange.
+ * Generate a Device Identity Key (Ed25519 signing keypair).
+ * Signs pre-keys; converted to X25519 for X3DH key exchange.
  */
-export async function generateDeviceIdentityKeyPair(): Promise<KeyPair> {
+export async function generateDeviceIdentityKeyPair(): Promise<SigningKeyPair> {
   await ensureSodium()
-  return generateX25519KeyPair()
+  return generateEd25519KeyPair()
 }
 
 /**

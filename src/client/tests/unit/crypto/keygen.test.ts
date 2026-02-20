@@ -29,13 +29,13 @@ describe('generateMasterVerifyKeyPair', () => {
 })
 
 describe('generateDeviceIdentityKeyPair', () => {
-  it('generates a valid X25519 key agreement keypair', async () => {
+  it('generates a valid Ed25519 signing keypair', async () => {
     const kp = await generateDeviceIdentityKeyPair()
 
     expect(kp.publicKey).toBeInstanceOf(Uint8Array)
     expect(kp.privateKey).toBeInstanceOf(Uint8Array)
     expect(kp.publicKey.length).toBe(32)
-    expect(kp.privateKey.length).toBe(32)
+    expect(kp.privateKey.length).toBe(64)
   })
 })
 

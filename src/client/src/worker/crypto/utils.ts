@@ -55,6 +55,14 @@ export function memzero(buf: Uint8Array): void {
   sodium.memzero(buf)
 }
 
+/** Convert an Ed25519 signing keypair to an X25519 key agreement keypair. */
+export function identityKeyToX25519(kp: SigningKeyPair): KeyPair {
+  return {
+    publicKey: sodium.crypto_sign_ed25519_pk_to_curve25519(kp.publicKey),
+    privateKey: sodium.crypto_sign_ed25519_sk_to_curve25519(kp.privateKey),
+  }
+}
+
 /** Perform raw X25519 Diffie-Hellman: shared = myPrivate * theirPublic. */
 export function x25519DH(myPrivateKey: Uint8Array, theirPublicKey: Uint8Array): Uint8Array {
   return sodium.crypto_scalarmult(myPrivateKey, theirPublicKey)

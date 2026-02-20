@@ -29,7 +29,7 @@ afterEach(() => {
 
 describe('KeyStore round-trip', () => {
   it('stores and retrieves a master verify keypair', async () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const kp = await generateMasterVerifyKeyPair()
 
     store.storeMasterVerifyKeyPair(kp)
@@ -42,7 +42,7 @@ describe('KeyStore round-trip', () => {
   })
 
   it('stores and retrieves a device identity keypair', async () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const kp = await generateDeviceIdentityKeyPair()
     const deviceId = 'test-device-123'
 
@@ -57,9 +57,9 @@ describe('KeyStore round-trip', () => {
   })
 
   it('stores and retrieves a signed pre-key', async () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
-    const masterKP = await generateMasterVerifyKeyPair()
-    const spk = await generateSignedPreKey(masterKP)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
+    const deviceKP = await generateDeviceIdentityKeyPair()
+    const spk = await generateSignedPreKey(deviceKP)
 
     store.storeSignedPreKey(spk)
     const retrieved = store.getSignedPreKey()
@@ -73,7 +73,7 @@ describe('KeyStore round-trip', () => {
   })
 
   it('stores 100 one-time pre-keys and retrieves each by ID', async () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const prekeys = await generateOneTimePreKeys(0, 100)
 
     store.storeOneTimePreKeys(prekeys)
@@ -90,13 +90,13 @@ describe('KeyStore round-trip', () => {
   })
 
   it('returns null for non-existent one-time pre-key', () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     expect(store.getOneTimePreKey(999)).toBeNull()
     store.close()
   })
 
   it('marks one-time pre-keys as used', async () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const prekeys = await generateOneTimePreKeys(0, 10)
     store.storeOneTimePreKeys(prekeys)
 
@@ -115,7 +115,7 @@ describe('KeyStore round-trip', () => {
   })
 
   it('tracks next pre-key ID correctly', async () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
 
     // Empty store starts at 0
     expect(store.getNextPreKeyId()).toBe(0)
@@ -132,7 +132,7 @@ describe('KeyStore round-trip', () => {
   })
 
   it('stores and retrieves sessions', () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const sessionData = randomBytes(256)
 
     store.storeSession('user-1', 'device-1', { data: sessionData })
@@ -148,7 +148,7 @@ describe('KeyStore round-trip', () => {
   })
 
   it('retrieves all sessions for a user', () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const data1 = randomBytes(128)
     const data2 = randomBytes(128)
 
@@ -165,7 +165,7 @@ describe('KeyStore round-trip', () => {
   })
 
   it('stores and retrieves sender keys', () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const keyData = randomBytes(64)
 
     store.storeSenderKey('channel-1', 'user-1', 'device-1', { data: keyData })
@@ -180,7 +180,7 @@ describe('KeyStore round-trip', () => {
   })
 
   it('stores and retrieves media keys', () => {
-    const store = new KeyStore(join(tempDir, 'keys.db'), encryptionKey)
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const mediaKey = randomBytes(32)
 
     store.storeMediaKey('room-1', mediaKey)
@@ -195,51 +195,66 @@ describe('KeyStore round-trip', () => {
   })
 })
 
-describe('KeyStore wrong encryption key', () => {
-  it('fails to decrypt private keys when opened with wrong key', async () => {
+describe('KeyStore wrong encryption key (SQLCipher)', () => {
+  it('throws when opening a database with the wrong key', async () => {
     const correctKey = randomBytes(32)
     const wrongKey = randomBytes(32)
     const dbPath = join(tempDir, 'keys.db')
 
-    // Store with correct key
-    const store1 = new KeyStore(dbPath, correctKey)
+    // Create and populate with correct key
+    const store1 = new KeyStore(dbPath, new Uint8Array(correctKey))
     const kp = await generateMasterVerifyKeyPair()
     store1.storeMasterVerifyKeyPair(kp)
     store1.close()
 
-    // Try to read with wrong key — should throw (authentication failure)
-    const store2 = new KeyStore(dbPath, wrongKey)
-    expect(() => store2.getMasterVerifyKeyPair()).toThrow()
-    store2.close()
+    // Opening with wrong key should throw (SQLCipher fails on first query)
+    expect(() => new KeyStore(dbPath, new Uint8Array(wrongKey))).toThrow()
   })
+})
 
-  it('fails to decrypt device identity key with wrong key', async () => {
-    const correctKey = randomBytes(32)
-    const wrongKey = randomBytes(32)
+describe('KeyStore persistence', () => {
+  it('data survives close and reopen with same key', async () => {
     const dbPath = join(tempDir, 'keys.db')
 
-    const store1 = new KeyStore(dbPath, correctKey)
-    const kp = await generateDeviceIdentityKeyPair()
-    store1.storeDeviceIdentityKeyPair('device-1', kp)
+    // Write data
+    const store1 = new KeyStore(dbPath, new Uint8Array(encryptionKey))
+    const masterKP = await generateMasterVerifyKeyPair()
+    store1.storeMasterVerifyKeyPair(masterKP)
+    const deviceKP = await generateDeviceIdentityKeyPair()
+    store1.storeDeviceIdentityKeyPair('dev-1', deviceKP)
+    const sessionData = randomBytes(128)
+    store1.storeSession('user-1', 'dev-1', { data: sessionData })
     store1.close()
 
-    const store2 = new KeyStore(dbPath, wrongKey)
-    expect(() => store2.getDeviceIdentityKeyPair()).toThrow()
+    // Reopen with same key (must pass copy since constructor zeros the key)
+    const store2 = new KeyStore(dbPath, new Uint8Array(encryptionKey))
+
+    const master = store2.getMasterVerifyKeyPair()
+    expect(master.publicKey).toEqual(masterKP.publicKey)
+    expect(master.privateKey).toEqual(masterKP.privateKey)
+
+    const device = store2.getDeviceIdentityKeyPair()
+    expect(device.publicKey).toEqual(deviceKP.publicKey)
+    expect(device.privateKey).toEqual(deviceKP.privateKey)
+
+    const session = store2.getSession('user-1', 'dev-1')
+    expect(session).not.toBeNull()
+    expect(session!.data).toEqual(sessionData)
+
     store2.close()
   })
+})
 
-  it('fails to decrypt one-time pre-keys with wrong key', async () => {
-    const correctKey = randomBytes(32)
-    const wrongKey = randomBytes(32)
-    const dbPath = join(tempDir, 'keys.db')
+describe('KeyStore backup stubs', () => {
+  it('exportBackupBlob throws not implemented', () => {
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
+    expect(() => store.exportBackupBlob()).toThrow('Not implemented')
+    store.close()
+  })
 
-    const store1 = new KeyStore(dbPath, correctKey)
-    const prekeys = await generateOneTimePreKeys(0, 5)
-    store1.storeOneTimePreKeys(prekeys)
-    store1.close()
-
-    const store2 = new KeyStore(dbPath, wrongKey)
-    expect(() => store2.getOneTimePreKey(0)).toThrow()
-    store2.close()
+  it('importBackupBlob throws not implemented', () => {
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
+    expect(() => store.importBackupBlob(new Uint8Array(0))).toThrow('Not implemented')
+    store.close()
   })
 })

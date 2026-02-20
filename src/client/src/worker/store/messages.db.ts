@@ -1,25 +1,25 @@
-// Encrypted local message store backed by better-sqlite3.
+// Encrypted local message store backed by SQLCipher (better-sqlite3-multiple-ciphers).
+// The entire database is encrypted with a 256-bit key via PRAGMA key.
 // Stores decrypted E2E message plaintext locally — forward secrecy means
 // messages cannot be re-decrypted from the server after ratchet advances.
-// Content is encrypted at the field level using XSalsa20-Poly1305.
 
-import Database from 'better-sqlite3'
+import Database from 'better-sqlite3-multiple-ciphers'
 import sodium from 'libsodium-wrappers'
-import { encryptString, decryptString } from './encryption'
 import type { IMessageStore, StoredMessage } from '../crypto/types'
 
 export class MessageStore implements IMessageStore {
   private db: Database.Database
-  private key: Uint8Array
 
   constructor(dbPath: string, encryptionKey: Uint8Array) {
-    if (encryptionKey.length !== sodium.crypto_secretbox_KEYBYTES) {
+    if (encryptionKey.length !== 32) {
       throw new Error(
-        `Encryption key must be ${sodium.crypto_secretbox_KEYBYTES} bytes, got ${encryptionKey.length}`,
+        `Encryption key must be 32 bytes, got ${encryptionKey.length}`,
       )
     }
-    this.key = encryptionKey
+    const hexKey = Buffer.from(encryptionKey).toString('hex')
     this.db = new Database(dbPath)
+    this.db.pragma(`key="x'${hexKey}'"`)
+    sodium.memzero(encryptionKey)
     this.db.pragma('journal_mode = WAL')
     this.createTables()
   }
@@ -30,7 +30,7 @@ export class MessageStore implements IMessageStore {
         id TEXT PRIMARY KEY,
         channel_id TEXT NOT NULL,
         sender_id TEXT NOT NULL,
-        content BLOB NOT NULL,
+        content TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         received_at INTEGER NOT NULL
       );
@@ -41,7 +41,6 @@ export class MessageStore implements IMessageStore {
   }
 
   insertMessage(message: StoredMessage): void {
-    const encContent = encryptString(message.content, this.key)
     this.db
       .prepare(
         `INSERT OR IGNORE INTO messages (id, channel_id, sender_id, content, created_at, received_at)
@@ -51,7 +50,7 @@ export class MessageStore implements IMessageStore {
         message.id,
         message.channelId,
         message.senderId,
-        Buffer.from(encContent),
+        message.content,
         message.createdAt,
         message.receivedAt,
       )
@@ -74,7 +73,7 @@ export class MessageStore implements IMessageStore {
       id: string
       channel_id: string
       sender_id: string
-      content: Buffer
+      content: string
       created_at: number
       received_at: number
     }>
@@ -83,7 +82,7 @@ export class MessageStore implements IMessageStore {
       id: row.id,
       channelId: row.channel_id,
       senderId: row.sender_id,
-      content: decryptString(new Uint8Array(row.content), this.key),
+      content: row.content,
       createdAt: row.created_at,
       receivedAt: row.received_at,
     }))
@@ -100,7 +99,7 @@ export class MessageStore implements IMessageStore {
           id: string
           channel_id: string
           sender_id: string
-          content: Buffer
+          content: string
           created_at: number
           received_at: number
         }
@@ -110,7 +109,7 @@ export class MessageStore implements IMessageStore {
       id: row.id,
       channelId: row.channel_id,
       senderId: row.sender_id,
-      content: decryptString(new Uint8Array(row.content), this.key),
+      content: row.content,
       createdAt: row.created_at,
       receivedAt: row.received_at,
     }
@@ -125,6 +124,5 @@ export class MessageStore implements IMessageStore {
 
   close(): void {
     this.db.close()
-    sodium.memzero(this.key)
   }
 }

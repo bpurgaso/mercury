@@ -1,11 +1,9 @@
-// Encrypted local key store backed by better-sqlite3.
-// Private key material is encrypted at the field level using XSalsa20-Poly1305
-// before being written to SQLite. Public keys are stored in plaintext.
+// Encrypted local key store backed by SQLCipher (better-sqlite3-multiple-ciphers).
+// The entire database is encrypted with a 256-bit key via PRAGMA key.
 // See client-spec.md §4.3 for the interface contract.
 
-import Database from 'better-sqlite3'
+import Database from 'better-sqlite3-multiple-ciphers'
 import sodium from 'libsodium-wrappers'
-import { encryptBlob, decryptBlob } from './encryption'
 import type {
   IKeyStore,
   KeyPair,
@@ -18,16 +16,17 @@ import type {
 
 export class KeyStore implements IKeyStore {
   private db: Database.Database
-  private key: Uint8Array
 
   constructor(dbPath: string, encryptionKey: Uint8Array) {
-    if (encryptionKey.length !== sodium.crypto_secretbox_KEYBYTES) {
+    if (encryptionKey.length !== 32) {
       throw new Error(
-        `Encryption key must be ${sodium.crypto_secretbox_KEYBYTES} bytes, got ${encryptionKey.length}`,
+        `Encryption key must be 32 bytes, got ${encryptionKey.length}`,
       )
     }
-    this.key = encryptionKey
+    const hexKey = Buffer.from(encryptionKey).toString('hex')
     this.db = new Database(dbPath)
+    this.db.pragma(`key="x'${hexKey}'"`)
+    sodium.memzero(encryptionKey)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
     this.createTables()
@@ -96,21 +95,20 @@ export class KeyStore implements IKeyStore {
     if (!row) throw new Error('Master verify key not found')
     return {
       publicKey: new Uint8Array(row.public_key),
-      privateKey: decryptBlob(new Uint8Array(row.private_key), this.key),
+      privateKey: new Uint8Array(row.private_key),
     }
   }
 
   storeMasterVerifyKeyPair(keyPair: SigningKeyPair): void {
-    const encPrivate = encryptBlob(keyPair.privateKey, this.key)
     this.db
       .prepare(
         `INSERT OR REPLACE INTO master_keys (id, public_key, private_key, created_at)
          VALUES (1, ?, ?, ?)`,
       )
-      .run(Buffer.from(keyPair.publicKey), Buffer.from(encPrivate), Date.now())
+      .run(Buffer.from(keyPair.publicKey), Buffer.from(keyPair.privateKey), Date.now())
   }
 
-  // --- Device identity (X25519) ---
+  // --- Device identity (Ed25519, converted to X25519 for X3DH) ---
 
   getDeviceId(): string {
     const row = this.db
@@ -120,25 +118,24 @@ export class KeyStore implements IKeyStore {
     return row.device_id
   }
 
-  getDeviceIdentityKeyPair(): KeyPair {
+  getDeviceIdentityKeyPair(): SigningKeyPair {
     const row = this.db
       .prepare('SELECT public_key, private_key FROM device_keys LIMIT 1')
       .get() as { public_key: Buffer; private_key: Buffer } | undefined
     if (!row) throw new Error('Device identity key not found')
     return {
       publicKey: new Uint8Array(row.public_key),
-      privateKey: decryptBlob(new Uint8Array(row.private_key), this.key),
+      privateKey: new Uint8Array(row.private_key),
     }
   }
 
-  storeDeviceIdentityKeyPair(deviceId: string, keyPair: KeyPair): void {
-    const encPrivate = encryptBlob(keyPair.privateKey, this.key)
+  storeDeviceIdentityKeyPair(deviceId: string, keyPair: SigningKeyPair): void {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO device_keys (device_id, public_key, private_key, created_at)
          VALUES (?, ?, ?, ?)`,
       )
-      .run(deviceId, Buffer.from(keyPair.publicKey), Buffer.from(encPrivate), Date.now())
+      .run(deviceId, Buffer.from(keyPair.publicKey), Buffer.from(keyPair.privateKey), Date.now())
   }
 
   // --- Signed pre-keys ---
@@ -162,7 +159,7 @@ export class KeyStore implements IKeyStore {
       keyId: row.key_id,
       keyPair: {
         publicKey: new Uint8Array(row.public_key),
-        privateKey: decryptBlob(new Uint8Array(row.private_key), this.key),
+        privateKey: new Uint8Array(row.private_key),
       },
       signature: new Uint8Array(row.signature),
       timestamp: row.created_at,
@@ -170,7 +167,6 @@ export class KeyStore implements IKeyStore {
   }
 
   storeSignedPreKey(spk: SignedPreKey): void {
-    const encPrivate = encryptBlob(spk.keyPair.privateKey, this.key)
     this.db
       .prepare(
         `INSERT OR REPLACE INTO signed_prekeys (key_id, public_key, private_key, signature, created_at)
@@ -179,7 +175,7 @@ export class KeyStore implements IKeyStore {
       .run(
         spk.keyId,
         Buffer.from(spk.keyPair.publicKey),
-        Buffer.from(encPrivate),
+        Buffer.from(spk.keyPair.privateKey),
         Buffer.from(spk.signature),
         spk.timestamp,
       )
@@ -196,7 +192,7 @@ export class KeyStore implements IKeyStore {
       keyId: row.key_id,
       keyPair: {
         publicKey: new Uint8Array(row.public_key),
-        privateKey: decryptBlob(new Uint8Array(row.private_key), this.key),
+        privateKey: new Uint8Array(row.private_key),
       },
     }
   }
@@ -208,8 +204,7 @@ export class KeyStore implements IKeyStore {
     )
     const tx = this.db.transaction(() => {
       for (const pk of prekeys) {
-        const encPrivate = encryptBlob(pk.keyPair.privateKey, this.key)
-        insert.run(pk.keyId, Buffer.from(pk.keyPair.publicKey), Buffer.from(encPrivate))
+        insert.run(pk.keyId, Buffer.from(pk.keyPair.publicKey), Buffer.from(pk.keyPair.privateKey))
       }
     })
     tx()
@@ -240,17 +235,16 @@ export class KeyStore implements IKeyStore {
       .prepare('SELECT state FROM sessions WHERE user_id = ? AND device_id = ?')
       .get(userId, deviceId) as { state: Buffer } | undefined
     if (!row) return null
-    return { data: decryptBlob(new Uint8Array(row.state), this.key) }
+    return { data: new Uint8Array(row.state) }
   }
 
   storeSession(userId: string, deviceId: string, state: SessionState): void {
-    const encState = encryptBlob(state.data, this.key)
     this.db
       .prepare(
         `INSERT OR REPLACE INTO sessions (user_id, device_id, state, updated_at)
          VALUES (?, ?, ?, ?)`,
       )
-      .run(userId, deviceId, Buffer.from(encState), Date.now())
+      .run(userId, deviceId, Buffer.from(state.data), Date.now())
   }
 
   getAllSessionsForUser(userId: string): Map<string, SessionState> {
@@ -260,7 +254,7 @@ export class KeyStore implements IKeyStore {
     const result = new Map<string, SessionState>()
     for (const row of rows) {
       result.set(row.device_id, {
-        data: decryptBlob(new Uint8Array(row.state), this.key),
+        data: new Uint8Array(row.state),
       })
     }
     return result
@@ -275,7 +269,7 @@ export class KeyStore implements IKeyStore {
       )
       .get(channelId, userId, deviceId) as { key_data: Buffer } | undefined
     if (!row) return null
-    return { data: decryptBlob(new Uint8Array(row.key_data), this.key) }
+    return { data: new Uint8Array(row.key_data) }
   }
 
   storeSenderKey(
@@ -284,13 +278,12 @@ export class KeyStore implements IKeyStore {
     deviceId: string,
     key: SenderKey,
   ): void {
-    const encKey = encryptBlob(key.data, this.key)
     this.db
       .prepare(
         `INSERT OR REPLACE INTO sender_keys (channel_id, user_id, device_id, key_data)
          VALUES (?, ?, ?, ?)`,
       )
-      .run(channelId, userId, deviceId, Buffer.from(encKey))
+      .run(channelId, userId, deviceId, Buffer.from(key.data))
   }
 
   // --- Media keys ---
@@ -300,18 +293,26 @@ export class KeyStore implements IKeyStore {
       .prepare('SELECT key_data FROM media_keys WHERE room_id = ?')
       .get(roomId) as { key_data: Buffer } | undefined
     if (!row) return null
-    return decryptBlob(new Uint8Array(row.key_data), this.key)
+    return new Uint8Array(row.key_data)
   }
 
   storeMediaKey(roomId: string, key: Uint8Array): void {
-    const encKey = encryptBlob(key, this.key)
     this.db
       .prepare('INSERT OR REPLACE INTO media_keys (room_id, key_data) VALUES (?, ?)')
-      .run(roomId, Buffer.from(encKey))
+      .run(roomId, Buffer.from(key))
+  }
+
+  // --- Backup (Phase 6e) ---
+
+  exportBackupBlob(): Uint8Array {
+    throw new Error('Not implemented — deferred to Phase 6e')
+  }
+
+  importBackupBlob(_blob: Uint8Array): void {
+    throw new Error('Not implemented — deferred to Phase 6e')
   }
 
   close(): void {
     this.db.close()
-    sodium.memzero(this.key)
   }
 }

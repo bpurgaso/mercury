@@ -23,7 +23,7 @@ afterEach(() => {
 
 describe('MessageStore insert and query', () => {
   it('inserts a message and retrieves it by channel', () => {
-    const store = new MessageStore(join(tempDir, 'messages.db'), encryptionKey)
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
 
     const message = {
       id: 'msg-1',
@@ -49,7 +49,7 @@ describe('MessageStore insert and query', () => {
   })
 
   it('retrieves a message by ID', () => {
-    const store = new MessageStore(join(tempDir, 'messages.db'), encryptionKey)
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
 
     store.insertMessage({
       id: 'msg-42',
@@ -70,7 +70,7 @@ describe('MessageStore insert and query', () => {
   })
 
   it('returns messages only for the requested channel', () => {
-    const store = new MessageStore(join(tempDir, 'messages.db'), encryptionKey)
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
     const now = Date.now()
 
     store.insertMessage({
@@ -103,7 +103,7 @@ describe('MessageStore insert and query', () => {
   })
 
   it('orders messages by created_at ascending', () => {
-    const store = new MessageStore(join(tempDir, 'messages.db'), encryptionKey)
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
     const now = Date.now()
 
     // Insert out of order
@@ -139,7 +139,7 @@ describe('MessageStore insert and query', () => {
   })
 
   it('ignores duplicate message inserts', () => {
-    const store = new MessageStore(join(tempDir, 'messages.db'), encryptionKey)
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
     const now = Date.now()
 
     const message = {
@@ -162,7 +162,7 @@ describe('MessageStore insert and query', () => {
   })
 
   it('counts messages per channel', () => {
-    const store = new MessageStore(join(tempDir, 'messages.db'), encryptionKey)
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
     const now = Date.now()
 
     for (let i = 0; i < 25; i++) {
@@ -185,7 +185,7 @@ describe('MessageStore insert and query', () => {
 
 describe('MessageStore pagination', () => {
   it('paginates 1000 messages with limit and offset', () => {
-    const store = new MessageStore(join(tempDir, 'messages.db'), encryptionKey)
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
     const now = Date.now()
 
     // Insert 1000 messages
@@ -228,7 +228,7 @@ describe('MessageStore pagination', () => {
   })
 
   it('defaults to limit=50, offset=0', () => {
-    const store = new MessageStore(join(tempDir, 'messages.db'), encryptionKey)
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
     const now = Date.now()
 
     for (let i = 0; i < 100; i++) {
@@ -250,13 +250,13 @@ describe('MessageStore pagination', () => {
   })
 })
 
-describe('MessageStore wrong encryption key', () => {
-  it('fails to decrypt message content with wrong key', () => {
+describe('MessageStore wrong encryption key (SQLCipher)', () => {
+  it('throws when opening a database with the wrong key', () => {
     const correctKey = randomBytes(32)
     const wrongKey = randomBytes(32)
     const dbPath = join(tempDir, 'messages.db')
 
-    const store1 = new MessageStore(dbPath, correctKey)
+    const store1 = new MessageStore(dbPath, new Uint8Array(correctKey))
     store1.insertMessage({
       id: 'msg-1',
       channelId: 'ch',
@@ -267,29 +267,37 @@ describe('MessageStore wrong encryption key', () => {
     })
     store1.close()
 
-    const store2 = new MessageStore(dbPath, wrongKey)
-    expect(() => store2.getMessage('msg-1')).toThrow()
-    store2.close()
+    // Opening with wrong key should throw (SQLCipher fails on first query)
+    expect(() => new MessageStore(dbPath, new Uint8Array(wrongKey))).toThrow()
   })
+})
 
-  it('fails to decrypt channel messages with wrong key', () => {
-    const correctKey = randomBytes(32)
-    const wrongKey = randomBytes(32)
+describe('MessageStore persistence', () => {
+  it('data survives close and reopen with same key', () => {
     const dbPath = join(tempDir, 'messages.db')
+    const now = Date.now()
 
-    const store1 = new MessageStore(dbPath, correctKey)
+    // Write data
+    const store1 = new MessageStore(dbPath, new Uint8Array(encryptionKey))
     store1.insertMessage({
-      id: 'msg-1',
-      channelId: 'ch',
-      senderId: 'u',
-      content: 'secret',
-      createdAt: Date.now(),
-      receivedAt: Date.now(),
+      id: 'msg-persist',
+      channelId: 'ch-1',
+      senderId: 'user-1',
+      content: 'persisted message',
+      createdAt: now,
+      receivedAt: now,
     })
     store1.close()
 
-    const store2 = new MessageStore(dbPath, wrongKey)
-    expect(() => store2.getMessagesByChannel('ch')).toThrow()
+    // Reopen with same key (must pass copy since constructor zeros the key)
+    const store2 = new MessageStore(dbPath, new Uint8Array(encryptionKey))
+
+    const msg = store2.getMessage('msg-persist')
+    expect(msg).not.toBeNull()
+    expect(msg!.content).toBe('persisted message')
+    expect(msg!.channelId).toBe('ch-1')
+    expect(msg!.senderId).toBe('user-1')
+
     store2.close()
   })
 })

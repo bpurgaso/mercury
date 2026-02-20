@@ -3,6 +3,7 @@ import {
   ensureSodium,
   generateEd25519KeyPair,
   generateX25519KeyPair,
+  identityKeyToX25519,
   sign,
   verify,
   randomBytes,
@@ -78,6 +79,34 @@ describe('X25519 Diffie-Hellman', () => {
     const sharedAC = x25519DH(kpA.privateKey, kpC.publicKey)
 
     expect(sharedAB).not.toEqual(sharedAC)
+  })
+})
+
+describe('identityKeyToX25519', () => {
+  it('converts Ed25519 keypair to X25519 and produces valid DH shared secrets', () => {
+    const ed25519KP = generateEd25519KeyPair()
+    const x25519KP = identityKeyToX25519(ed25519KP)
+
+    expect(x25519KP.publicKey.length).toBe(32)
+    expect(x25519KP.privateKey.length).toBe(32)
+
+    // DH with an ephemeral X25519 keypair should produce matching shared secrets
+    const ephemeral = generateX25519KeyPair()
+    const sharedA = x25519DH(x25519KP.privateKey, ephemeral.publicKey)
+    const sharedB = x25519DH(ephemeral.privateKey, x25519KP.publicKey)
+
+    expect(sharedA).toEqual(sharedB)
+    expect(sharedA.length).toBe(32)
+  })
+
+  it('produces different X25519 keys from different Ed25519 keys', () => {
+    const kp1 = generateEd25519KeyPair()
+    const kp2 = generateEd25519KeyPair()
+    const x1 = identityKeyToX25519(kp1)
+    const x2 = identityKeyToX25519(kp2)
+
+    expect(x1.publicKey).not.toEqual(x2.publicKey)
+    expect(x1.privateKey).not.toEqual(x2.privateKey)
   })
 })
 

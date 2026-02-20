@@ -53,10 +53,10 @@ export interface IKeyStore {
   getMasterVerifyKeyPair(): SigningKeyPair
   storeMasterVerifyKeyPair(keyPair: SigningKeyPair): void
 
-  // Device identity (X25519)
+  // Device identity (Ed25519, converted to X25519 for X3DH)
   getDeviceId(): string
-  getDeviceIdentityKeyPair(): KeyPair
-  storeDeviceIdentityKeyPair(deviceId: string, keyPair: KeyPair): void
+  getDeviceIdentityKeyPair(): SigningKeyPair
+  storeDeviceIdentityKeyPair(deviceId: string, keyPair: SigningKeyPair): void
 
   // Pre-keys
   getSignedPreKey(): SignedPreKey
@@ -79,6 +79,10 @@ export interface IKeyStore {
   // Media keys
   getMediaKey(roomId: string): Uint8Array | null
   storeMediaKey(roomId: string, key: Uint8Array): void
+
+  // Backup (Phase 6e)
+  exportBackupBlob(): Uint8Array
+  importBackupBlob(blob: Uint8Array): void
 
   close(): void
 }
