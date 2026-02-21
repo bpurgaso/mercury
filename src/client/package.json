@@ -15,7 +15,7 @@
     "test:quick": "vitest run --exclude 'tests/unit/store/**'",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:e2e": "playwright test",
+    "test:e2e": "electron-vite build && playwright test",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "build:mac": "electron-vite build && electron-builder --mac",

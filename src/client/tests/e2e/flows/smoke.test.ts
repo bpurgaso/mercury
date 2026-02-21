@@ -9,9 +9,12 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import { join } from 'path'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
 
 let app: ElectronApplication
 let page: Page
+let userDataDir: string
 
 const TEST_USER = {
   username: `smoketest_${Date.now()}`,
@@ -20,8 +23,15 @@ const TEST_USER = {
 }
 
 test.beforeAll(async () => {
+  // Use a fresh temp directory for Electron userData to avoid state leakage
+  // between test runs (persisted auth tokens, databases, etc.)
+  userDataDir = mkdtempSync(join(tmpdir(), 'mercury-e2e-'))
+
   app = await electron.launch({
-    args: [join(__dirname, '../../../out/main/index.js')],
+    args: [
+      join(__dirname, '../../../out/main/index.js'),
+      `--user-data-dir=${userDataDir}`,
+    ],
     env: {
       ...process.env,
       NODE_ENV: 'development',
@@ -34,6 +44,8 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await app?.close()
+  // Clean up the temp userData directory
+  rmSync(userDataDir, { recursive: true, force: true })
 })
 
 test('launch app shows login screen', async () => {
