@@ -96,6 +96,22 @@ pub fn create_router(state: AppState) -> Router {
             "/users/{user_id}/devices/{device_id}/keys/one-time",
             post(handlers::devices::claim_otp),
         )
+        // Device list routes
+        .route(
+            "/users/me/device-list",
+            put(handlers::identity::upload_device_list),
+        )
+        .route(
+            "/users/{user_id}/device-list",
+            get(handlers::identity::get_device_list),
+        )
+        // Key backup routes (private — only the owner can access)
+        .route(
+            "/users/me/key-backup",
+            put(handlers::identity::upload_key_backup)
+                .get(handlers::identity::get_key_backup)
+                .delete(handlers::identity::delete_key_backup),
+        )
         .layer(cors)
         .with_state(state)
 }

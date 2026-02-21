@@ -23,6 +23,10 @@ path = "../../tests/phase_5.rs"
 name = "phase_6b"
 path = "../../tests/phase_6b.rs"
 
+[[test]]
+name = "phase_6e"
+path = "../../tests/phase_6e.rs"
+
 [dependencies]
 mercury-core.workspace = true
 mercury-api.workspace = true
