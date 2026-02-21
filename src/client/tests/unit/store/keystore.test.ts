@@ -245,16 +245,16 @@ describe('KeyStore persistence', () => {
   })
 })
 
-describe('KeyStore backup stubs', () => {
-  it('exportBackupBlob throws not implemented', () => {
+describe('KeyStore backup', () => {
+  it('exportBackupBlob throws when no keys are stored', () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
-    expect(() => store.exportBackupBlob()).toThrow('Not implemented')
+    expect(() => store.exportBackupBlob()).toThrow('Master verify key not found')
     store.close()
   })
 
-  it('importBackupBlob throws not implemented', () => {
+  it('importBackupBlob throws on invalid data', () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
-    expect(() => store.importBackupBlob(new Uint8Array(0))).toThrow('Not implemented')
+    expect(() => store.importBackupBlob(new Uint8Array(0))).toThrow()
     store.close()
   })
 })

@@ -58,6 +58,64 @@ export interface SenderKey {
   data: Uint8Array
 }
 
+// --- Phase 6e: Device Management, Identity & Recovery ---
+
+/** Entry in a signed device list */
+export interface DeviceListEntry {
+  device_id: string
+  identity_key: string // base64-encoded Ed25519 public key
+}
+
+/** Payload inside a signed device list */
+export interface DeviceListPayload {
+  devices: DeviceListEntry[]
+  timestamp: number // Unix ms
+}
+
+/** Signed device list: JSON payload + Ed25519 signature */
+export interface SignedDeviceList {
+  signed_list: Uint8Array // UTF-8 encoded JSON of DeviceListPayload
+  signature: Uint8Array // Ed25519 detached signature over signed_list
+}
+
+/** Result of TOFU identity verification */
+export type TofuResult =
+  | { trusted: true; firstSeen: true }
+  | { trusted: true; firstSeen: false }
+  | { trusted: false; previousKey: Uint8Array; newKey: Uint8Array }
+
+/** Contents of an encrypted key backup blob (Phase 6e) */
+export interface BackupContents {
+  version: 1
+  master_verify_key: {
+    public_key: Uint8Array
+    private_key: Uint8Array
+  }
+  device_identity_key: {
+    device_id: string
+    public_key: Uint8Array
+    private_key: Uint8Array
+  }
+  signed_pre_key: {
+    key_id: number
+    public_key: Uint8Array
+    private_key: Uint8Array
+    signature: Uint8Array
+    timestamp: number
+  }
+  sessions: Array<{
+    user_id: string
+    device_id: string
+    state: Uint8Array
+  }>
+  sender_keys: Array<{
+    channel_id: string
+    user_id: string
+    device_id: string
+    key_data: Uint8Array
+  }>
+}
+
 /** Decrypted message stored in the local encrypted database */
 export interface StoredMessage {
   id: string
@@ -101,6 +159,19 @@ export interface IKeyStore {
   // Media keys
   getMediaKey(roomId: string): Uint8Array | null
   storeMediaKey(roomId: string, key: Uint8Array): void
+
+  // All sessions/sender keys (for backup export)
+  getAllSessions(): Array<{ userId: string; deviceId: string; state: SessionState }>
+  getAllSenderKeys(): Array<{
+    channelId: string
+    userId: string
+    deviceId: string
+    key: SenderKey
+  }>
+
+  // Trusted identities (TOFU — Phase 6e)
+  storeTrustedIdentity(userId: string, masterVerifyKey: Uint8Array): void
+  getTrustedIdentity(userId: string): Uint8Array | null
 
   // Backup (Phase 6e)
   exportBackupBlob(): Uint8Array

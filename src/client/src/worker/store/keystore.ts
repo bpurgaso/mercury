@@ -4,6 +4,7 @@
 
 import Database from 'better-sqlite3-multiple-ciphers'
 import sodium from 'libsodium-wrappers'
+import { serializeBackupContents, deserializeBackupContents } from '../crypto/backup'
 import type {
   IKeyStore,
   KeyPair,
@@ -12,6 +13,7 @@ import type {
   PreKey,
   SessionState,
   SenderKey,
+  BackupContents,
 } from '../crypto/types'
 
 export class KeyStore implements IKeyStore {
@@ -82,6 +84,12 @@ export class KeyStore implements IKeyStore {
       CREATE TABLE IF NOT EXISTS media_keys (
         room_id TEXT PRIMARY KEY,
         key_data BLOB NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS trusted_identities (
+        user_id TEXT PRIMARY KEY,
+        master_verify_key BLOB NOT NULL,
+        first_seen_at INTEGER NOT NULL
       );
     `)
   }
@@ -315,14 +323,146 @@ export class KeyStore implements IKeyStore {
       .run(roomId, Buffer.from(key))
   }
 
+  // --- All sessions/sender keys (for backup) ---
+
+  getAllSessions(): Array<{ userId: string; deviceId: string; state: SessionState }> {
+    const rows = this.db
+      .prepare('SELECT user_id, device_id, state FROM sessions')
+      .all() as Array<{ user_id: string; device_id: string; state: Buffer }>
+    return rows.map((row) => ({
+      userId: row.user_id,
+      deviceId: row.device_id,
+      state: { data: new Uint8Array(row.state) },
+    }))
+  }
+
+  getAllSenderKeys(): Array<{
+    channelId: string
+    userId: string
+    deviceId: string
+    key: SenderKey
+  }> {
+    const rows = this.db
+      .prepare('SELECT channel_id, user_id, device_id, key_data FROM sender_keys')
+      .all() as Array<{
+      channel_id: string
+      user_id: string
+      device_id: string
+      key_data: Buffer
+    }>
+    return rows.map((row) => ({
+      channelId: row.channel_id,
+      userId: row.user_id,
+      deviceId: row.device_id,
+      key: { data: new Uint8Array(row.key_data) },
+    }))
+  }
+
+  // --- Trusted identities (TOFU — Phase 6e) ---
+
+  storeTrustedIdentity(userId: string, masterVerifyKey: Uint8Array): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO trusted_identities (user_id, master_verify_key, first_seen_at)
+         VALUES (?, ?, ?)`,
+      )
+      .run(userId, Buffer.from(masterVerifyKey), Date.now())
+  }
+
+  getTrustedIdentity(userId: string): Uint8Array | null {
+    const row = this.db
+      .prepare('SELECT master_verify_key FROM trusted_identities WHERE user_id = ?')
+      .get(userId) as { master_verify_key: Buffer } | undefined
+    if (!row) return null
+    return new Uint8Array(row.master_verify_key)
+  }
+
   // --- Backup (Phase 6e) ---
 
   exportBackupBlob(): Uint8Array {
-    throw new Error('Not implemented — deferred to Phase 6e')
+    const masterKP = this.getMasterVerifyKeyPair()
+    const deviceId = this.getDeviceId()
+    const deviceKP = this.getDeviceIdentityKeyPair()
+    const spk = this.getSignedPreKey()
+    const sessions = this.getAllSessions()
+    const senderKeys = this.getAllSenderKeys()
+
+    const contents: BackupContents = {
+      version: 1,
+      master_verify_key: {
+        public_key: masterKP.publicKey,
+        private_key: masterKP.privateKey,
+      },
+      device_identity_key: {
+        device_id: deviceId,
+        public_key: deviceKP.publicKey,
+        private_key: deviceKP.privateKey,
+      },
+      signed_pre_key: {
+        key_id: spk.keyId,
+        public_key: spk.keyPair.publicKey,
+        private_key: spk.keyPair.privateKey,
+        signature: spk.signature,
+        timestamp: spk.timestamp,
+      },
+      sessions: sessions.map((s) => ({
+        user_id: s.userId,
+        device_id: s.deviceId,
+        state: s.state.data,
+      })),
+      sender_keys: senderKeys.map((sk) => ({
+        channel_id: sk.channelId,
+        user_id: sk.userId,
+        device_id: sk.deviceId,
+        key_data: sk.key.data,
+      })),
+    }
+
+    return serializeBackupContents(contents)
   }
 
-  importBackupBlob(_blob: Uint8Array): void {
-    throw new Error('Not implemented — deferred to Phase 6e')
+  importBackupBlob(blob: Uint8Array): void {
+    const contents = deserializeBackupContents(blob)
+
+    const tx = this.db.transaction(() => {
+      // Restore master verify key
+      this.storeMasterVerifyKeyPair({
+        publicKey: new Uint8Array(contents.master_verify_key.public_key),
+        privateKey: new Uint8Array(contents.master_verify_key.private_key),
+      })
+
+      // Restore device identity key
+      this.storeDeviceIdentityKeyPair(contents.device_identity_key.device_id, {
+        publicKey: new Uint8Array(contents.device_identity_key.public_key),
+        privateKey: new Uint8Array(contents.device_identity_key.private_key),
+      })
+
+      // Restore signed pre-key
+      this.storeSignedPreKey({
+        keyId: contents.signed_pre_key.key_id,
+        keyPair: {
+          publicKey: new Uint8Array(contents.signed_pre_key.public_key),
+          privateKey: new Uint8Array(contents.signed_pre_key.private_key),
+        },
+        signature: new Uint8Array(contents.signed_pre_key.signature),
+        timestamp: contents.signed_pre_key.timestamp,
+      })
+
+      // Restore sessions
+      for (const session of contents.sessions) {
+        this.storeSession(session.user_id, session.device_id, {
+          data: new Uint8Array(session.state),
+        })
+      }
+
+      // Restore sender keys
+      for (const sk of contents.sender_keys) {
+        this.storeSenderKey(sk.channel_id, sk.user_id, sk.device_id, {
+          data: new Uint8Array(sk.key_data),
+        })
+      }
+    })
+    tx()
   }
 
   close(): void {
