@@ -433,6 +433,12 @@ export function receiveSenderKeyDistribution(
  * encrypts with AES-256-GCM, and signs the ciphertext with the sender's
  * Ed25519 signing key. Single encryption regardless of member count.
  *
+ * IMPORTANT — self-echo: After encrypting, the sender's chain iteration
+ * advances past the message. If the server relays the message back as an
+ * echo, the sender CANNOT decrypt it (iteration will be behind the chain).
+ * The client must cache sent plaintext locally and skip decrypting its own
+ * echoes. This matches Signal's approach for group messages.
+ *
  * @throws If the SenderKey epoch doesn't match channelEpoch (needs rotation)
  * @throws If the SenderKey has no private signing key (not your own key)
  */
@@ -493,6 +499,14 @@ export function senderKeyEncrypt(
  * Verifies the Ed25519 signature, advances the chain to the message's
  * iteration (ratcheting forward and storing intermediate keys for skipped
  * messages), derives the message key, and decrypts with AES-256-GCM.
+ *
+ * Failure safety: On any error (signature, epoch, AEAD), the caller's
+ * SenderKey is NOT mutated — the state is deserialized into a local copy
+ * and the original remains intact. The caller can retry with the same key.
+ * While intermediate skipped keys computed during a failed forward-ratchet
+ * are discarded, they can be recomputed from the unchanged original key.
+ * In practice, AEAD failure after a valid Ed25519 signature is
+ * cryptographically impossible under normal operation.
  *
  * @param senderKey - The sender's SenderKey (received via distribution)
  * @param message - The encrypted message

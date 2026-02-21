@@ -307,6 +307,41 @@ describe('Lazy rotation on member removal', () => {
       'epoch mismatch',
     )
   })
+
+  it('multiple sequential removals: epoch jumps from 0 to 3', () => {
+    // Epoch can jump multiple steps if several members are removed before
+    // anyone sends. Only one new SenderKey should be needed at the latest epoch.
+    const ab = setupDRPair()
+    const aliceKeyV0 = generateSenderKey(0)
+
+    // Distribute v0 to Bob
+    const distV0 = createDistributionMessage(aliceKeyV0)
+    const toBobV0 = ratchetEncrypt(ab.aliceSession, distV0)
+    const bobRecvV0 = ratchetDecrypt(ab.bobSession, toBobV0.message)
+    let bobKey = importDistributionMessage(bobRecvV0.plaintext)
+
+    // Three removals happen before Alice sends → epoch jumps to 3
+    expect(needsRotation(aliceKeyV0, 3)).toBe(true)
+
+    // Alice generates ONE new key at epoch 3 (not 1, 2, 3 separately)
+    const aliceKeyV3 = generateSenderKey(3)
+    expect(getSenderKeyEpoch(aliceKeyV3)).toBe(3)
+
+    // Distribute to Bob
+    const distV3 = createDistributionMessage(aliceKeyV3)
+    const toBobV3 = ratchetEncrypt(toBobV0.session, distV3)
+    const bobRecvV3 = ratchetDecrypt(bobRecvV0.session, toBobV3.message)
+    bobKey = importDistributionMessage(bobRecvV3.plaintext)
+
+    // Alice encrypts at epoch 3
+    const { message } = senderKeyEncrypt(aliceKeyV3, enc.encode('after-triple-removal'), 3)
+    const result = senderKeyDecrypt(bobKey, message, 3)
+    expect(dec.decode(result.plaintext)).toBe('after-triple-removal')
+
+    // Old v0 key cannot decrypt epoch-3 message
+    const oldBobKey = importDistributionMessage(distV0)
+    expect(() => senderKeyDecrypt(oldBobKey, message, 0)).toThrow('epoch mismatch')
+  })
 })
 
 describe('Epoch validation', () => {
@@ -553,6 +588,144 @@ describe('Skipped key limits', () => {
     expect(() => senderKeyDecrypt(bobKey, messages[1001], 0)).toThrow(
       'too many skipped messages',
     )
+  })
+})
+
+describe('Self-echo behavior', () => {
+  it('sender cannot decrypt own message after encrypting (iteration behind chain)', () => {
+    // After senderKeyEncrypt, the sender's chain has advanced. If the server
+    // relays the message back as an echo, the sender's own key cannot decrypt
+    // it because message.iteration < state.iteration. The client must cache
+    // sent plaintext locally and skip decrypting echoes.
+    const aliceKey = generateSenderKey(0)
+
+    const { senderKey: updatedKey, message } = senderKeyEncrypt(
+      aliceKey,
+      enc.encode('echo-me'),
+      0,
+    )
+
+    // Create a receive-only copy of Alice's own key at the PRE-send state
+    const distMsg = createDistributionMessage(aliceKey)
+    const preSendCopy = importDistributionMessage(distMsg)
+
+    // Pre-send copy CAN decrypt (it's at iteration 0, message is iteration 0)
+    const result = senderKeyDecrypt(preSendCopy, message, 0)
+    expect(dec.decode(result.plaintext)).toBe('echo-me')
+
+    // Post-send key CANNOT decrypt (chain advanced past iteration 0)
+    const postSendCopy = importDistributionMessage(createDistributionMessage(updatedKey))
+    expect(() => senderKeyDecrypt(postSendCopy, message, 0)).toThrow(
+      'message iteration 0 behind chain 1',
+    )
+  })
+})
+
+describe('New member forward secrecy', () => {
+  it('new joiner cannot decrypt pre-join messages', () => {
+    // Alice sends messages at epoch 0. Dave joins later and receives
+    // Alice's current SenderKey. Dave cannot decrypt messages sent
+    // before he received the key (iteration is ahead of old messages).
+    const ab = setupDRPair() // Alice ↔ Bob
+    const aliceKey = generateSenderKey(0)
+
+    // Distribute to Bob
+    const distV0 = createDistributionMessage(aliceKey)
+    const toBob = ratchetEncrypt(ab.aliceSession, distV0)
+    const bobRecv = ratchetDecrypt(ab.bobSession, toBob.message)
+    let bobKey = importDistributionMessage(bobRecv.plaintext)
+
+    // Alice sends 5 messages (Bob receives them all)
+    const { senderKey: aliceAfter5, messages } = encryptMany(aliceKey, 5, 0)
+    for (let i = 0; i < 5; i++) {
+      const result = senderKeyDecrypt(bobKey, messages[i], 0)
+      bobKey = result.senderKey
+    }
+
+    // Dave joins — Alice distributes her CURRENT key (at iteration 5)
+    const ad = setupDRPair() // Alice ↔ Dave
+    const distCurrent = createDistributionMessage(aliceAfter5)
+    const toDave = ratchetEncrypt(ad.aliceSession, distCurrent)
+    const daveRecv = ratchetDecrypt(ad.bobSession, toDave.message)
+    const daveKey = importDistributionMessage(daveRecv.plaintext)
+
+    // Dave cannot decrypt pre-join messages (iterations 0-4)
+    // His key starts at iteration 5, so iteration 0 is behind the chain
+    expect(() => senderKeyDecrypt(daveKey, messages[0], 0)).toThrow(
+      'message iteration 0 behind chain 5',
+    )
+    expect(() => senderKeyDecrypt(daveKey, messages[4], 0)).toThrow(
+      'message iteration 4 behind chain 5',
+    )
+
+    // Dave CAN decrypt new messages (iteration 5+)
+    const { message: msg5 } = senderKeyEncrypt(aliceAfter5, enc.encode('post-join'), 0)
+    const daveResult = senderKeyDecrypt(daveKey, msg5, 0)
+    expect(dec.decode(daveResult.plaintext)).toBe('post-join')
+  })
+})
+
+describe('Decrypt failure preserves caller key', () => {
+  it('caller SenderKey is unchanged after signature failure', () => {
+    const ab = setupDRPair()
+    const aliceKey = generateSenderKey(0)
+
+    const distMsg = createDistributionMessage(aliceKey)
+    const toBob = ratchetEncrypt(ab.aliceSession, distMsg)
+    const bobRecv = ratchetDecrypt(ab.bobSession, toBob.message)
+    const bobKey = importDistributionMessage(bobRecv.plaintext)
+
+    // Save a copy of Bob's key data
+    const bobKeySnapshot = new Uint8Array(bobKey.data)
+
+    // Send a valid message and a tampered one
+    const { senderKey: aliceAfter, message: goodMsg } = senderKeyEncrypt(
+      aliceKey,
+      enc.encode('good'),
+      0,
+    )
+    const { message: msg2 } = senderKeyEncrypt(aliceAfter, enc.encode('also-good'), 0)
+
+    // Tamper → decrypt fails
+    const tampered: SenderKeyMessage = {
+      ...goodMsg,
+      ciphertext: new Uint8Array(goodMsg.ciphertext),
+    }
+    tampered.ciphertext[0] ^= 0xff
+    expect(() => senderKeyDecrypt(bobKey, tampered, 0)).toThrow(
+      'signature verification failed',
+    )
+
+    // Bob's key data is unchanged (state was deserialized into a local copy)
+    expect(bobKey.data).toEqual(bobKeySnapshot)
+
+    // Bob can still decrypt the valid messages with his unchanged key
+    const result1 = senderKeyDecrypt(bobKey, goodMsg, 0)
+    expect(dec.decode(result1.plaintext)).toBe('good')
+
+    const result2 = senderKeyDecrypt(result1.senderKey, msg2, 0)
+    expect(dec.decode(result2.plaintext)).toBe('also-good')
+  })
+
+  it('caller SenderKey is unchanged after epoch rejection', () => {
+    const ab = setupDRPair()
+    const aliceKey = generateSenderKey(0)
+
+    const distMsg = createDistributionMessage(aliceKey)
+    const toBob = ratchetEncrypt(ab.aliceSession, distMsg)
+    const bobRecv = ratchetDecrypt(ab.bobSession, toBob.message)
+    const bobKey = importDistributionMessage(bobRecv.plaintext)
+    const bobKeySnapshot = new Uint8Array(bobKey.data)
+
+    const { message } = senderKeyEncrypt(aliceKey, enc.encode('test'), 0)
+
+    // Reject via stale epoch
+    expect(() => senderKeyDecrypt(bobKey, message, 1)).toThrow('stale epoch')
+
+    // Key unchanged — retry at correct minEpoch works
+    expect(bobKey.data).toEqual(bobKeySnapshot)
+    const result = senderKeyDecrypt(bobKey, message, 0)
+    expect(dec.decode(result.plaintext)).toBe('test')
   })
 })
 
