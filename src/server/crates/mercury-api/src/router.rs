@@ -1,4 +1,5 @@
 use axum::{
+    extract::DefaultBodyLimit,
     http::Method,
     middleware as axum_middleware,
     routing::{delete, get, patch, post, put},
@@ -96,6 +97,11 @@ pub fn create_router(state: AppState) -> Router {
             "/users/{user_id}/devices/{device_id}/keys/one-time",
             post(handlers::devices::claim_otp),
         )
+        // Identity management routes
+        .route(
+            "/users/me/identity",
+            delete(handlers::identity::reset_identity),
+        )
         // Device list routes
         .route(
             "/users/me/device-list",
@@ -105,12 +111,15 @@ pub fn create_router(state: AppState) -> Router {
             "/users/{user_id}/device-list",
             get(handlers::identity::get_device_list),
         )
-        // Key backup routes (private — only the owner can access)
+        // Key backup routes (private — only the owner can access).
+        // Raised body limit (15 MB) to allow backup blobs up to 10 MB after
+        // base64 decoding (~13.4 MB encoded + JSON overhead).
         .route(
             "/users/me/key-backup",
             put(handlers::identity::upload_key_backup)
                 .get(handlers::identity::get_key_backup)
-                .delete(handlers::identity::delete_key_backup),
+                .delete(handlers::identity::delete_key_backup)
+                .layer(DefaultBodyLimit::max(15 * 1024 * 1024)),
         )
         .layer(cors)
         .with_state(state)

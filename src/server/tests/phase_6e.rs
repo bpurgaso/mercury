@@ -243,6 +243,129 @@ fn test_delete_key_backup() {
     });
 }
 
+// ────────────────────────────────────────────────────────────
+//  Identity Reset Tests
+// ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_identity_reset_allows_new_master_key() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+        let alice = register_client(srv, "alice_reset", "alice_reset@example.com").await;
+
+        let signed_list = BASE64.encode(b"device-list-v1");
+        let mvk1 = BASE64.encode([0xAAu8; 32]);
+        let mvk2 = BASE64.encode([0xBBu8; 32]); // Different key
+        let signature = BASE64.encode([0xCCu8; 64]);
+
+        // Upload initial device list
+        let status = alice
+            .put_authed_status(
+                "/users/me/device-list",
+                &json!({
+                    "signed_list": signed_list,
+                    "master_verify_key": mvk1,
+                    "signature": signature,
+                }),
+            )
+            .await;
+        assert_eq!(status, 204);
+
+        // Upload backup too
+        alice
+            .put_authed_status(
+                "/users/me/key-backup",
+                &json!({
+                    "encrypted_backup": BASE64.encode(b"old-backup"),
+                    "key_derivation_salt": BASE64.encode([0x11u8; 16]),
+                }),
+            )
+            .await;
+
+        // Trying mvk2 should fail (TOFU)
+        let (status, _) = alice
+            .put_authed(
+                "/users/me/device-list",
+                &json!({
+                    "signed_list": signed_list,
+                    "master_verify_key": mvk2,
+                    "signature": signature,
+                }),
+            )
+            .await;
+        assert_eq!(status, 403);
+
+        // Reset identity
+        let status = alice.delete_authed("/users/me/identity").await;
+        assert_eq!(status, 204);
+
+        // Now mvk2 should succeed (TOFU reset)
+        let status = alice
+            .put_authed_status(
+                "/users/me/device-list",
+                &json!({
+                    "signed_list": signed_list,
+                    "master_verify_key": mvk2,
+                    "signature": signature,
+                }),
+            )
+            .await;
+        assert_eq!(status, 204);
+
+        // Old backup should also be gone
+        let (status, _) = alice.get_authed("/users/me/key-backup").await;
+        assert_eq!(status, 404);
+    });
+}
+
+#[test]
+fn test_identity_reset_no_identity_returns_404() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+        let alice = register_client(srv, "alice_no_id", "alice_no_id@example.com").await;
+
+        // No identity uploaded yet
+        let status = alice.delete_authed("/users/me/identity").await;
+        assert_eq!(status, 404);
+    });
+}
+
+// ────────────────────────────────────────────────────────────
+//  Backup Size Limit Tests
+// ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_key_backup_rejects_oversized_blob() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+        let alice = register_client(srv, "alice_big", "alice_big@example.com").await;
+
+        // Create a backup blob just over 10 MB (after base64 decode)
+        let oversized = vec![0xFFu8; 10 * 1024 * 1024 + 1];
+        let salt = BASE64.encode([0x55u8; 16]);
+
+        let (status, body) = alice
+            .put_authed(
+                "/users/me/key-backup",
+                &json!({
+                    "encrypted_backup": BASE64.encode(&oversized),
+                    "key_derivation_salt": salt,
+                }),
+            )
+            .await;
+        assert_eq!(status, 400);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("exceeds maximum size"),
+        );
+    });
+}
+
 #[test]
 fn test_key_backup_access_control() {
     let srv = server();

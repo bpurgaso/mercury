@@ -88,6 +88,18 @@ pub async fn upsert_key_backup(
     .await
 }
 
+/// Delete a user's device list (identity reset). Returns true if a row was deleted.
+pub async fn delete_device_list(
+    pool: &PgPool,
+    user_id: UserId,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM device_lists WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Delete a user's key backup. Returns true if a row was deleted.
 pub async fn delete_key_backup(
     pool: &PgPool,

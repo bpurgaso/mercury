@@ -33,7 +33,11 @@ export async function createSignedDeviceList(
     timestamp: Date.now(),
   }
 
-  // Canonical JSON: keys sorted alphabetically at all levels
+  // Canonical JSON: keys sorted alphabetically at all levels.
+  // IMPORTANT: The signed_list bytes produced here are stored and served by the
+  // server verbatim. Verifying clients must use the raw signed bytes for
+  // signature verification — never re-serialize the parsed JSON, as even minor
+  // differences in serialization would invalidate the signature.
   const json = JSON.stringify(payload, (_, value) => {
     if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
       const sorted: Record<string, unknown> = {}

@@ -17,6 +17,9 @@ use crate::state::AppState;
 // Redis cache TTL for device lists (1 hour).
 const DEVICE_LIST_CACHE_TTL_SECS: i64 = 3600;
 
+// Maximum encrypted backup blob size (10 MB). Prevents abuse via oversized uploads.
+const MAX_BACKUP_SIZE_BYTES: usize = 10 * 1024 * 1024;
+
 // ── Request/Response types ─────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +183,32 @@ pub async fn get_device_list(
     Ok(Json(response))
 }
 
+/// DELETE /users/me/identity — Reset identity (delete device list + key backup).
+///
+/// This is the TOFU escape hatch: if a user loses all devices and their
+/// recovery key, they can reset their identity to establish a new master
+/// verify key. All clients that had the old TOFU key will see a "key
+/// changed" warning, which is correct and expected.
+pub async fn reset_identity(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Result<StatusCode, MercuryError> {
+    let deleted = mercury_db::device_lists::delete_device_list(&state.db, auth_user.user_id).await?;
+
+    if !deleted {
+        return Err(MercuryError::NotFound("no identity to reset".into()));
+    }
+
+    // Also delete the key backup (it's tied to the old recovery key)
+    let _ = mercury_db::device_lists::delete_key_backup(&state.db, auth_user.user_id).await;
+
+    // Invalidate Redis cache
+    let cache_key = format!("device_list:{}", auth_user.user_id);
+    let _: Result<(), _> = state.redis.del::<(), _>(&cache_key).await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ── Key Backup Handlers ────────────────────────────────────
 
 /// PUT /users/me/key-backup — Upload encrypted key backup blob.
@@ -197,6 +226,12 @@ pub async fn upload_key_backup(
 
     if encrypted_backup.is_empty() {
         return Err(MercuryError::BadRequest("encrypted_backup must not be empty".into()));
+    }
+    if encrypted_backup.len() > MAX_BACKUP_SIZE_BYTES {
+        return Err(MercuryError::BadRequest(format!(
+            "encrypted_backup exceeds maximum size of {} bytes",
+            MAX_BACKUP_SIZE_BYTES,
+        )));
     }
     if key_derivation_salt.is_empty() {
         return Err(MercuryError::BadRequest("key_derivation_salt must not be empty".into()));

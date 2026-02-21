@@ -424,45 +424,79 @@ export class KeyStore implements IKeyStore {
   importBackupBlob(blob: Uint8Array): void {
     const contents = deserializeBackupContents(blob)
 
-    const tx = this.db.transaction(() => {
-      // Restore master verify key
-      this.storeMasterVerifyKeyPair({
-        publicKey: new Uint8Array(contents.master_verify_key.public_key),
-        privateKey: new Uint8Array(contents.master_verify_key.private_key),
-      })
+    // Copy sensitive fields into Uint8Arrays we control so we can zero them after import
+    const masterPub = new Uint8Array(contents.master_verify_key.public_key)
+    const masterPriv = new Uint8Array(contents.master_verify_key.private_key)
+    const devicePub = new Uint8Array(contents.device_identity_key.public_key)
+    const devicePriv = new Uint8Array(contents.device_identity_key.private_key)
+    const spkPub = new Uint8Array(contents.signed_pre_key.public_key)
+    const spkPriv = new Uint8Array(contents.signed_pre_key.private_key)
+    const spkSig = new Uint8Array(contents.signed_pre_key.signature)
+    const sessionBufs: Uint8Array[] = []
+    const senderKeyBufs: Uint8Array[] = []
 
-      // Restore device identity key
-      this.storeDeviceIdentityKeyPair(contents.device_identity_key.device_id, {
-        publicKey: new Uint8Array(contents.device_identity_key.public_key),
-        privateKey: new Uint8Array(contents.device_identity_key.private_key),
-      })
+    try {
+      const tx = this.db.transaction(() => {
+        // Restore master verify key
+        this.storeMasterVerifyKeyPair({ publicKey: masterPub, privateKey: masterPriv })
 
-      // Restore signed pre-key
-      this.storeSignedPreKey({
-        keyId: contents.signed_pre_key.key_id,
-        keyPair: {
-          publicKey: new Uint8Array(contents.signed_pre_key.public_key),
-          privateKey: new Uint8Array(contents.signed_pre_key.private_key),
-        },
-        signature: new Uint8Array(contents.signed_pre_key.signature),
-        timestamp: contents.signed_pre_key.timestamp,
-      })
+        // Restore device identity key
+        this.storeDeviceIdentityKeyPair(contents.device_identity_key.device_id, {
+          publicKey: devicePub, privateKey: devicePriv,
+        })
 
-      // Restore sessions
+        // Restore signed pre-key
+        this.storeSignedPreKey({
+          keyId: contents.signed_pre_key.key_id,
+          keyPair: { publicKey: spkPub, privateKey: spkPriv },
+          signature: spkSig,
+          timestamp: contents.signed_pre_key.timestamp,
+        })
+
+        // Restore sessions
+        for (const session of contents.sessions) {
+          const buf = new Uint8Array(session.state)
+          sessionBufs.push(buf)
+          this.storeSession(session.user_id, session.device_id, { data: buf })
+        }
+
+        // Restore sender keys
+        for (const sk of contents.sender_keys) {
+          const buf = new Uint8Array(sk.key_data)
+          senderKeyBufs.push(buf)
+          this.storeSenderKey(sk.channel_id, sk.user_id, sk.device_id, { data: buf })
+        }
+      })
+      tx()
+    } finally {
+      // Zero all sensitive key material from JS heap
+      sodium.memzero(masterPub)
+      sodium.memzero(masterPriv)
+      sodium.memzero(devicePub)
+      sodium.memzero(devicePriv)
+      sodium.memzero(spkPub)
+      sodium.memzero(spkPriv)
+      sodium.memzero(spkSig)
+      for (const buf of sessionBufs) sodium.memzero(buf)
+      for (const buf of senderKeyBufs) sodium.memzero(buf)
+
+      // Zero the original deserialized fields from MessagePack where possible
+      if (contents.master_verify_key.private_key instanceof Uint8Array) {
+        sodium.memzero(contents.master_verify_key.private_key)
+      }
+      if (contents.device_identity_key.private_key instanceof Uint8Array) {
+        sodium.memzero(contents.device_identity_key.private_key)
+      }
+      if (contents.signed_pre_key.private_key instanceof Uint8Array) {
+        sodium.memzero(contents.signed_pre_key.private_key)
+      }
       for (const session of contents.sessions) {
-        this.storeSession(session.user_id, session.device_id, {
-          data: new Uint8Array(session.state),
-        })
+        if (session.state instanceof Uint8Array) sodium.memzero(session.state)
       }
-
-      // Restore sender keys
       for (const sk of contents.sender_keys) {
-        this.storeSenderKey(sk.channel_id, sk.user_id, sk.device_id, {
-          data: new Uint8Array(sk.key_data),
-        })
+        if (sk.key_data instanceof Uint8Array) sodium.memzero(sk.key_data)
       }
-    })
-    tx()
+    }
   }
 
   close(): void {
