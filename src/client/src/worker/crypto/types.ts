@@ -84,24 +84,19 @@ export type TofuResult =
   | { trusted: true; firstSeen: false }
   | { trusted: false; previousKey: Uint8Array; newKey: Uint8Array }
 
-/** Contents of an encrypted key backup blob (Phase 6e) */
+/**
+ * Contents of an encrypted key backup blob (Phase 6e).
+ *
+ * NOTE: Device identity keys, signed pre-keys, and one-time pre-keys are
+ * intentionally excluded. The recovery spec requires a recovering device to
+ * generate fresh device-level keys and register as a new device. Only the
+ * master identity and conversation state are preserved.
+ */
 export interface BackupContents {
-  version: 1
+  version: 2
   master_verify_key: {
     public_key: Uint8Array
     private_key: Uint8Array
-  }
-  device_identity_key: {
-    device_id: string
-    public_key: Uint8Array
-    private_key: Uint8Array
-  }
-  signed_pre_key: {
-    key_id: number
-    public_key: Uint8Array
-    private_key: Uint8Array
-    signature: Uint8Array
-    timestamp: number
   }
   sessions: Array<{
     user_id: string

@@ -14,7 +14,7 @@ export class BackupDecryptionError extends Error {
   }
 }
 
-const BACKUP_VERSION = 1
+const BACKUP_VERSION = 2
 const AES_GCM_NONCE_BYTES = 12
 const AES_GCM_TAG_BYTES = 16
 

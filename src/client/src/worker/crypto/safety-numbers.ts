@@ -4,7 +4,10 @@
 import { createHash } from 'crypto'
 
 /**
- * Generate a deterministic safety number from two Ed25519 identity public keys.
+ * Generate a deterministic safety number from two Ed25519 Master Verify Key
+ * public keys. The MVK is the user's long-term identity key that persists
+ * across device changes and recovery, so safety numbers remain stable even
+ * when a user switches devices.
  *
  * Algorithm:
  * 1. Sort the two 32-byte public keys lexicographically
@@ -14,17 +17,17 @@ import { createHash } from 'crypto'
  * Both parties computing the safety number for the same pair get the identical result.
  */
 export function generateSafetyNumber(
-  ourIdentityKey: Uint8Array,
-  theirIdentityKey: Uint8Array,
+  ourMasterVerifyKey: Uint8Array,
+  theirMasterVerifyKey: Uint8Array,
 ): string {
-  if (ourIdentityKey.length !== 32 || theirIdentityKey.length !== 32) {
-    throw new Error('Identity keys must be 32 bytes (Ed25519 public keys)')
+  if (ourMasterVerifyKey.length !== 32 || theirMasterVerifyKey.length !== 32) {
+    throw new Error('Master verify keys must be 32 bytes (Ed25519 public keys)')
   }
 
   // Sort lexicographically so both parties produce the same order
-  const cmp = compareBytes(ourIdentityKey, theirIdentityKey)
-  const first = cmp <= 0 ? ourIdentityKey : theirIdentityKey
-  const second = cmp <= 0 ? theirIdentityKey : ourIdentityKey
+  const cmp = compareBytes(ourMasterVerifyKey, theirMasterVerifyKey)
+  const first = cmp <= 0 ? ourMasterVerifyKey : theirMasterVerifyKey
+  const second = cmp <= 0 ? theirMasterVerifyKey : ourMasterVerifyKey
 
   // Concatenate sorted keys
   const combined = new Uint8Array(64)

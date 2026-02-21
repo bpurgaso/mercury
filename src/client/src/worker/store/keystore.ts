@@ -381,29 +381,16 @@ export class KeyStore implements IKeyStore {
 
   exportBackupBlob(): Uint8Array {
     const masterKP = this.getMasterVerifyKeyPair()
-    const deviceId = this.getDeviceId()
-    const deviceKP = this.getDeviceIdentityKeyPair()
-    const spk = this.getSignedPreKey()
     const sessions = this.getAllSessions()
     const senderKeys = this.getAllSenderKeys()
 
+    // NOTE: device_identity_key and signed_pre_key are intentionally excluded.
+    // A recovering device must generate fresh device keys (see spec Step 12).
     const contents: BackupContents = {
-      version: 1,
+      version: 2,
       master_verify_key: {
         public_key: masterKP.publicKey,
         private_key: masterKP.privateKey,
-      },
-      device_identity_key: {
-        device_id: deviceId,
-        public_key: deviceKP.publicKey,
-        private_key: deviceKP.privateKey,
-      },
-      signed_pre_key: {
-        key_id: spk.keyId,
-        public_key: spk.keyPair.publicKey,
-        private_key: spk.keyPair.privateKey,
-        signature: spk.signature,
-        timestamp: spk.timestamp,
       },
       sessions: sessions.map((s) => ({
         user_id: s.userId,
@@ -424,14 +411,13 @@ export class KeyStore implements IKeyStore {
   importBackupBlob(blob: Uint8Array): void {
     const contents = deserializeBackupContents(blob)
 
+    // NOTE: Only master_verify_key, sessions, and sender_keys are restored.
+    // Device identity keys and signed pre-keys are NOT in the backup — a
+    // recovering device must generate fresh device-level keys (spec Step 12).
+
     // Copy sensitive fields into Uint8Arrays we control so we can zero them after import
     const masterPub = new Uint8Array(contents.master_verify_key.public_key)
     const masterPriv = new Uint8Array(contents.master_verify_key.private_key)
-    const devicePub = new Uint8Array(contents.device_identity_key.public_key)
-    const devicePriv = new Uint8Array(contents.device_identity_key.private_key)
-    const spkPub = new Uint8Array(contents.signed_pre_key.public_key)
-    const spkPriv = new Uint8Array(contents.signed_pre_key.private_key)
-    const spkSig = new Uint8Array(contents.signed_pre_key.signature)
     const sessionBufs: Uint8Array[] = []
     const senderKeyBufs: Uint8Array[] = []
 
@@ -439,19 +425,6 @@ export class KeyStore implements IKeyStore {
       const tx = this.db.transaction(() => {
         // Restore master verify key
         this.storeMasterVerifyKeyPair({ publicKey: masterPub, privateKey: masterPriv })
-
-        // Restore device identity key
-        this.storeDeviceIdentityKeyPair(contents.device_identity_key.device_id, {
-          publicKey: devicePub, privateKey: devicePriv,
-        })
-
-        // Restore signed pre-key
-        this.storeSignedPreKey({
-          keyId: contents.signed_pre_key.key_id,
-          keyPair: { publicKey: spkPub, privateKey: spkPriv },
-          signature: spkSig,
-          timestamp: contents.signed_pre_key.timestamp,
-        })
 
         // Restore sessions
         for (const session of contents.sessions) {
@@ -472,23 +445,12 @@ export class KeyStore implements IKeyStore {
       // Zero all sensitive key material from JS heap
       sodium.memzero(masterPub)
       sodium.memzero(masterPriv)
-      sodium.memzero(devicePub)
-      sodium.memzero(devicePriv)
-      sodium.memzero(spkPub)
-      sodium.memzero(spkPriv)
-      sodium.memzero(spkSig)
       for (const buf of sessionBufs) sodium.memzero(buf)
       for (const buf of senderKeyBufs) sodium.memzero(buf)
 
       // Zero the original deserialized fields from MessagePack where possible
       if (contents.master_verify_key.private_key instanceof Uint8Array) {
         sodium.memzero(contents.master_verify_key.private_key)
-      }
-      if (contents.device_identity_key.private_key instanceof Uint8Array) {
-        sodium.memzero(contents.device_identity_key.private_key)
-      }
-      if (contents.signed_pre_key.private_key instanceof Uint8Array) {
-        sodium.memzero(contents.signed_pre_key.private_key)
       }
       for (const session of contents.sessions) {
         if (session.state instanceof Uint8Array) sodium.memzero(session.state)

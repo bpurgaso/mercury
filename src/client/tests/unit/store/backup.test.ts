@@ -31,11 +31,11 @@ function populateKeyStore(ks: KeyStore) {
   const masterKP = generateEd25519KeyPair()
   ks.storeMasterVerifyKeyPair(masterKP)
 
-  // Device identity key
+  // Device identity key (stored locally but NOT included in backup)
   const deviceKP = generateEd25519KeyPair()
   ks.storeDeviceIdentityKeyPair('test-device-123', deviceKP)
 
-  // Signed pre-key
+  // Signed pre-key (stored locally but NOT included in backup)
   const spkKeyPair = generateX25519KeyPair()
   const spkSignature = sign(spkKeyPair.publicKey, deviceKP.privateKey)
   ks.storeSignedPreKey({
@@ -66,9 +66,9 @@ afterEach(() => {
 })
 
 describe('createBackupBlob + restoreFromBackup', () => {
-  it('round-trips: all keys match after backup and restore', async () => {
+  it('round-trips: master key, sessions, and sender keys match after backup and restore', async () => {
     const sourceKS = createTestKeyStore()
-    const { masterKP, deviceKP, spkKeyPair, spkSignature } = populateKeyStore(sourceKS)
+    const { masterKP } = populateKeyStore(sourceKS)
 
     const recoveryKey = await generateRecoveryKey()
     const { encrypted_backup, salt } = await createBackupBlob(sourceKS, recoveryKey)
@@ -78,11 +78,25 @@ describe('createBackupBlob + restoreFromBackup', () => {
     expect(salt).toBeInstanceOf(Uint8Array)
     expect(salt.length).toBe(32)
 
-    // Restore into a fresh KeyStore
+    // Restore into a fresh KeyStore (with its own device keys for the new device)
     const targetKS = createTestKeyStore()
+
+    // The target needs device keys to be a valid keystore, but they come from
+    // the recovery orchestrator (Phase 7), not the backup. We pre-populate
+    // them to prove backup doesn't overwrite them.
+    const freshDeviceKP = generateEd25519KeyPair()
+    targetKS.storeDeviceIdentityKeyPair('new-device-456', freshDeviceKP)
+    const freshSPK = generateX25519KeyPair()
+    targetKS.storeSignedPreKey({
+      keyId: 100,
+      keyPair: freshSPK,
+      signature: sign(freshSPK.publicKey, freshDeviceKP.privateKey),
+      timestamp: Date.now(),
+    })
+
     await restoreFromBackup(encrypted_backup, salt, recoveryKey, targetKS)
 
-    // Verify master verify key
+    // Verify master verify key is restored from backup
     const restoredMaster = targetKS.getMasterVerifyKeyPair()
     expect(Buffer.from(restoredMaster.publicKey).toString('hex')).toEqual(
       Buffer.from(masterKP.publicKey).toString('hex'),
@@ -91,30 +105,21 @@ describe('createBackupBlob + restoreFromBackup', () => {
       Buffer.from(masterKP.privateKey).toString('hex'),
     )
 
-    // Verify device identity key
-    expect(targetKS.getDeviceId()).toBe('test-device-123')
+    // Verify device identity key is the FRESH one, not from backup
+    expect(targetKS.getDeviceId()).toBe('new-device-456')
     const restoredDevice = targetKS.getDeviceIdentityKeyPair()
     expect(Buffer.from(restoredDevice.publicKey).toString('hex')).toEqual(
-      Buffer.from(deviceKP.publicKey).toString('hex'),
-    )
-    expect(Buffer.from(restoredDevice.privateKey).toString('hex')).toEqual(
-      Buffer.from(deviceKP.privateKey).toString('hex'),
+      Buffer.from(freshDeviceKP.publicKey).toString('hex'),
     )
 
-    // Verify signed pre-key
+    // Verify signed pre-key is the FRESH one, not from backup
     const restoredSPK = targetKS.getSignedPreKey()
-    expect(restoredSPK.keyId).toBe(1)
+    expect(restoredSPK.keyId).toBe(100)
     expect(Buffer.from(restoredSPK.keyPair.publicKey).toString('hex')).toEqual(
-      Buffer.from(spkKeyPair.publicKey).toString('hex'),
-    )
-    expect(Buffer.from(restoredSPK.keyPair.privateKey).toString('hex')).toEqual(
-      Buffer.from(spkKeyPair.privateKey).toString('hex'),
-    )
-    expect(Buffer.from(restoredSPK.signature).toString('hex')).toEqual(
-      Buffer.from(spkSignature).toString('hex'),
+      Buffer.from(freshSPK.publicKey).toString('hex'),
     )
 
-    // Verify sessions
+    // Verify sessions are restored from backup
     const aliceSession1 = targetKS.getSession('user-alice', 'alice-dev-1')
     expect(aliceSession1).not.toBeNull()
     const origSession1 = sourceKS.getSession('user-alice', 'alice-dev-1')
@@ -128,7 +133,7 @@ describe('createBackupBlob + restoreFromBackup', () => {
     const bobSession = targetKS.getSession('user-bob', 'bob-dev-1')
     expect(bobSession).not.toBeNull()
 
-    // Verify sender keys
+    // Verify sender keys are restored from backup
     const sk1 = targetKS.getSenderKey('channel-1', 'user-alice', 'alice-dev-1')
     expect(sk1).not.toBeNull()
     const origSK1 = sourceKS.getSenderKey('channel-1', 'user-alice', 'alice-dev-1')
@@ -138,6 +143,32 @@ describe('createBackupBlob + restoreFromBackup', () => {
 
     const sk2 = targetKS.getSenderKey('channel-2', 'user-bob', 'bob-dev-1')
     expect(sk2).not.toBeNull()
+
+    sourceKS.close()
+    targetKS.close()
+  })
+
+  it('backup does NOT include device identity key or signed pre-key', async () => {
+    const sourceKS = createTestKeyStore()
+    populateKeyStore(sourceKS)
+
+    const recoveryKey = await generateRecoveryKey()
+    const { encrypted_backup, salt } = await createBackupBlob(sourceKS, recoveryKey)
+
+    // Restore into a bare KeyStore (no device keys pre-populated)
+    const targetKS = createTestKeyStore()
+    await restoreFromBackup(encrypted_backup, salt, recoveryKey, targetKS)
+
+    // Device identity key should NOT be present (not in backup)
+    expect(() => targetKS.getDeviceId()).toThrow('Device identity key not found')
+    expect(() => targetKS.getDeviceIdentityKeyPair()).toThrow('Device identity key not found')
+
+    // Signed pre-key should NOT be present (not in backup)
+    expect(() => targetKS.getSignedPreKey()).toThrow('Signed pre-key not found')
+
+    // But master verify key IS restored
+    const restoredMaster = targetKS.getMasterVerifyKeyPair()
+    expect(restoredMaster.publicKey.length).toBe(32)
 
     sourceKS.close()
     targetKS.close()
@@ -213,8 +244,10 @@ describe('createBackupBlob + restoreFromBackup', () => {
   it('backup with no sessions or sender keys still round-trips', async () => {
     const ks = createTestKeyStore()
 
-    // Only store the required keys (no sessions/sender keys)
-    ks.storeMasterVerifyKeyPair(generateEd25519KeyPair())
+    // Only store the required keys
+    const masterKP = generateEd25519KeyPair()
+    ks.storeMasterVerifyKeyPair(masterKP)
+    // Device keys are needed for a valid keystore but not included in backup
     ks.storeDeviceIdentityKeyPair('minimal-device', generateEd25519KeyPair())
     const spkKP = generateX25519KeyPair()
     ks.storeSignedPreKey({
@@ -230,7 +263,15 @@ describe('createBackupBlob + restoreFromBackup', () => {
     const targetKS = createTestKeyStore()
     await restoreFromBackup(encrypted_backup, salt, recoveryKey, targetKS)
 
-    expect(targetKS.getDeviceId()).toBe('minimal-device')
+    // Master key restored
+    const restoredMaster = targetKS.getMasterVerifyKeyPair()
+    expect(Buffer.from(restoredMaster.publicKey).toString('hex')).toEqual(
+      Buffer.from(masterKP.publicKey).toString('hex'),
+    )
+
+    // No device key (not in backup — recovery must generate fresh)
+    expect(() => targetKS.getDeviceId()).toThrow('Device identity key not found')
+
     expect(targetKS.getAllSessions()).toHaveLength(0)
     expect(targetKS.getAllSenderKeys()).toHaveLength(0)
 
