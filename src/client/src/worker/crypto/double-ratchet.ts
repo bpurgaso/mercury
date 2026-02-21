@@ -7,6 +7,12 @@
 // - XChaCha20-Poly1305 for AEAD message encryption
 //
 // All operations run in the Worker Thread, never in the Renderer.
+//
+// Integration note: The first Double Ratchet message must be wrapped in a
+// PreKeySignalMessage at the transport layer, carrying Alice's identity key,
+// ephemeral key, and used prekey ID so Bob can perform X3DH before
+// initializing his receiver session. This framing is handled by the message
+// transport layer, not here.
 
 import sodium from 'libsodium-wrappers'
 import type { KeyPair, SessionState } from './types'
@@ -141,6 +147,22 @@ function aeadDecrypt(
   }
 }
 
+// --- State cleanup ---
+
+/** Zero all sensitive key material in a DoubleRatchetState. */
+function clearState(state: DoubleRatchetState): void {
+  memzero(state.DHs.privateKey)
+  memzero(state.DHs.publicKey)
+  if (state.DHr) memzero(state.DHr)
+  memzero(state.RK)
+  if (state.CKs) memzero(state.CKs)
+  if (state.CKr) memzero(state.CKr)
+  for (const mk of state.MKSKIPPED.values()) {
+    memzero(mk)
+  }
+  state.MKSKIPPED.clear()
+}
+
 // --- Skipped key management ---
 
 function makeSkippedKey(dhPub: Uint8Array, n: number): string {
@@ -169,7 +191,9 @@ function skipMessageKeys(state: DoubleRatchetState, until: number): void {
     state.MKSKIPPED.set(makeSkippedKey(state.DHr!, i), messageKey)
   }
 
-  // Evict oldest entries if over limit (Map preserves insertion order)
+  // Evict oldest entries if over limit.
+  // JS Maps iterate in insertion order per ECMA-262 section 24.1.3.1, making
+  // first-inserted entries the oldest — safe for FIFO eviction.
   if (state.MKSKIPPED.size > MAX_SKIP) {
     const excess = state.MKSKIPPED.size - MAX_SKIP
     const iter = state.MKSKIPPED.keys()
@@ -380,7 +404,9 @@ export function initSenderSession(
     MKSKIPPED: new Map(),
   }
 
-  return serializeState(state)
+  const session = serializeState(state)
+  clearState(state)
+  return session
 }
 
 /**
@@ -412,13 +438,16 @@ export function initReceiverSession(
     MKSKIPPED: new Map(),
   }
 
-  return serializeState(state)
+  const session = serializeState(state)
+  clearState(state)
+  return session
 }
 
 /**
  * Encrypt a plaintext message using the Double Ratchet.
  *
  * Returns the updated session state (caller must persist) and the encrypted message.
+ * The input sessionState.data is zeroed on success (consumed).
  * Throws if the sending chain key has not been initialized (receiver must
  * decrypt at least one message before sending).
  */
@@ -429,33 +458,39 @@ export function ratchetEncrypt(
   const state = deserializeState(sessionState)
 
   if (state.CKs === null) {
+    clearState(state)
     throw new Error(
       'Double Ratchet: cannot encrypt without sending chain key (must receive first)',
     )
   }
 
-  // Derive message key from sending chain
-  const [newCKs, messageKey] = chainKdf(state.CKs)
-  memzero(state.CKs)
-  state.CKs = newCKs
+  let messageKey: Uint8Array | null = null
+  try {
+    // Derive message key from sending chain
+    const [newCKs, mk] = chainKdf(state.CKs)
+    messageKey = mk
+    memzero(state.CKs)
+    state.CKs = newCKs
 
-  // Build and serialize header
-  const header: MessageHeader = {
-    dh: new Uint8Array(state.DHs.publicKey),
-    pn: state.PN,
-    n: state.Ns,
-  }
-  const headerBytes = serializeHeader(header)
+    // Build and serialize header
+    const header: MessageHeader = {
+      dh: new Uint8Array(state.DHs.publicKey),
+      pn: state.PN,
+      n: state.Ns,
+    }
+    const headerBytes = serializeHeader(header)
 
-  // AEAD encrypt with header as associated data
-  const { ciphertext, nonce } = aeadEncrypt(plaintext, messageKey, headerBytes)
-  memzero(messageKey)
+    // AEAD encrypt with header as associated data
+    const { ciphertext, nonce } = aeadEncrypt(plaintext, messageKey, headerBytes)
 
-  state.Ns++
+    state.Ns++
 
-  return {
-    session: serializeState(state),
-    message: { header, ciphertext, nonce },
+    const session = serializeState(state)
+    memzero(sessionState.data) // zero consumed input buffer
+    return { session, message: { header, ciphertext, nonce } }
+  } finally {
+    if (messageKey) memzero(messageKey)
+    clearState(state)
   }
 }
 
@@ -466,6 +501,7 @@ export function ratchetEncrypt(
  * DH ratchet steps when the sender's ratchet key changes.
  *
  * Returns the updated session state (caller must persist) and the plaintext.
+ * The input sessionState.data is zeroed on success (consumed).
  * Throws on authentication failure or if too many messages were skipped.
  */
 export function ratchetDecrypt(
@@ -473,70 +509,91 @@ export function ratchetDecrypt(
   message: RatchetMessage,
 ): { session: SessionState; plaintext: Uint8Array } {
   const state = deserializeState(sessionState)
-  const headerBytes = serializeHeader(message.header)
+  let messageKey: Uint8Array | null = null
 
-  // 1. Try skipped message keys first
-  const skippedKey = makeSkippedKey(message.header.dh, message.header.n)
-  const storedMK = state.MKSKIPPED.get(skippedKey)
-  if (storedMK) {
-    state.MKSKIPPED.delete(skippedKey)
-    const plaintext = aeadDecrypt(message.ciphertext, storedMK, message.nonce, headerBytes)
-    memzero(storedMK)
-    return { session: serializeState(state), plaintext }
-  }
+  try {
+    const headerBytes = serializeHeader(message.header)
 
-  // 2. DH ratchet step if sender's ratchet key changed
-  if (state.DHr === null || !bytesEqual(message.header.dh, state.DHr)) {
-    // Skip remaining messages in the OLD receiving chain
-    skipMessageKeys(state, message.header.pn)
+    // 1. Try skipped message keys first
+    const skippedKey = makeSkippedKey(message.header.dh, message.header.n)
+    const storedMK = state.MKSKIPPED.get(skippedKey)
+    if (storedMK) {
+      state.MKSKIPPED.delete(skippedKey)
+      messageKey = storedMK
+      const plaintext = aeadDecrypt(message.ciphertext, storedMK, message.nonce, headerBytes)
+      const session = serializeState(state)
+      memzero(sessionState.data) // zero consumed input buffer
+      return { session, plaintext }
+    }
 
-    // Update ratchet state
-    state.PN = state.Ns
-    state.Ns = 0
-    state.Nr = 0
-    state.DHr = new Uint8Array(message.header.dh)
+    // 2. DH ratchet step if sender's ratchet key changed
+    if (state.DHr === null || !bytesEqual(message.header.dh, state.DHr)) {
+      // Skip remaining messages in the OLD receiving chain
+      skipMessageKeys(state, message.header.pn)
 
-    // Derive new receiving chain key
-    const dhOutput1 = x25519DH(state.DHs.privateKey, state.DHr)
-    const [newRK1, newCKr] = rootKdf(state.RK, dhOutput1)
-    memzero(dhOutput1)
-    memzero(state.RK)
-    state.RK = newRK1
+      // Update ratchet state
+      state.PN = state.Ns
+      state.Ns = 0
+      state.Nr = 0
+      state.DHr = new Uint8Array(message.header.dh)
+
+      // Derive new receiving chain key
+      const dhOutput1 = x25519DH(state.DHs.privateKey, state.DHr)
+      const [newRK1, newCKr] = rootKdf(state.RK, dhOutput1)
+      memzero(dhOutput1)
+      memzero(state.RK)
+      state.RK = newRK1
+      state.CKr = newCKr
+
+      // Generate new sending keypair and derive new sending chain key
+      const oldDHsPrivate = state.DHs.privateKey
+      state.DHs = generateX25519KeyPair()
+      memzero(oldDHsPrivate)
+
+      const dhOutput2 = x25519DH(state.DHs.privateKey, state.DHr)
+      const [newRK2, newCKs] = rootKdf(state.RK, dhOutput2)
+      memzero(dhOutput2)
+      memzero(state.RK)
+      state.RK = newRK2
+      if (state.CKs) memzero(state.CKs)
+      state.CKs = newCKs
+    }
+
+    // 3. Skip messages in the current receiving chain up to this message
+    skipMessageKeys(state, message.header.n)
+
+    // 4. Derive message key
+    if (state.CKr === null) {
+      throw new Error('Double Ratchet: receiving chain key is null')
+    }
+    const [newCKr, mk] = chainKdf(state.CKr)
+    messageKey = mk
+    memzero(state.CKr)
     state.CKr = newCKr
 
-    // Generate new sending keypair and derive new sending chain key
-    const oldDHsPrivate = state.DHs.privateKey
-    state.DHs = generateX25519KeyPair()
-    memzero(oldDHsPrivate)
+    // 5. Decrypt
+    const plaintext = aeadDecrypt(message.ciphertext, messageKey, message.nonce, headerBytes)
 
-    const dhOutput2 = x25519DH(state.DHs.privateKey, state.DHr)
-    const [newRK2, newCKs] = rootKdf(state.RK, dhOutput2)
-    memzero(dhOutput2)
-    memzero(state.RK)
-    state.RK = newRK2
-    if (state.CKs) memzero(state.CKs)
-    state.CKs = newCKs
+    // 6. Update counter
+    state.Nr = message.header.n + 1
+
+    const session = serializeState(state)
+    memzero(sessionState.data) // zero consumed input buffer
+    return { session, plaintext }
+  } finally {
+    if (messageKey) memzero(messageKey)
+    clearState(state)
   }
+}
 
-  // 3. Skip messages in the current receiving chain up to this message
-  skipMessageKeys(state, message.header.n)
+// --- Session data cleanup ---
 
-  // 4. Derive message key
-  if (state.CKr === null) {
-    throw new Error('Double Ratchet: receiving chain key is null')
-  }
-  const [newCKr, messageKey] = chainKdf(state.CKr)
-  memzero(state.CKr)
-  state.CKr = newCKr
-
-  // 5. Decrypt
-  const plaintext = aeadDecrypt(message.ciphertext, messageKey, message.nonce, headerBytes)
-  memzero(messageKey)
-
-  // 6. Update counter
-  state.Nr = message.header.n + 1
-
-  return { session: serializeState(state), plaintext }
+/**
+ * Zero all key material in a SessionState buffer.
+ * Use when permanently discarding a session (e.g. contact removal).
+ */
+export function clearSessionData(session: SessionState): void {
+  memzero(session.data)
 }
 
 // --- Wire format serialization ---

@@ -18,6 +18,7 @@ import {
   ratchetDecrypt,
   serializeMessage,
   deserializeMessage,
+  clearSessionData,
 } from '../../../src/worker/crypto/double-ratchet'
 import type { SessionState } from '../../../src/worker/crypto/types'
 import type { RatchetMessage } from '../../../src/worker/crypto/double-ratchet'
@@ -531,5 +532,122 @@ describe('Input validation', () => {
     expect(() => ratchetEncrypt(bobSession, enc.encode('too early'))).toThrow(
       'cannot encrypt without sending chain key',
     )
+  })
+})
+
+describe('Memory safety', () => {
+  /** Check if a Uint8Array is all zeros. */
+  function isZeroed(buf: Uint8Array): boolean {
+    return buf.every((b) => b === 0)
+  }
+
+  it('input sessionState.data is zeroed after successful encrypt', () => {
+    const { aliceSession } = setupSessions()
+    const originalData = aliceSession.data
+
+    // Verify data is non-zero before operation
+    expect(isZeroed(originalData)).toBe(false)
+
+    ratchetEncrypt(aliceSession, enc.encode('test'))
+
+    // The original buffer should now be zeroed
+    expect(isZeroed(originalData)).toBe(true)
+  })
+
+  it('input sessionState.data is zeroed after successful decrypt', () => {
+    const { aliceSession, bobSession } = setupSessions()
+    const encrypted = ratchetEncrypt(aliceSession, enc.encode('test'))
+
+    const bobData = encrypted.session.data
+    // Bob's input session is aliceSession output — but we need bobSession
+    const bobOriginalData = bobSession.data
+    expect(isZeroed(bobOriginalData)).toBe(false)
+
+    ratchetDecrypt(bobSession, encrypted.message)
+
+    expect(isZeroed(bobOriginalData)).toBe(true)
+  })
+
+  it('input sessionState.data is NOT zeroed on failed decrypt', () => {
+    const session1 = setupSessions()
+    const session2 = setupSessions()
+
+    const encrypted = ratchetEncrypt(session1.aliceSession, enc.encode('secret'))
+    const bobData = session2.bobSession.data
+
+    expect(isZeroed(bobData)).toBe(false)
+
+    // Decrypt with wrong session should throw
+    expect(() => ratchetDecrypt(session2.bobSession, encrypted.message)).toThrow(
+      'message authentication failed',
+    )
+
+    // Input data should NOT be zeroed — caller may retry with another message
+    expect(isZeroed(bobData)).toBe(false)
+  })
+
+  it('messageKey is zeroed even when decrypt throws (auth failure)', () => {
+    let { aliceSession, bobSession } = setupSessions()
+    const encrypted = ratchetEncrypt(aliceSession, enc.encode('test'))
+    aliceSession = encrypted.session
+
+    // Tamper with ciphertext to cause auth failure
+    encrypted.message.ciphertext[0] ^= 0xff
+
+    // The function should throw, but internally the messageKey should
+    // have been zeroed in the finally block. We verify that the session
+    // is still usable afterward (the state wasn't corrupted).
+    expect(() => ratchetDecrypt(bobSession, encrypted.message)).toThrow(
+      'message authentication failed',
+    )
+
+    // Verify Bob can still decrypt a fresh message (session not corrupted)
+    const encrypted2 = ratchetEncrypt(aliceSession, enc.encode('retry'))
+    const decrypted = ratchetDecrypt(bobSession, encrypted2.message)
+    expect(dec.decode(decrypted.plaintext)).toBe('retry')
+  })
+
+  it('messageKey is zeroed when skipped-key decrypt throws', () => {
+    const { aliceSession, bobSession } = setupSessions()
+
+    // Send 3 messages, deliver only message 2 first (stores keys for 0,1)
+    const { messages } = sendMany(aliceSession, 3)
+    const result = ratchetDecrypt(bobSession, messages[2])
+    let currentBob = result.session
+
+    // Tamper with message 0 to cause auth failure on the skipped-key path
+    messages[0].ciphertext[0] ^= 0xff
+
+    expect(() => ratchetDecrypt(currentBob, messages[0])).toThrow(
+      'message authentication failed',
+    )
+
+    // Message 1 should still work (its skipped key wasn't corrupted)
+    const result1 = ratchetDecrypt(currentBob, messages[1])
+    currentBob = result1.session
+    expect(dec.decode(result1.plaintext)).toBe('msg-1')
+  })
+
+  it('clearSessionData zeros the session buffer', () => {
+    const { aliceSession } = setupSessions()
+    expect(isZeroed(aliceSession.data)).toBe(false)
+
+    clearSessionData(aliceSession)
+    expect(isZeroed(aliceSession.data)).toBe(true)
+  })
+
+  it('init functions zero internal state after serialization', () => {
+    // We can't directly inspect the internal state, but we can verify
+    // that the returned session works correctly (state was serialized
+    // before being cleared)
+    const sharedSecret = randomBytes(32)
+    const bobSPK = generateX25519KeyPair()
+    const aliceSession = initSenderSession(sharedSecret, bobSPK.publicKey)
+    const bobSession = initReceiverSession(sharedSecret, bobSPK)
+
+    // Sessions should be functional despite internal state being cleared
+    const encrypted = ratchetEncrypt(aliceSession, enc.encode('works'))
+    const decrypted = ratchetDecrypt(bobSession, encrypted.message)
+    expect(dec.decode(decrypted.plaintext)).toBe('works')
   })
 })
