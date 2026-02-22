@@ -99,6 +99,13 @@ export interface ClaimOtpResponse {
 // Users
 export type UserResponse = User
 
+// Device list
+export interface DeviceListResponse {
+  signed_list: string  // base64
+  master_verify_key: string  // base64
+  signature: string  // base64
+}
+
 // API error shape
 export interface ApiError {
   error: string

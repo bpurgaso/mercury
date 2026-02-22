@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Message } from '../types/models'
 import type { MessageCreateEvent } from '../types/ws'
-import { messages as messagesApi, dm as dmApi, keyBundles as keyBundlesApi } from '../services/api'
+import { messages as messagesApi, dm as dmApi, keyBundles as keyBundlesApi, deviceList as deviceListApi } from '../services/api'
 import { wsManager } from '../services/websocket'
 import { useDmChannelStore } from './dmChannelStore'
 import { cryptoService } from '../services/crypto'
@@ -36,6 +36,10 @@ function base64ToUint8Array(b64: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i)
   }
   return bytes
+}
+
+function base64ToNumberArray(b64: string): number[] {
+  return Array.from(base64ToUint8Array(b64))
 }
 
 export const useMessageStore = create<MessageState>((set, get) => ({
@@ -227,21 +231,58 @@ async function sendDmMessage(
   content: string,
   addMessage: (channelId: string, message: Message) => void,
 ): Promise<void> {
-  // 1. Fetch recipient's device key bundles
-  let bundles
-  try {
-    bundles = await keyBundlesApi.fetchAllForUser(recipientId)
-  } catch (err) {
-    throw new Error('Cannot reach recipient\'s key server')
+  // 1. Fetch and verify the recipient's signed device list
+  const deviceListResponse = await deviceListApi.fetch(recipientId)
+
+  const verifyResult = await cryptoService.verifyDeviceList(
+    recipientId,
+    base64ToNumberArray(deviceListResponse.signed_list),
+    base64ToNumberArray(deviceListResponse.master_verify_key),
+    base64ToNumberArray(deviceListResponse.signature),
+  )
+
+  // 2. Handle verification result
+  if (verifyResult.error === 'SIGNATURE_INVALID') {
+    throw new Error('Device list signature verification failed')
   }
 
-  if (!bundles.devices || bundles.devices.length === 0) {
+  if (verifyResult.error === 'IDENTITY_CHANGED') {
+    if (identityWarningCallback) {
+      const approved = await identityWarningCallback(
+        recipientId,
+        verifyResult.previousKey!,
+        verifyResult.newKey!,
+      )
+      if (!approved) {
+        throw new Error('Message not sent: identity verification failed')
+      }
+      // User approved — update trusted identity
+      await cryptoService.acceptIdentityChange(recipientId, verifyResult.newKey!)
+    } else {
+      throw new Error('Identity verification failed for recipient')
+    }
+  }
+
+  // 3. Extract verified device IDs
+  const verifiedDeviceIds = new Set(
+    (verifyResult.devices || []).map((d) => d.device_id),
+  )
+
+  if (verifiedDeviceIds.size === 0) {
     throw new Error('Recipient has no registered devices')
   }
 
-  // 2. Check which devices have existing sessions
+  // 4. Fetch key bundles and filter to only verified devices
+  const bundles = await keyBundlesApi.fetchAllForUser(recipientId)
+  const verifiedBundles = bundles.devices.filter((d) => verifiedDeviceIds.has(d.device_id))
+
+  if (verifiedBundles.length === 0) {
+    throw new Error('No key bundles available for verified devices')
+  }
+
+  // 5. Check which devices have existing sessions
   const sessionChecks = await cryptoService.hasSessions(
-    bundles.devices.map((d) => ({ userId: recipientId, deviceId: d.device_id })),
+    verifiedBundles.map((d) => ({ userId: recipientId, deviceId: d.device_id })),
   )
 
   const devicesWithSession = sessionChecks.filter((s) => s.hasSession)
@@ -258,7 +299,7 @@ async function sendDmMessage(
     }
   }> = []
 
-  // 3. Encrypt for devices with existing sessions
+  // 6. Encrypt for devices with existing sessions
   if (devicesWithSession.length > 0) {
     const result = await cryptoService.encryptDm(
       recipientId,
@@ -268,12 +309,11 @@ async function sendDmMessage(
     allRecipients.push(...result.recipients)
   }
 
-  // 4. Establish sessions and encrypt for devices without sessions
+  // 7. Establish sessions and encrypt for devices without sessions
   if (devicesWithoutSession.length > 0) {
-    // Build key bundles for X3DH
     const keyBundleData = []
     for (const device of devicesWithoutSession) {
-      const bundle = bundles.devices.find((d) => d.device_id === device.deviceId)
+      const bundle = verifiedBundles.find((d) => d.device_id === device.deviceId)
       if (!bundle) continue
 
       // Claim a one-time prekey for this device
@@ -301,10 +341,8 @@ async function sendDmMessage(
     }
 
     if (keyBundleData.length > 0) {
-      // We need the recipient's master verify key for TOFU.
-      // For now, use the first device's identity key as a proxy.
-      // In a full implementation, this would come from the signed device list.
-      const masterVerifyKey = keyBundleData[0].identityKey
+      // Master verify key comes from the verified device list (not from key bundles)
+      const masterVerifyKey = base64ToNumberArray(deviceListResponse.master_verify_key)
 
       const result = await cryptoService.establishAndEncryptDm(
         recipientId,
@@ -313,32 +351,7 @@ async function sendDmMessage(
         content,
       )
 
-      if (result.error === 'IDENTITY_CHANGED') {
-        // Show identity warning dialog
-        if (identityWarningCallback) {
-          const approved = await identityWarningCallback(
-            recipientId,
-            result.previousKey!,
-            result.newKey!,
-          )
-          if (!approved) {
-            throw new Error('Message not sent: identity verification failed')
-          }
-          // User approved — update trusted identity and retry
-          await cryptoService.acceptIdentityChange(recipientId, result.newKey!)
-          const retryResult = await cryptoService.establishAndEncryptDm(
-            recipientId,
-            masterVerifyKey,
-            keyBundleData,
-            content,
-          )
-          if (retryResult.recipients) {
-            allRecipients.push(...retryResult.recipients)
-          }
-        } else {
-          throw new Error('Identity verification failed for recipient')
-        }
-      } else if (result.recipients) {
+      if (result.recipients) {
         allRecipients.push(...result.recipients)
       }
     }
@@ -348,24 +361,24 @@ async function sendDmMessage(
     throw new Error('Failed to encrypt for any recipient device')
   }
 
-  // 5. Send via WebSocket (MessagePack binary frame)
-  wsManager.send('message_send', {
-    dm_channel_id: dmChannelId,
-    recipients: allRecipients,
-  })
-
-  // 6. Store sender's copy of plaintext locally
+  // 8. Store sender's copy of plaintext locally BEFORE sending
   const messageId = crypto.randomUUID()
   const now = Date.now()
   await cryptoService.storeMessage({
     id: messageId,
     channelId: dmChannelId,
-    senderId: 'self', // Will be resolved to actual user ID
+    senderId: 'self',
     content,
     createdAt: now,
   })
 
-  // 7. Add optimistic message to in-memory store
+  // 9. Send via WebSocket (MessagePack binary frame)
+  wsManager.send('message_send', {
+    dm_channel_id: dmChannelId,
+    recipients: allRecipients,
+  })
+
+  // 10. Add optimistic message to in-memory store
   addMessage(dmChannelId, {
     id: messageId,
     channel_id: null,

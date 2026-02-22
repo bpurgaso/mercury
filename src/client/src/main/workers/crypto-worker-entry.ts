@@ -25,6 +25,11 @@ import {
   serializeMessage,
   deserializeMessage,
 } from '../../worker/crypto/double-ratchet'
+import {
+  verifySignedDeviceList,
+  verifyTrustedIdentity,
+  DeviceListSignatureError,
+} from '../../worker/crypto/device-list'
 import { KeyStore } from '../../worker/store/keystore'
 import { MessageStore } from '../../worker/store/messages.db'
 import type { KeyBundle, SessionState } from '../../worker/crypto/types'
@@ -532,15 +537,18 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
               ephemeralKey,
             )
 
-            // Mark OTP as used
+            // Physically delete OTP (not soft-delete)
             if (ourOtp && x3dhHeader.prekeyId >= 0) {
-              keyStore!.markOneTimePreKeyUsed(x3dhHeader.prekeyId)
+              keyStore!.deleteOneTimePreKey(x3dhHeader.prekeyId)
             }
 
             // Initialize receiver session
             session = initReceiverSession(sharedSecret, ourSignedPreKey.keyPair)
             memzero(sharedSecret)
             memzero(ourIdentityKP.privateKey)
+            // Zero OTP private key in caller scope (defense-in-depth)
+            if (ourOtp) memzero(ourOtp.keyPair.privateKey)
+            memzero(ourSignedPreKey.keyPair.privateKey)
           } else {
             // Existing session
             session = keyStore!.getSession(senderId, senderDeviceId)
@@ -586,6 +594,45 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         const newKey = new Uint8Array(msg.data?.newKey as ArrayLike<number>)
         keyStore.storeTrustedIdentity(userId, newKey)
         result = { accepted: true }
+        break
+      }
+
+      case 'crypto:verifyDeviceList': {
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const userId = msg.data?.userId as string
+        const signedList = new Uint8Array(msg.data?.signedList as ArrayLike<number>)
+        const masterVerifyKey = new Uint8Array(msg.data?.masterVerifyKey as ArrayLike<number>)
+        const signature = new Uint8Array(msg.data?.signature as ArrayLike<number>)
+
+        try {
+          const payload = await verifySignedDeviceList(masterVerifyKey, signedList, signature)
+          const tofuResult = verifyTrustedIdentity(userId, masterVerifyKey, keyStore)
+
+          if (tofuResult.trusted) {
+            result = {
+              verified: true,
+              firstSeen: tofuResult.firstSeen,
+              devices: payload.devices,
+            }
+          } else {
+            result = {
+              verified: false,
+              error: 'IDENTITY_CHANGED',
+              previousKey: Array.from(tofuResult.previousKey),
+              newKey: Array.from(tofuResult.newKey),
+              devices: payload.devices,
+            }
+          }
+        } catch (err) {
+          if (err instanceof DeviceListSignatureError) {
+            result = {
+              verified: false,
+              error: 'SIGNATURE_INVALID',
+            }
+          } else {
+            throw err
+          }
+        }
         break
       }
 

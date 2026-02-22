@@ -218,8 +218,8 @@ export class KeyStore implements IKeyStore {
     tx()
   }
 
-  markOneTimePreKeyUsed(keyId: number): void {
-    this.db.prepare('UPDATE one_time_prekeys SET used = 1 WHERE key_id = ?').run(keyId)
+  deleteOneTimePreKey(keyId: number): void {
+    this.db.prepare('DELETE FROM one_time_prekeys WHERE key_id = ?').run(keyId)
   }
 
   getUnusedOneTimePreKeyCount(): number {

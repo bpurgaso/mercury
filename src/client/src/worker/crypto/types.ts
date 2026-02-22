@@ -137,7 +137,7 @@ export interface IKeyStore {
   storeSignedPreKey(spk: SignedPreKey): void
   getOneTimePreKey(keyId: number): PreKey | null
   storeOneTimePreKeys(prekeys: PreKey[]): void
-  markOneTimePreKeyUsed(keyId: number): void
+  deleteOneTimePreKey(keyId: number): void
   getUnusedOneTimePreKeyCount(): number
   getUnusedOneTimePreKeys(): PreKey[]
   getNextPreKeyId(): number

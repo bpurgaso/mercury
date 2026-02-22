@@ -95,21 +95,26 @@ describe('KeyStore round-trip', () => {
     store.close()
   })
 
-  it('marks one-time pre-keys as used', async () => {
+  it('physically deletes one-time pre-keys', async () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const prekeys = await generateOneTimePreKeys(0, 10)
     store.storeOneTimePreKeys(prekeys)
 
     expect(store.getUnusedOneTimePreKeyCount()).toBe(10)
 
-    store.markOneTimePreKeyUsed(0)
-    store.markOneTimePreKeyUsed(1)
+    store.deleteOneTimePreKey(0)
+    store.deleteOneTimePreKey(1)
     expect(store.getUnusedOneTimePreKeyCount()).toBe(8)
 
-    // Used keys should not be returned
+    // Deleted keys should not be returned
     expect(store.getOneTimePreKey(0)).toBeNull()
     expect(store.getOneTimePreKey(1)).toBeNull()
     expect(store.getOneTimePreKey(2)).not.toBeNull()
+
+    // Verify rows are actually deleted (not soft-deleted)
+    const allUnused = store.getUnusedOneTimePreKeys()
+    expect(allUnused.length).toBe(8)
+    expect(allUnused.every((pk) => pk.keyId !== 0 && pk.keyId !== 1)).toBe(true)
 
     store.close()
   })

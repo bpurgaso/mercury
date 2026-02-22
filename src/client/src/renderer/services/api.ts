@@ -17,6 +17,7 @@ import type {
   DmMessageResponse,
   UserKeyBundlesResponse,
   ClaimOtpResponse,
+  DeviceListResponse,
 } from '../types/api'
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://localhost:8443'
@@ -256,6 +257,12 @@ export const dm = {
     const path = `/dm/${dmChannelId}/messages${qs ? `?${qs}` : ''}`
     return request<DmMessageResponse[]>(path)
   },
+}
+
+// Device list endpoints
+export const deviceList = {
+  fetch: (userId: string) =>
+    request<DeviceListResponse>(`/users/${userId}/device-list`),
 }
 
 // Key bundle endpoints

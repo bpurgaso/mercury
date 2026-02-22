@@ -92,6 +92,15 @@ export interface HasSessionsResult {
   hasSession: boolean
 }
 
+export interface VerifyDeviceListResult {
+  verified: boolean
+  firstSeen?: boolean
+  error?: 'SIGNATURE_INVALID' | 'IDENTITY_CHANGED'
+  previousKey?: number[]
+  newKey?: number[]
+  devices?: Array<{ device_id: string; identity_key: string }>
+}
+
 export interface StoredMessageResult {
   id: string
   channelId: string
@@ -102,6 +111,20 @@ export interface StoredMessageResult {
 }
 
 export const cryptoService = {
+  verifyDeviceList(
+    userId: string,
+    signedList: number[],
+    masterVerifyKey: number[],
+    signature: number[],
+  ): Promise<VerifyDeviceListResult> {
+    return postCryptoOp<VerifyDeviceListResult>('crypto:verifyDeviceList', {
+      userId,
+      signedList,
+      masterVerifyKey,
+      signature,
+    })
+  },
+
   hasSessions(devices: Array<{ userId: string; deviceId: string }>): Promise<HasSessionsResult[]> {
     return postCryptoOp<HasSessionsResult[]>('crypto:hasSessions', { devices })
   },

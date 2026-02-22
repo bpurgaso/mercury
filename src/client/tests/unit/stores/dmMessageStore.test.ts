@@ -14,6 +14,9 @@ vi.mock('../../../src/renderer/services/api', () => ({
     fetchAllForUser: vi.fn(),
     claimOtp: vi.fn(),
   },
+  deviceList: {
+    fetch: vi.fn(),
+  },
   setTokenProvider: vi.fn(),
 }))
 
@@ -29,6 +32,7 @@ vi.mock('../../../src/renderer/services/websocket', () => ({
 // Mock the crypto service
 vi.mock('../../../src/renderer/services/crypto', () => ({
   cryptoService: {
+    verifyDeviceList: vi.fn(),
     hasSessions: vi.fn(),
     encryptDm: vi.fn(),
     establishAndEncryptDm: vi.fn(),
@@ -55,11 +59,70 @@ vi.mock('../../../src/renderer/stores/dmChannelStore', () => ({
   },
 }))
 
-import { useMessageStore } from '../../../src/renderer/stores/messageStore'
+import { useMessageStore, setIdentityWarningCallback } from '../../../src/renderer/stores/messageStore'
 import { wsManager } from '../../../src/renderer/services/websocket'
 import { cryptoService } from '../../../src/renderer/services/crypto'
-import { keyBundles as keyBundlesApi } from '../../../src/renderer/services/api'
+import { keyBundles as keyBundlesApi, deviceList as deviceListApi } from '../../../src/renderer/services/api'
 import type { Message } from '../../../src/renderer/types/models'
+
+// Helper: base64 encode a Uint8Array
+function toBase64(arr: Uint8Array): string {
+  return btoa(String.fromCharCode(...arr))
+}
+
+// Shared test fixtures
+const MOCK_DEVICE_LIST_RESPONSE = {
+  signed_list: toBase64(new Uint8Array(64).fill(0x01)),
+  master_verify_key: toBase64(new Uint8Array(32).fill(0x02)),
+  signature: toBase64(new Uint8Array(64).fill(0x03)),
+}
+
+const MOCK_KEY_BUNDLES = {
+  devices: [{
+    device_id: 'device-bob-1',
+    device_name: 'Bob Phone',
+    identity_key: toBase64(new Uint8Array(32).fill(0x11)),
+    signed_prekey: toBase64(new Uint8Array(32).fill(0x22)),
+    signed_prekey_id: 1,
+    prekey_signature: toBase64(new Uint8Array(64).fill(0x33)),
+  }],
+}
+
+function setupSuccessfulSendMocks(): void {
+  vi.mocked(deviceListApi.fetch).mockResolvedValue(MOCK_DEVICE_LIST_RESPONSE)
+
+  vi.mocked(cryptoService.verifyDeviceList).mockResolvedValue({
+    verified: true,
+    firstSeen: true,
+    devices: [{ device_id: 'device-bob-1', identity_key: toBase64(new Uint8Array(32).fill(0x11)) }],
+  })
+
+  vi.mocked(keyBundlesApi.fetchAllForUser).mockResolvedValue(MOCK_KEY_BUNDLES)
+
+  vi.mocked(cryptoService.hasSessions).mockResolvedValue([
+    { userId: 'user-bob', deviceId: 'device-bob-1', hasSession: false },
+  ])
+
+  vi.mocked(keyBundlesApi.claimOtp).mockResolvedValue({
+    key_id: 1,
+    prekey: toBase64(new Uint8Array(32).fill(0x44)),
+  })
+
+  vi.mocked(cryptoService.establishAndEncryptDm).mockResolvedValue({
+    recipients: [{
+      device_id: 'device-bob-1',
+      ciphertext: new Uint8Array([10, 20, 30]),
+      ratchet_header: new Uint8Array(0),
+      x3dh_header: {
+        sender_identity_key: new Uint8Array(32).fill(0xaa),
+        ephemeral_key: new Uint8Array(32).fill(0xbb),
+        prekey_id: 1,
+      },
+    }],
+  })
+
+  vi.mocked(cryptoService.storeMessage).mockResolvedValue({ stored: true })
+}
 
 describe('messageStore DM operations', () => {
   beforeEach(() => {
@@ -200,46 +263,20 @@ describe('messageStore DM operations', () => {
 
   describe('sendMessage for DMs', () => {
     it('encrypts via worker and sends binary frame for DM channels', async () => {
-      // Mock key bundles
-      vi.mocked(keyBundlesApi.fetchAllForUser).mockResolvedValue({
-        devices: [{
-          device_id: 'device-bob-1',
-          device_name: 'Bob Phone',
-          identity_key: btoa(String.fromCharCode(...new Uint8Array(32).fill(0x11))),
-          signed_prekey: btoa(String.fromCharCode(...new Uint8Array(32).fill(0x22))),
-          signed_prekey_id: 1,
-          prekey_signature: btoa(String.fromCharCode(...new Uint8Array(64).fill(0x33))),
-        }],
-      })
-
-      // Mock session check — no existing session
-      vi.mocked(cryptoService.hasSessions).mockResolvedValue([
-        { userId: 'user-bob', deviceId: 'device-bob-1', hasSession: false },
-      ])
-
-      // Mock OTP claim
-      vi.mocked(keyBundlesApi.claimOtp).mockResolvedValue({
-        key_id: 1,
-        prekey: btoa(String.fromCharCode(...new Uint8Array(32).fill(0x44))),
-      })
-
-      // Mock establish and encrypt
-      vi.mocked(cryptoService.establishAndEncryptDm).mockResolvedValue({
-        recipients: [{
-          device_id: 'device-bob-1',
-          ciphertext: new Uint8Array([10, 20, 30]),
-          ratchet_header: new Uint8Array(0),
-          x3dh_header: {
-            sender_identity_key: new Uint8Array(32).fill(0xaa),
-            ephemeral_key: new Uint8Array(32).fill(0xbb),
-            prekey_id: 1,
-          },
-        }],
-      })
-
-      vi.mocked(cryptoService.storeMessage).mockResolvedValue({ stored: true })
+      setupSuccessfulSendMocks()
 
       await useMessageStore.getState().sendMessage('dm-1', 'Hello Bob!')
+
+      // Should have fetched the device list first
+      expect(deviceListApi.fetch).toHaveBeenCalledWith('user-bob')
+
+      // Should have verified the device list
+      expect(cryptoService.verifyDeviceList).toHaveBeenCalledWith(
+        'user-bob',
+        expect.any(Array),
+        expect.any(Array),
+        expect.any(Array),
+      )
 
       // Should have called establishAndEncryptDm (no existing session)
       expect(cryptoService.establishAndEncryptDm).toHaveBeenCalledWith(
@@ -261,6 +298,177 @@ describe('messageStore DM operations', () => {
 
       // Should have stored sender's copy
       expect(cryptoService.storeMessage).toHaveBeenCalled()
+    })
+
+    it('rejects send on invalid device list signature', async () => {
+      vi.mocked(deviceListApi.fetch).mockResolvedValue(MOCK_DEVICE_LIST_RESPONSE)
+      vi.mocked(cryptoService.verifyDeviceList).mockResolvedValue({
+        verified: false,
+        error: 'SIGNATURE_INVALID',
+      })
+
+      await expect(
+        useMessageStore.getState().sendMessage('dm-1', 'Hello Bob!'),
+      ).rejects.toThrow('Device list signature verification failed')
+
+      // Should NOT have fetched key bundles or sent via WS
+      expect(keyBundlesApi.fetchAllForUser).not.toHaveBeenCalled()
+      expect(wsManager.send).not.toHaveBeenCalled()
+    })
+
+    it('aborts send on TOFU rejection (identity changed, user cancels)', async () => {
+      vi.mocked(deviceListApi.fetch).mockResolvedValue(MOCK_DEVICE_LIST_RESPONSE)
+      vi.mocked(cryptoService.verifyDeviceList).mockResolvedValue({
+        verified: false,
+        error: 'IDENTITY_CHANGED',
+        previousKey: [1, 2, 3],
+        newKey: [4, 5, 6],
+        devices: [{ device_id: 'device-bob-1', identity_key: 'a' }],
+      })
+
+      // User rejects identity change
+      setIdentityWarningCallback(async () => false)
+
+      await expect(
+        useMessageStore.getState().sendMessage('dm-1', 'Hello Bob!'),
+      ).rejects.toThrow('identity verification failed')
+
+      expect(wsManager.send).not.toHaveBeenCalled()
+
+      // Clean up callback
+      setIdentityWarningCallback(null as unknown as () => Promise<boolean>)
+    })
+
+    it('proceeds on TOFU approval (identity changed, user approves)', async () => {
+      vi.mocked(deviceListApi.fetch).mockResolvedValue(MOCK_DEVICE_LIST_RESPONSE)
+      vi.mocked(cryptoService.verifyDeviceList).mockResolvedValue({
+        verified: false,
+        error: 'IDENTITY_CHANGED',
+        previousKey: [1, 2, 3],
+        newKey: [4, 5, 6],
+        devices: [{ device_id: 'device-bob-1', identity_key: toBase64(new Uint8Array(32).fill(0x11)) }],
+      })
+
+      // User approves identity change
+      setIdentityWarningCallback(async () => true)
+      vi.mocked(cryptoService.acceptIdentityChange).mockResolvedValue({ accepted: true })
+
+      vi.mocked(keyBundlesApi.fetchAllForUser).mockResolvedValue(MOCK_KEY_BUNDLES)
+      vi.mocked(cryptoService.hasSessions).mockResolvedValue([
+        { userId: 'user-bob', deviceId: 'device-bob-1', hasSession: false },
+      ])
+      vi.mocked(keyBundlesApi.claimOtp).mockResolvedValue({
+        key_id: 1,
+        prekey: toBase64(new Uint8Array(32).fill(0x44)),
+      })
+      vi.mocked(cryptoService.establishAndEncryptDm).mockResolvedValue({
+        recipients: [{
+          device_id: 'device-bob-1',
+          ciphertext: new Uint8Array([10, 20, 30]),
+          ratchet_header: new Uint8Array(0),
+          x3dh_header: {
+            sender_identity_key: new Uint8Array(32).fill(0xaa),
+            ephemeral_key: new Uint8Array(32).fill(0xbb),
+            prekey_id: 1,
+          },
+        }],
+      })
+      vi.mocked(cryptoService.storeMessage).mockResolvedValue({ stored: true })
+
+      await useMessageStore.getState().sendMessage('dm-1', 'Hello Bob!')
+
+      // Should have accepted the identity change
+      expect(cryptoService.acceptIdentityChange).toHaveBeenCalledWith('user-bob', [4, 5, 6])
+
+      // Should have proceeded to send
+      expect(wsManager.send).toHaveBeenCalled()
+
+      // Clean up callback
+      setIdentityWarningCallback(null as unknown as () => Promise<boolean>)
+    })
+
+    it('filters key bundles to only verified device IDs', async () => {
+      vi.mocked(deviceListApi.fetch).mockResolvedValue(MOCK_DEVICE_LIST_RESPONSE)
+
+      // Verified list only includes device-bob-1
+      vi.mocked(cryptoService.verifyDeviceList).mockResolvedValue({
+        verified: true,
+        firstSeen: true,
+        devices: [{ device_id: 'device-bob-1', identity_key: 'a' }],
+      })
+
+      // Server returns two devices (one is not in the verified list)
+      vi.mocked(keyBundlesApi.fetchAllForUser).mockResolvedValue({
+        devices: [
+          ...MOCK_KEY_BUNDLES.devices,
+          {
+            device_id: 'device-bob-UNVERIFIED',
+            device_name: 'Evil Device',
+            identity_key: toBase64(new Uint8Array(32).fill(0xff)),
+            signed_prekey: toBase64(new Uint8Array(32).fill(0xee)),
+            signed_prekey_id: 2,
+            prekey_signature: toBase64(new Uint8Array(64).fill(0xdd)),
+          },
+        ],
+      })
+
+      vi.mocked(cryptoService.hasSessions).mockResolvedValue([
+        { userId: 'user-bob', deviceId: 'device-bob-1', hasSession: false },
+      ])
+
+      vi.mocked(keyBundlesApi.claimOtp).mockResolvedValue({
+        key_id: 1,
+        prekey: toBase64(new Uint8Array(32).fill(0x44)),
+      })
+
+      vi.mocked(cryptoService.establishAndEncryptDm).mockResolvedValue({
+        recipients: [{
+          device_id: 'device-bob-1',
+          ciphertext: new Uint8Array([10, 20, 30]),
+          ratchet_header: new Uint8Array(0),
+          x3dh_header: {
+            sender_identity_key: new Uint8Array(32).fill(0xaa),
+            ephemeral_key: new Uint8Array(32).fill(0xbb),
+            prekey_id: 1,
+          },
+        }],
+      })
+
+      vi.mocked(cryptoService.storeMessage).mockResolvedValue({ stored: true })
+
+      await useMessageStore.getState().sendMessage('dm-1', 'Hello Bob!')
+
+      // hasSessions should only be called with the verified device
+      expect(cryptoService.hasSessions).toHaveBeenCalledWith([
+        { userId: 'user-bob', deviceId: 'device-bob-1' },
+      ])
+
+      // The unverified device should NOT appear in encrypt calls
+      expect(cryptoService.establishAndEncryptDm).toHaveBeenCalledWith(
+        'user-bob',
+        expect.any(Array),
+        expect.not.arrayContaining([
+          expect.objectContaining({ deviceId: 'device-bob-UNVERIFIED' }),
+        ]),
+        'Hello Bob!',
+      )
+    })
+
+    it('stores plaintext before sending via WebSocket (store-before-send)', async () => {
+      setupSuccessfulSendMocks()
+
+      const callOrder: string[] = []
+      vi.mocked(cryptoService.storeMessage).mockImplementation(async () => {
+        callOrder.push('store')
+        return { stored: true }
+      })
+      vi.mocked(wsManager.send).mockImplementation((..._args: unknown[]) => {
+        callOrder.push('send')
+      })
+
+      await useMessageStore.getState().sendMessage('dm-1', 'Hello Bob!')
+
+      expect(callOrder.indexOf('store')).toBeLessThan(callOrder.indexOf('send'))
     })
 
     it('sends standard channel message as plaintext', async () => {
