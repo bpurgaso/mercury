@@ -860,9 +860,10 @@ async fn handle_dm_message_send(
         };
         let device_id = DeviceId(device_uuid);
 
-        // Serialize x3dh_header as MessagePack if present
+        // Serialize x3dh_header as MessagePack with named map keys so the
+        // client can parse it with named property access from REST history.
         let x3dh_header_bytes = recipient.x3dh_header.as_ref().map(|h| {
-            rmp_serde::to_vec(h).unwrap_or_default()
+            rmp_serde::to_vec_named(h).unwrap_or_default()
         });
 
         // Store in message_recipients
@@ -981,8 +982,11 @@ async fn handle_private_message_send(
         }
     };
 
-    // Store the broadcast ciphertext (device_id = NULL)
-    let encrypted_blob = rmp_serde::to_vec(&payload.encrypted).unwrap_or_default();
+    // Store the broadcast ciphertext (device_id = NULL).
+    // Use to_vec_named so the blob has named map keys matching the struct fields.
+    // This ensures REST endpoints can return it in a format the client can parse
+    // with named property access (e.g., encrypted.ciphertext, encrypted.nonce).
+    let encrypted_blob = rmp_serde::to_vec_named(&payload.encrypted).unwrap_or_default();
     if let Err(e) = mercury_db::messages::create_message_recipient(
         &mut *tx,
         message_id,
@@ -1103,20 +1107,20 @@ async fn handle_sender_key_distribute(
         };
 
         let msg_id = MessageId::new();
-        if let Ok(_msg) = mercury_db::messages::create_message(
+        if let Ok(_msg) = mercury_db::messages::create_sender_key_distribution_message(
             &mut *tx,
             msg_id,
             channel_id,
             sender_id,
-            None,
         )
         .await
         {
             // Store as a message_recipient for the target device
             let target_device = uuid::Uuid::parse_str(&dist.device_id).ok().map(DeviceId);
             if let Some(target_device_id) = target_device {
-                // Encode the full distribution event as the ciphertext
-                let dist_blob = rmp_serde::to_vec(&event_payload).unwrap_or_default();
+                // Encode the full distribution event as the ciphertext (named map
+                // format so it can be parsed by clients from REST history).
+                let dist_blob = rmp_serde::to_vec_named(&event_payload).unwrap_or_default();
                 let _ = mercury_db::messages::create_message_recipient(
                     &mut *tx,
                     msg_id,

@@ -63,6 +63,14 @@ pub fn create_router(state: AppState) -> Router {
             get(handlers::messages::get_messages),
         );
 
+    // Sender key routes — require authentication
+    let sender_key_routes = Router::new()
+        .route("/pending", get(handlers::sender_keys::get_pending))
+        .route(
+            "/acknowledge",
+            post(handlers::sender_keys::acknowledge),
+        );
+
     // DM routes — require authentication
     let dm_routes = Router::new()
         .route("/", post(handlers::dm::create_or_get_dm))
@@ -91,6 +99,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/devices", device_routes)
         .nest("/channels", channel_routes)
         .nest("/dm", dm_routes)
+        .nest("/sender-keys", sender_key_routes)
         // Key bundle fetch routes nested under /users (any authenticated user can fetch)
         .route(
             "/users/{user_id}/devices/{device_id}/keys",

@@ -39,6 +39,9 @@ export function App(): React.ReactElement {
       if (!useServerStore.getState().activeServerId && data.servers.length > 0) {
         useServerStore.getState().setActiveServer(data.servers[0].id)
       }
+
+      // Sync offline SenderKey distributions (fire and forget)
+      useMessageStore.getState().syncPendingSenderKeys()
     })
 
     const unsubMessage = wsManager.on('MESSAGE_CREATE', (data: MessageCreateEvent) => {

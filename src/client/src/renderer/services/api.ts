@@ -276,6 +276,24 @@ export const keyBundles = {
     }),
 }
 
+// Sender key endpoints
+export const senderKeys = {
+  getPending: () =>
+    request<Array<{
+      message_id: string
+      channel_id: string
+      sender_id: string
+      ciphertext: string
+      created_at: string | null
+    }>>('/sender-keys/pending'),
+
+  acknowledge: (messageIds: string[]) =>
+    request<void>('/sender-keys/acknowledge', {
+      method: 'POST',
+      body: JSON.stringify({ message_ids: messageIds }),
+    }),
+}
+
 export function getServerUrl(): string {
   return SERVER_URL
 }

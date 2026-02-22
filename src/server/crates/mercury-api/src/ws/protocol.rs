@@ -244,6 +244,8 @@ pub struct SenderKeyPayload {
     #[serde(with = "serde_bytes")]
     pub ciphertext: Vec<u8>,
     #[serde(with = "serde_bytes")]
+    pub nonce: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     pub signature: Vec<u8>,
     pub sender_device_id: String,
     pub iteration: i64,

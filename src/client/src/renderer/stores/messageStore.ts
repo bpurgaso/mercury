@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Message, Channel } from '../types/models'
 import type { MessageCreateEvent, SenderKeyDistributionEvent } from '../types/ws'
-import { messages as messagesApi, dm as dmApi, keyBundles as keyBundlesApi, deviceList as deviceListApi, devices as devicesApi } from '../services/api'
+import { messages as messagesApi, dm as dmApi, keyBundles as keyBundlesApi, deviceList as deviceListApi, devices as devicesApi, senderKeys as senderKeysApi } from '../services/api'
 import { wsManager } from '../services/websocket'
 import { useDmChannelStore } from './dmChannelStore'
 import { useServerStore } from './serverStore'
@@ -56,6 +56,7 @@ interface MessageState {
   fetchDmHistory(dmChannelId: string): Promise<void>
   distributeSenderKeyToNewMember(channelId: string, userId: string): Promise<void>
   handleServerError(code: string, message: string): Promise<void>
+  syncPendingSenderKeys(): Promise<void>
 }
 
 function base64ToUint8Array(b64: string): Uint8Array {
@@ -248,20 +249,23 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           continue
         }
 
-        // Private channel messages from REST history come with the encrypted payload.
-        // The server joins message_recipients (ciphertext blob) for private channels.
-        const encrypted = (serverMsg as Record<string, unknown>).encrypted as {
-          ciphertext: Uint8Array | number[]
-          nonce: Uint8Array | number[]
-          signature: Uint8Array | number[]
-          sender_device_id: string
-          iteration: number
-          epoch: number
-        } | undefined
-
-        if (!encrypted) continue
+        // Private channel REST responses have a base64-encoded `ciphertext` field
+        // containing the MessagePack-serialized SenderKeyPayload blob.
+        const ciphertextB64 = (serverMsg as Record<string, unknown>).ciphertext as string | undefined
+        if (!ciphertextB64) continue
 
         try {
+          const blobBytes = base64ToUint8Array(ciphertextB64)
+          const { decode } = await import('@msgpack/msgpack')
+          const encrypted = decode(blobBytes) as {
+            ciphertext: Uint8Array
+            nonce: Uint8Array
+            signature: Uint8Array
+            sender_device_id: string
+            iteration: number
+            epoch: number
+          }
+
           const result = await cryptoService.decryptGroup({
             channelId,
             senderId: serverMsg.sender_id,
@@ -484,6 +488,48 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     } catch (err) {
       console.error('[MessageStore] Failed to distribute SenderKey to new member:', err)
+    }
+  },
+
+  async syncPendingSenderKeys() {
+    try {
+      const pending = await senderKeysApi.getPending()
+      if (pending.length === 0) return
+
+      const ackIds: string[] = []
+
+      for (const dist of pending) {
+        try {
+          // Decode the base64 ciphertext blob → MessagePack → SenderKeyDistributionEvent
+          const blobBytes = base64ToUint8Array(dist.ciphertext)
+          const { decode } = await import('@msgpack/msgpack')
+          const event = decode(blobBytes) as {
+            channel_id: string
+            sender_id: string
+            sender_device_id: string
+            ciphertext: Uint8Array
+          }
+
+          await cryptoService.receiveSenderKeyDistribution({
+            channelId: event.channel_id,
+            senderId: event.sender_id,
+            senderDeviceId: event.sender_device_id,
+            ciphertext: Array.from(event.ciphertext),
+          })
+
+          ackIds.push(dist.message_id)
+        } catch (err) {
+          console.error('[MessageStore] Failed to process offline SenderKey distribution:', err)
+          // Still acknowledge to avoid re-fetching broken distributions
+          ackIds.push(dist.message_id)
+        }
+      }
+
+      if (ackIds.length > 0) {
+        await senderKeysApi.acknowledge(ackIds)
+      }
+    } catch (err) {
+      console.error('[MessageStore] Failed to sync pending SenderKey distributions:', err)
     }
   },
 

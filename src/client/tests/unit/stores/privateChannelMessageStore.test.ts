@@ -20,6 +20,10 @@ vi.mock('../../../src/renderer/services/api', () => ({
   devices: {
     uploadKeyBundle: vi.fn(),
   },
+  senderKeys: {
+    getPending: vi.fn(),
+    acknowledge: vi.fn(),
+  },
   setTokenProvider: vi.fn(),
 }))
 
@@ -108,6 +112,7 @@ import {
   keyBundles as keyBundlesApi,
   deviceList as deviceListApi,
   devices as devicesApi,
+  senderKeys as senderKeysApi,
 } from '../../../src/renderer/services/api'
 
 // Helper: base64 encode a Uint8Array
@@ -928,6 +933,82 @@ describe('messageStore private channel operations', () => {
 
       expect(cryptoService.markSenderKeyStale).not.toHaveBeenCalled()
       expect(cryptoService.encryptGroup).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('syncPendingSenderKeys', () => {
+    it('fetches pending distributions, processes them, and acknowledges', async () => {
+      // Build a fake MessagePack-encoded SenderKeyDistributionEvent
+      const { encode } = await import('@msgpack/msgpack')
+      const distEvent = {
+        channel_id: MOCK_PRIVATE_CHANNEL.id,
+        sender_id: 'user-bob',
+        sender_device_id: 'device-bob-1',
+        ciphertext: new Uint8Array([10, 20, 30]),
+      }
+      const blob = encode(distEvent)
+      const ciphertextB64 = btoa(String.fromCharCode(...new Uint8Array(blob)))
+
+      vi.mocked(senderKeysApi.getPending).mockResolvedValue([
+        {
+          message_id: 'sk-msg-1',
+          channel_id: MOCK_PRIVATE_CHANNEL.id,
+          sender_id: 'user-bob',
+          ciphertext: ciphertextB64,
+          created_at: '2026-02-22T00:00:00Z',
+        },
+      ])
+      vi.mocked(cryptoService.receiveSenderKeyDistribution).mockResolvedValue({ stored: true })
+      vi.mocked(senderKeysApi.acknowledge).mockResolvedValue(undefined as never)
+
+      await useMessageStore.getState().syncPendingSenderKeys()
+
+      expect(senderKeysApi.getPending).toHaveBeenCalled()
+      expect(cryptoService.receiveSenderKeyDistribution).toHaveBeenCalledWith({
+        channelId: MOCK_PRIVATE_CHANNEL.id,
+        senderId: 'user-bob',
+        senderDeviceId: 'device-bob-1',
+        ciphertext: [10, 20, 30],
+      })
+      expect(senderKeysApi.acknowledge).toHaveBeenCalledWith(['sk-msg-1'])
+    })
+
+    it('acknowledges even if processing fails', async () => {
+      const { encode } = await import('@msgpack/msgpack')
+      const distEvent = {
+        channel_id: MOCK_PRIVATE_CHANNEL.id,
+        sender_id: 'user-bob',
+        sender_device_id: 'device-bob-1',
+        ciphertext: new Uint8Array([10, 20, 30]),
+      }
+      const blob = encode(distEvent)
+      const ciphertextB64 = btoa(String.fromCharCode(...new Uint8Array(blob)))
+
+      vi.mocked(senderKeysApi.getPending).mockResolvedValue([
+        {
+          message_id: 'sk-msg-2',
+          channel_id: MOCK_PRIVATE_CHANNEL.id,
+          sender_id: 'user-bob',
+          ciphertext: ciphertextB64,
+          created_at: '2026-02-22T00:00:00Z',
+        },
+      ])
+      vi.mocked(cryptoService.receiveSenderKeyDistribution).mockRejectedValue(new Error('decrypt fail'))
+      vi.mocked(senderKeysApi.acknowledge).mockResolvedValue(undefined as never)
+
+      await useMessageStore.getState().syncPendingSenderKeys()
+
+      // Should still acknowledge to avoid re-fetching broken distributions
+      expect(senderKeysApi.acknowledge).toHaveBeenCalledWith(['sk-msg-2'])
+    })
+
+    it('does nothing when no pending distributions exist', async () => {
+      vi.mocked(senderKeysApi.getPending).mockResolvedValue([])
+
+      await useMessageStore.getState().syncPendingSenderKeys()
+
+      expect(cryptoService.receiveSenderKeyDistribution).not.toHaveBeenCalled()
+      expect(senderKeysApi.acknowledge).not.toHaveBeenCalled()
     })
   })
 

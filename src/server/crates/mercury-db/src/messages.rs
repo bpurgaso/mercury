@@ -235,6 +235,81 @@ pub async fn get_dm_messages_paginated(
     }
 }
 
+/// Create a sender key distribution message (message_type = 'sender_key_dist').
+/// Used for offline delivery of SenderKey distributions to target devices.
+pub async fn create_sender_key_distribution_message<'e, E>(
+    executor: E,
+    id: MessageId,
+    channel_id: ChannelId,
+    sender_id: UserId,
+) -> Result<Message, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query_as::<_, Message>(
+        r#"
+        INSERT INTO messages (id, channel_id, sender_id, message_type)
+        VALUES ($1, $2, $3, 'sender_key_dist')
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .bind(channel_id)
+    .bind(sender_id)
+    .fetch_one(executor)
+    .await
+}
+
+/// Row returned by pending sender key distribution queries.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PendingSenderKeyRow {
+    pub message_id: MessageId,
+    pub channel_id: Option<ChannelId>,
+    pub sender_id: UserId,
+    pub ciphertext: Vec<u8>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Fetch pending sender key distributions for a specific device.
+/// Returns distributions from message_recipients where the message has
+/// message_type = 'sender_key_dist' and the recipient device_id matches.
+pub async fn get_pending_sender_key_distributions(
+    pool: &PgPool,
+    device_id: DeviceId,
+) -> Result<Vec<PendingSenderKeyRow>, sqlx::Error> {
+    sqlx::query_as::<_, PendingSenderKeyRow>(
+        r#"
+        SELECT m.id AS message_id, m.channel_id, m.sender_id,
+               mr.ciphertext, m.created_at
+        FROM messages m
+        INNER JOIN message_recipients mr ON mr.message_id = m.id AND mr.device_id = $1
+        WHERE m.message_type = 'sender_key_dist'
+        ORDER BY m.created_at ASC
+        "#,
+    )
+    .bind(device_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Delete sender key distribution messages by their IDs.
+/// Uses CASCADE to also remove the message_recipients rows.
+pub async fn delete_sender_key_distributions(
+    pool: &PgPool,
+    message_ids: &[MessageId],
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        DELETE FROM messages
+        WHERE id = ANY($1) AND message_type = 'sender_key_dist'
+        "#,
+    )
+    .bind(message_ids)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Message with broadcast ciphertext for private channels (Sender Keys).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PrivateChannelMessageRow {
