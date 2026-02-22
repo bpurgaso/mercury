@@ -6,8 +6,7 @@
  *
  * Run: pnpm test:e2e
  */
-import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
-import { _electron as electron } from 'playwright'
+import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import { join } from 'path'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'

@@ -1,4 +1,4 @@
-import type { User, Server, Channel, PresenceStatus } from './models'
+import type { User, Server, Channel, DmChannel, PresenceStatus } from './models'
 
 // Server → Client event names
 export type ServerEventType =
@@ -38,6 +38,7 @@ export type ClientOp =
   | 'voice_state_update'
   | 'webrtc_signal'
   | 'presence_update'
+  | 'sender_key_distribute'
 
 // Server → Client message envelope
 export interface ServerMessage {
@@ -57,7 +58,7 @@ export interface ReadyEvent {
   user: User
   servers: Server[]
   channels: Channel[]
-  dm_channels: unknown[]
+  dm_channels: DmChannel[]
   session_id: string
   heartbeat_interval: number
 }
@@ -68,9 +69,18 @@ export interface ResumedEvent {
 
 export interface MessageCreateEvent {
   id: string
-  channel_id: string
+  channel_id?: string        // present for standard/private channel messages
+  dm_channel_id?: string     // present for DM messages
   sender_id: string
-  content: string | null
+  sender_device_id?: string  // present for DM messages
+  content?: string | null    // present for standard messages only
+  ciphertext?: Uint8Array    // present for DM messages (from MessagePack binary frame)
+  ratchet_header?: Uint8Array // serialized Double Ratchet header
+  x3dh_header?: {
+    sender_identity_key: Uint8Array
+    ephemeral_key: Uint8Array
+    prekey_id: number
+  }
   created_at: string
 }
 

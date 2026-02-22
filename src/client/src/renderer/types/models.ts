@@ -33,14 +33,28 @@ export interface Channel {
 export interface Message {
   id: string
   channel_id: string | null
+  dm_channel_id?: string     // present for DM messages
   sender_id: string
   content: string | null
   message_type: string | null
   created_at: string | null
   edited_at: string | null
+  // Set when decryption fails
+  decrypt_error?: 'NO_SESSION' | 'DECRYPT_FAILED'
   // Populated client-side from user data
   sender_username?: string
   sender_avatar_url?: string | null
+}
+
+export interface DmChannel {
+  id: string
+  recipient: {
+    id: string
+    username: string
+    display_name: string
+    avatar_url: string | null
+  }
+  created_at: string | null
 }
 
 export interface ServerMember {

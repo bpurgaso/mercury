@@ -3,7 +3,9 @@ import { useAuthStore } from './stores/authStore'
 import { useServerStore } from './stores/serverStore'
 import { useMessageStore } from './stores/messageStore'
 import { usePresenceStore } from './stores/presenceStore'
+import { useDmChannelStore } from './stores/dmChannelStore'
 import { wsManager } from './services/websocket'
+import { initCryptoPort } from './services/crypto'
 import { LoginPage } from './pages/LoginPage'
 import { RegisterPage } from './pages/RegisterPage'
 import { ServerPage } from './pages/ServerPage'
@@ -15,8 +17,9 @@ export function App(): React.ReactElement {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const [authView, setAuthView] = useState<AuthView>('login')
 
-  // Hydrate auth state from localStorage on mount
+  // Initialize crypto port and hydrate auth state on mount
   useEffect(() => {
+    initCryptoPort()
     useAuthStore.getState().hydrateFromStorage()
   }, [])
 
@@ -25,6 +28,11 @@ export function App(): React.ReactElement {
     const unsubReady = wsManager.on('READY', (data: ReadyEvent) => {
       useServerStore.getState().setServers(data.servers)
       useServerStore.getState().setChannels(data.channels)
+
+      // Populate DM channels
+      if (data.dm_channels) {
+        useDmChannelStore.getState().setDmChannels(data.dm_channels)
+      }
 
       // Auto-select first server if none selected
       if (!useServerStore.getState().activeServerId && data.servers.length > 0) {

@@ -1,3 +1,4 @@
+import { encode, decode } from '@msgpack/msgpack'
 import type {
   ServerMessage,
   ServerEventType,
@@ -66,7 +67,23 @@ export class WebSocketManager {
 
   send(op: string, data: unknown): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ op, d: data }))
+      // Use MessagePack binary framing for ops with binary payload data:
+      // - sender_key_distribute always carries binary ciphertext
+      // - message_send only when it's a DM (dm_channel_id) or private channel (encrypted)
+      //   Standard channel messages (channel_id + content) remain JSON for server compat
+      const useBinary =
+        op === 'sender_key_distribute' ||
+        (op === 'message_send' &&
+          data != null &&
+          typeof data === 'object' &&
+          ('dm_channel_id' in data || 'encrypted' in data))
+
+      if (useBinary) {
+        const encoded = encode({ op, d: data })
+        this.ws.send(encoded)
+      } else {
+        this.ws.send(JSON.stringify({ op, d: data }))
+      }
     }
   }
 
@@ -120,6 +137,7 @@ export class WebSocketManager {
 
     try {
       this.ws = new WebSocket(wsUrl)
+      this.ws.binaryType = 'arraybuffer'
     } catch (err) {
       console.error('[WS] WebSocket constructor threw:', err)
       this.scheduleReconnect()
@@ -183,10 +201,20 @@ export class WebSocketManager {
 
   private handleMessage(event: MessageEvent): void {
     let envelope: ServerMessage
-    try {
-      envelope = JSON.parse(event.data as string)
-    } catch {
-      return
+    if (event.data instanceof ArrayBuffer) {
+      // Binary frame → MessagePack
+      try {
+        envelope = decode(new Uint8Array(event.data)) as ServerMessage
+      } catch {
+        return
+      }
+    } else {
+      // Text frame → JSON
+      try {
+        envelope = JSON.parse(event.data as string)
+      } catch {
+        return
+      }
     }
 
     if (envelope.seq != null) {

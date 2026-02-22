@@ -16,8 +16,18 @@ import {
   generateSignedPreKey,
   generateOneTimePreKeys,
 } from '../../worker/crypto/keygen'
+import { performX3DH, respondX3DH } from '../../worker/crypto/x3dh'
+import {
+  initSenderSession,
+  initReceiverSession,
+  ratchetEncrypt,
+  ratchetDecrypt,
+  serializeMessage,
+  deserializeMessage,
+} from '../../worker/crypto/double-ratchet'
 import { KeyStore } from '../../worker/store/keystore'
 import { MessageStore } from '../../worker/store/messages.db'
+import type { KeyBundle, SessionState } from '../../worker/crypto/types'
 
 if (!parentPort) {
   throw new Error('crypto-worker must be run as a Worker Thread')
@@ -137,6 +147,9 @@ async function initDatabases(dataDir: string): Promise<void> {
   }
 
   memzero(dbKey)
+
+  // Load session index into memory for fast hasSession() checks
+  loadSessionIndex()
 }
 
 function closeDatabases(): void {
@@ -144,6 +157,42 @@ function closeDatabases(): void {
   messageStore?.close()
   keyStore = null
   messageStore = null
+}
+
+// --- Session index (in-memory for fast hasSession checks) ---
+
+const sessionIndex = new Set<string>()
+
+function sessionKey(userId: string, deviceId: string): string {
+  return `${userId}:${deviceId}`
+}
+
+function loadSessionIndex(): void {
+  if (!keyStore) return
+  sessionIndex.clear()
+  const sessions = keyStore.getAllSessions()
+  for (const s of sessions) {
+    sessionIndex.add(sessionKey(s.userId, s.deviceId))
+  }
+}
+
+// --- Per-session mutex ---
+// Prevents concurrent encrypt/decrypt on the same Double Ratchet session.
+// Different sessions can run in parallel.
+
+const sessionLocks = new Map<string, Promise<void>>()
+
+function withSessionLock<T>(userId: string, deviceId: string, fn: () => Promise<T>): Promise<T> {
+  const key = sessionKey(userId, deviceId)
+  const prev = sessionLocks.get(key) || Promise.resolve()
+  let resolve: () => void
+  const next = new Promise<void>((r) => { resolve = r })
+  sessionLocks.set(key, next)
+
+  return prev.then(
+    () => fn().finally(() => resolve!()),
+    () => fn().finally(() => resolve!()),
+  )
 }
 
 // --- Crypto operation handlers ---
@@ -282,6 +331,261 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         const limit = (msg.data?.limit as number) || 50
         const offset = (msg.data?.offset as number) || 0
         result = messageStore.getMessagesByChannel(channelId, limit, offset)
+        break
+      }
+
+      case 'crypto:hasSession': {
+        const userId = msg.data?.userId as string
+        const deviceId = msg.data?.deviceId as string
+        result = { exists: sessionIndex.has(sessionKey(userId, deviceId)) }
+        break
+      }
+
+      case 'crypto:hasSessions': {
+        // Batch check: given a list of {userId, deviceId}, return which have sessions
+        const checks = msg.data?.devices as Array<{ userId: string; deviceId: string }>
+        result = checks.map((d) => ({
+          userId: d.userId,
+          deviceId: d.deviceId,
+          hasSession: sessionIndex.has(sessionKey(d.userId, d.deviceId)),
+        }))
+        break
+      }
+
+      case 'crypto:encryptDm': {
+        // Encrypt for devices that already have established sessions
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const recipientId = msg.data?.recipientId as string
+        const devices = msg.data?.devices as Array<{ deviceId: string }>
+        const plaintext = msg.data?.plaintext as string
+        const plaintextBytes = new TextEncoder().encode(plaintext)
+
+        const recipients: Array<{
+          device_id: string
+          ciphertext: Uint8Array
+          ratchet_header: Uint8Array
+        }> = []
+
+        for (const device of devices) {
+          await withSessionLock(recipientId, device.deviceId, async () => {
+            const session = keyStore!.getSession(recipientId, device.deviceId)
+            if (!session) throw new Error(`No session for ${recipientId}:${device.deviceId}`)
+
+            const { session: updatedSession, message: ratchetMsg } = ratchetEncrypt(session, plaintextBytes)
+            keyStore!.storeSession(recipientId, device.deviceId, updatedSession)
+
+            const serialized = serializeMessage(ratchetMsg)
+            recipients.push({
+              device_id: device.deviceId,
+              ciphertext: serialized,
+              ratchet_header: new Uint8Array(0), // header is embedded in serialized message
+            })
+          })
+        }
+
+        result = { recipients }
+        break
+      }
+
+      case 'crypto:establishAndEncryptDm': {
+        // Establish new sessions via X3DH and encrypt
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const recipientId = msg.data?.recipientId as string
+        const recipientMasterVerifyKey = new Uint8Array(msg.data?.recipientMasterVerifyKey as ArrayLike<number>)
+        const keyBundles = msg.data?.keyBundles as Array<{
+          deviceId: string
+          identityKey: number[]
+          signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
+          oneTimePreKey?: { keyId: number; publicKey: number[] }
+        }>
+        const plaintext = msg.data?.plaintext as string
+        const plaintextBytes = new TextEncoder().encode(plaintext)
+
+        // TOFU check
+        const trustedKey = keyStore.getTrustedIdentity(recipientId)
+        if (trustedKey) {
+          // Compare with stored key
+          if (recipientMasterVerifyKey.length !== trustedKey.length ||
+              !recipientMasterVerifyKey.every((b, i) => b === trustedKey[i])) {
+            result = {
+              error: 'IDENTITY_CHANGED',
+              previousKey: Array.from(trustedKey),
+              newKey: Array.from(recipientMasterVerifyKey),
+            }
+            break
+          }
+        } else {
+          // First seen — store as trusted
+          keyStore.storeTrustedIdentity(recipientId, recipientMasterVerifyKey)
+        }
+
+        const ourIdentityKP = keyStore.getDeviceIdentityKeyPair()
+
+        const recipients: Array<{
+          device_id: string
+          ciphertext: Uint8Array
+          ratchet_header: Uint8Array
+          x3dh_header: {
+            sender_identity_key: Uint8Array
+            ephemeral_key: Uint8Array
+            prekey_id: number
+          }
+        }> = []
+
+        for (const bundle of keyBundles) {
+          await withSessionLock(recipientId, bundle.deviceId, async () => {
+            const keyBundle: KeyBundle = {
+              identityKey: new Uint8Array(bundle.identityKey),
+              signedPreKey: {
+                keyId: bundle.signedPreKey.keyId,
+                publicKey: new Uint8Array(bundle.signedPreKey.publicKey),
+                signature: new Uint8Array(bundle.signedPreKey.signature),
+              },
+              oneTimePreKey: bundle.oneTimePreKey ? {
+                keyId: bundle.oneTimePreKey.keyId,
+                publicKey: new Uint8Array(bundle.oneTimePreKey.publicKey),
+              } : undefined,
+            }
+
+            // Perform X3DH
+            const x3dhResult = performX3DH(ourIdentityKP, keyBundle)
+
+            // Initialize sender Double Ratchet session
+            const session = initSenderSession(
+              x3dhResult.sharedSecret,
+              keyBundle.signedPreKey.publicKey,
+            )
+
+            // Encrypt with the new session
+            const { session: updatedSession, message: ratchetMsg } = ratchetEncrypt(session, plaintextBytes)
+
+            // Persist session
+            keyStore!.storeSession(recipientId, bundle.deviceId, updatedSession)
+            sessionIndex.add(sessionKey(recipientId, bundle.deviceId))
+
+            const serialized = serializeMessage(ratchetMsg)
+
+            // Convert our device identity Ed25519 public key to match what the receiver expects
+            const ourDeviceX25519 = identityKeyToX25519(ourIdentityKP)
+
+            recipients.push({
+              device_id: bundle.deviceId,
+              ciphertext: serialized,
+              ratchet_header: new Uint8Array(0),
+              x3dh_header: {
+                sender_identity_key: ourDeviceX25519.publicKey,
+                ephemeral_key: x3dhResult.ephemeralPublicKey,
+                prekey_id: x3dhResult.usedPreKeyId ?? -1,
+              },
+            })
+
+            // Zero sensitive material
+            memzero(x3dhResult.sharedSecret)
+            memzero(ourDeviceX25519.privateKey)
+          })
+        }
+
+        // Zero our identity private key copy
+        memzero(ourIdentityKP.privateKey)
+
+        result = { recipients }
+        break
+      }
+
+      case 'crypto:decryptDm': {
+        // Decrypt an incoming DM message
+        if (!keyStore || !messageStore) throw new Error('Stores not initialized')
+        const senderId = msg.data?.senderId as string
+        const senderDeviceId = msg.data?.senderDeviceId as string
+        const ciphertextBytes = new Uint8Array(msg.data?.ciphertext as ArrayLike<number>)
+        const x3dhHeader = msg.data?.x3dhHeader as {
+          senderIdentityKey: number[]
+          ephemeralKey: number[]
+          prekeyId: number
+        } | undefined
+        const messageId = msg.data?.messageId as string
+        const dmChannelId = msg.data?.dmChannelId as string
+        const createdAt = msg.data?.createdAt as number
+
+        await withSessionLock(senderId, senderDeviceId, async () => {
+          let session: SessionState | null
+
+          if (x3dhHeader) {
+            // First message from this device — perform responder X3DH
+            const ourIdentityKP = keyStore!.getDeviceIdentityKeyPair()
+            const ourSignedPreKey = keyStore!.getSignedPreKey()
+            const senderIdentityKey = new Uint8Array(x3dhHeader.senderIdentityKey)
+            const ephemeralKey = new Uint8Array(x3dhHeader.ephemeralKey)
+
+            // Load one-time pre-key if specified
+            let ourOtp = null
+            if (x3dhHeader.prekeyId >= 0) {
+              ourOtp = keyStore!.getOneTimePreKey(x3dhHeader.prekeyId)
+            }
+
+            // Perform responder X3DH
+            const sharedSecret = respondX3DH(
+              ourIdentityKP,
+              ourSignedPreKey,
+              ourOtp,
+              senderIdentityKey,
+              ephemeralKey,
+            )
+
+            // Mark OTP as used
+            if (ourOtp && x3dhHeader.prekeyId >= 0) {
+              keyStore!.markOneTimePreKeyUsed(x3dhHeader.prekeyId)
+            }
+
+            // Initialize receiver session
+            session = initReceiverSession(sharedSecret, ourSignedPreKey.keyPair)
+            memzero(sharedSecret)
+            memzero(ourIdentityKP.privateKey)
+          } else {
+            // Existing session
+            session = keyStore!.getSession(senderId, senderDeviceId)
+            if (!session) {
+              result = { error: 'NO_SESSION' }
+              return
+            }
+          }
+
+          // Deserialize and decrypt
+          const ratchetMsg = deserializeMessage(ciphertextBytes)
+          try {
+            const { session: updatedSession, plaintext } = ratchetDecrypt(session, ratchetMsg)
+
+            // Persist updated session
+            keyStore!.storeSession(senderId, senderDeviceId, updatedSession)
+            sessionIndex.add(sessionKey(senderId, senderDeviceId))
+
+            const plaintextStr = new TextDecoder().decode(plaintext)
+
+            // Persist decrypted message to messages.db
+            messageStore!.insertMessage({
+              id: messageId,
+              channelId: dmChannelId,
+              senderId,
+              content: plaintextStr,
+              createdAt,
+              receivedAt: Date.now(),
+            })
+
+            result = { plaintext: plaintextStr, messageId }
+          } catch {
+            result = { error: 'DECRYPT_FAILED' }
+          }
+        })
+        break
+      }
+
+      case 'crypto:acceptIdentityChange': {
+        // User approved identity change — update trusted identity
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const userId = msg.data?.userId as string
+        const newKey = new Uint8Array(msg.data?.newKey as ArrayLike<number>)
+        keyStore.storeTrustedIdentity(userId, newKey)
+        result = { accepted: true }
         break
       }
 

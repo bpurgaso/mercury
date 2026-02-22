@@ -1,4 +1,4 @@
-import type { User, Server, Channel, Message } from './models'
+import type { User, Server, Channel, Message, DmChannel } from './models'
 
 // Auth
 export interface RegisterRequest {
@@ -65,6 +65,36 @@ export interface MessageHistoryParams {
 }
 
 export type MessageResponse = Message
+
+// DMs
+export type DmChannelResponse = DmChannel
+
+export interface DmMessageResponse {
+  id: string
+  dm_channel_id: string
+  sender_id: string
+  ciphertext: string  // base64-encoded
+  x3dh_header: string | null  // base64-encoded MessagePack blob
+  created_at: string | null
+}
+
+export interface UserKeyBundlesResponse {
+  devices: DeviceKeyBundleResponse[]
+}
+
+export interface DeviceKeyBundleResponse {
+  device_id: string
+  device_name: string
+  identity_key: string  // base64
+  signed_prekey: string  // base64
+  signed_prekey_id: number
+  prekey_signature: string  // base64
+}
+
+export interface ClaimOtpResponse {
+  key_id: number
+  prekey: string  // base64
+}
 
 // Users
 export type UserResponse = User

@@ -147,8 +147,8 @@ function setupMessagePort(win: BrowserWindow, worker: Worker): void {
 
   // Bridge: Worker → Main → Renderer
   worker.on('message', (msg: { op: string; [key: string]: unknown }) => {
-    // Only forward worker crypto responses to renderer, not safeStorage requests
-    if (msg.op === 'pong' || msg.op === 'crypto:result' || msg.op === 'crypto:error') {
+    // Forward worker crypto responses and init status to renderer, not safeStorage requests
+    if (msg.op === 'pong' || msg.op === 'crypto:result' || msg.op === 'crypto:error' || msg.op === 'init:complete') {
       mainPort.postMessage(msg)
     }
   })

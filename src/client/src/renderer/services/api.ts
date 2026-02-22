@@ -13,6 +13,10 @@ import type {
   MessageHistoryParams,
   MessageResponse,
   UserResponse,
+  DmChannelResponse,
+  DmMessageResponse,
+  UserKeyBundlesResponse,
+  ClaimOtpResponse,
 } from '../types/api'
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://localhost:8443'
@@ -231,6 +235,38 @@ export const messages = {
     const path = `/channels/${channelId}/messages${qs ? `?${qs}` : ''}`
     return request<MessageResponse[]>(path)
   },
+}
+
+// DM endpoints
+export const dm = {
+  create: (recipientId: string) =>
+    request<DmChannelResponse>('/dm', {
+      method: 'POST',
+      body: JSON.stringify({ recipient_id: recipientId }),
+    }),
+
+  list: () => request<DmChannelResponse[]>('/dm'),
+
+  getHistory: (dmChannelId: string, params?: MessageHistoryParams) => {
+    const searchParams = new URLSearchParams()
+    if (params?.before) searchParams.set('before', params.before)
+    if (params?.after) searchParams.set('after', params.after)
+    if (params?.limit) searchParams.set('limit', String(params.limit))
+    const qs = searchParams.toString()
+    const path = `/dm/${dmChannelId}/messages${qs ? `?${qs}` : ''}`
+    return request<DmMessageResponse[]>(path)
+  },
+}
+
+// Key bundle endpoints
+export const keyBundles = {
+  fetchAllForUser: (userId: string) =>
+    request<UserKeyBundlesResponse>(`/users/${userId}/keys`),
+
+  claimOtp: (userId: string, deviceId: string) =>
+    request<ClaimOtpResponse>(`/users/${userId}/devices/${deviceId}/keys/one-time`, {
+      method: 'POST',
+    }),
 }
 
 export function getServerUrl(): string {

@@ -35,7 +35,13 @@ export function MessageItem({ message }: MessageItemProps): React.ReactElement {
           </span>
           <span className="text-xs text-text-muted">{formatTime(message.created_at)}</span>
         </div>
-        <div className="text-text-secondary">{message.content}</div>
+        {message.decrypt_error ? (
+          <div className="italic text-text-muted">
+            This message could not be decrypted.
+          </div>
+        ) : (
+          <div className="text-text-secondary">{message.content}</div>
+        )}
       </div>
     </div>
   )

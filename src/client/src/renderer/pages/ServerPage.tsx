@@ -1,8 +1,12 @@
-import React, { useEffect, useCallback } from 'react'
+import React, { useEffect, useCallback, useState } from 'react'
 import { useServerStore } from '../stores/serverStore'
-import { useMessageStore } from '../stores/messageStore'
+import { useMessageStore, setIdentityWarningCallback } from '../stores/messageStore'
+import { useDmChannelStore } from '../stores/dmChannelStore'
 import { Sidebar } from '../components/layout/Sidebar'
 import { ChannelList } from '../components/layout/ChannelList'
+import { DmList } from '../components/dm/DmList'
+import { EncryptionBadge } from '../components/dm/EncryptionBadge'
+import { IdentityWarningDialog } from '../components/dm/IdentityWarningDialog'
 import { MessageList } from '../components/chat/MessageList'
 import { MessageInput } from '../components/chat/MessageInput'
 import { wsManager } from '../services/websocket'
@@ -12,55 +16,94 @@ export function ServerPage(): React.ReactElement {
   const channels = useServerStore((s) => s.channels)
   const messagesMap = useMessageStore((s) => s.messages)
   const fetchHistory = useMessageStore((s) => s.fetchHistory)
+  const fetchDmHistory = useMessageStore((s) => s.fetchDmHistory)
   const sendMessage = useMessageStore((s) => s.sendMessage)
   const connectionState = useWsConnectionState()
 
+  const viewMode = useDmChannelStore((s) => s.viewMode)
+  const activeDmChannelId = useDmChannelStore((s) => s.activeDmChannelId)
+  const dmChannels = useDmChannelStore((s) => s.dmChannels)
+
+  const activeDmChannel = activeDmChannelId ? dmChannels.get(activeDmChannelId) : null
   const activeChannel = activeChannelId ? channels.get(activeChannelId) : null
-  const messages = activeChannelId ? messagesMap.get(activeChannelId) ?? [] : []
+
+  const isDmView = viewMode === 'dm'
+  const activeId = isDmView ? activeDmChannelId : activeChannelId
+  const messages = activeId ? messagesMap.get(activeId) ?? [] : []
+
+  // Identity warning state
+  const [identityWarning, setIdentityWarning] = useState<{
+    recipientName: string
+    resolve: (approved: boolean) => void
+  } | null>(null)
+
+  // Set up identity warning callback
+  useEffect(() => {
+    setIdentityWarningCallback(async (userId, _previousKey, _newKey) => {
+      const dm = Array.from(dmChannels.values()).find((ch) => ch.recipient.id === userId)
+      const name = dm?.recipient.display_name || dm?.recipient.username || userId
+      return new Promise<boolean>((resolve) => {
+        setIdentityWarning({ recipientName: name, resolve })
+      })
+    })
+  }, [dmChannels])
 
   // Fetch message history when channel changes
   useEffect(() => {
-    if (activeChannelId) {
+    if (isDmView && activeDmChannelId) {
+      fetchDmHistory(activeDmChannelId)
+    } else if (!isDmView && activeChannelId) {
       fetchHistory(activeChannelId)
     }
-  }, [activeChannelId, fetchHistory])
+  }, [isDmView, activeDmChannelId, activeChannelId, fetchHistory, fetchDmHistory])
 
   const handleLoadMore = useCallback(() => {
-    if (!activeChannelId || messages.length === 0) return
+    if (!activeId || messages.length === 0) return
     const oldest = messages[0]
-    if (oldest) {
-      fetchHistory(activeChannelId, oldest.id)
+    if (oldest && !isDmView) {
+      fetchHistory(activeId, oldest.id)
     }
-  }, [activeChannelId, messages, fetchHistory])
+  }, [activeId, messages, fetchHistory, isDmView])
 
   const handleSend = useCallback(
     (content: string) => {
-      if (activeChannelId) {
-        sendMessage(activeChannelId, content)
+      if (activeId) {
+        sendMessage(activeId, content)
       }
     },
-    [activeChannelId, sendMessage]
+    [activeId, sendMessage]
   )
+
+  const headerName = isDmView
+    ? activeDmChannel?.recipient.display_name || activeDmChannel?.recipient.username
+    : activeChannel?.name
 
   return (
     <div className="flex h-screen">
       {/* Server sidebar (left icons) */}
       <Sidebar />
 
-      {/* Channel list (middle) */}
-      <ChannelList />
+      {/* Channel/DM list (middle) */}
+      {isDmView ? <DmList /> : <ChannelList />}
 
       {/* Chat area (right) */}
       <div className="flex flex-1 flex-col bg-bg-tertiary">
         {/* Channel header */}
         <div className="flex h-12 items-center border-b border-border-subtle px-4">
-          {activeChannel ? (
+          {headerName ? (
             <div className="flex items-center gap-2">
-              <span className="text-text-muted">#</span>
-              <span className="font-semibold text-text-primary">{activeChannel.name}</span>
+              {isDmView ? (
+                <span className="text-text-muted">@</span>
+              ) : (
+                <span className="text-text-muted">#</span>
+              )}
+              <span className="font-semibold text-text-primary">{headerName}</span>
+              {isDmView && <EncryptionBadge />}
             </div>
           ) : (
-            <span className="text-text-muted">Select a channel</span>
+            <span className="text-text-muted">
+              {isDmView ? 'Select a conversation' : 'Select a channel'}
+            </span>
           )}
 
           {/* Connection state indicator */}
@@ -76,19 +119,39 @@ export function ServerPage(): React.ReactElement {
         </div>
 
         {/* Message area */}
-        {activeChannel ? (
+        {(isDmView ? activeDmChannel : activeChannel) ? (
           <>
             <MessageList messages={messages} onLoadMore={handleLoadMore} />
-            <MessageInput channelName={activeChannel.name} onSend={handleSend} />
+            <MessageInput
+              channelName={headerName || ''}
+              onSend={handleSend}
+            />
           </>
         ) : (
           <div className="flex flex-1 items-center justify-center text-text-muted">
-            {useServerStore.getState().activeServerId
-              ? 'Select a channel to start chatting'
-              : 'Select a server from the sidebar'}
+            {isDmView
+              ? 'Select a conversation or start a new one'
+              : useServerStore.getState().activeServerId
+                ? 'Select a channel to start chatting'
+                : 'Select a server from the sidebar'}
           </div>
         )}
       </div>
+
+      {/* Identity warning dialog */}
+      {identityWarning && (
+        <IdentityWarningDialog
+          recipientName={identityWarning.recipientName}
+          onApprove={() => {
+            identityWarning.resolve(true)
+            setIdentityWarning(null)
+          }}
+          onCancel={() => {
+            identityWarning.resolve(false)
+            setIdentityWarning(null)
+          }}
+        />
+      )}
     </div>
   )
 }
