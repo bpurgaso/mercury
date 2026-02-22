@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useServerStore } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'
 import { CreateChannelModal } from '../channel/CreateChannelModal'
+import { ChannelLockIcon } from '../dm/EncryptionBadge'
 
 export function ChannelList(): React.ReactElement {
   const activeServerId = useServerStore((s) => s.activeServerId)
@@ -61,7 +62,8 @@ export function ChannelList(): React.ReactElement {
                     : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
                 }`}
               >
-                <span className="text-text-muted">#</span>
+                <span className="text-text-muted">{channel.encryption_mode === 'private' ? '' : '#'}</span>
+                {channel.encryption_mode === 'private' && <ChannelLockIcon />}
                 <span className="truncate">{channel.name}</span>
               </button>
             ))}

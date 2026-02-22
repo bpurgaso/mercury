@@ -17,6 +17,9 @@ vi.mock('../../../src/renderer/services/api', () => ({
   deviceList: {
     fetch: vi.fn(),
   },
+  devices: {
+    uploadKeyBundle: vi.fn(),
+  },
   setTokenProvider: vi.fn(),
 }))
 
@@ -40,6 +43,13 @@ vi.mock('../../../src/renderer/services/crypto', () => ({
     acceptIdentityChange: vi.fn(),
     storeMessage: vi.fn(),
     getMessages: vi.fn(),
+    encryptGroup: vi.fn(),
+    decryptGroup: vi.fn(),
+    receiveSenderKeyDistribution: vi.fn(),
+    distributeSenderKeyToDevices: vi.fn(),
+    markSenderKeyStale: vi.fn(),
+    getPublicKeys: vi.fn().mockResolvedValue({ unusedPreKeyCount: 50, deviceId: 'device-self-1' }),
+    generateOneTimePreKeys: vi.fn(),
   },
   initCryptoPort: vi.fn(),
 }))

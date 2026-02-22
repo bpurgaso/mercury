@@ -20,6 +20,7 @@ export type ServerEventType =
   | 'CHANNEL_DELETE'
   | 'MEMBER_ADD'
   | 'MEMBER_REMOVE'
+  | 'SENDER_KEY_DISTRIBUTION'
   | 'USER_BANNED'
   | 'USER_KICKED'
   | 'USER_MUTED'
@@ -72,7 +73,7 @@ export interface MessageCreateEvent {
   channel_id?: string        // present for standard/private channel messages
   dm_channel_id?: string     // present for DM messages
   sender_id: string
-  sender_device_id?: string  // present for DM messages
+  sender_device_id?: string  // present for DM/private channel messages
   content?: string | null    // present for standard messages only
   ciphertext?: Uint8Array    // present for DM messages (from MessagePack binary frame)
   ratchet_header?: Uint8Array // serialized Double Ratchet header
@@ -80,6 +81,14 @@ export interface MessageCreateEvent {
     sender_identity_key: Uint8Array
     ephemeral_key: Uint8Array
     prekey_id: number
+  }
+  encrypted?: {              // present for private channel messages
+    ciphertext: Uint8Array
+    nonce: Uint8Array
+    signature: Uint8Array
+    sender_device_id: string
+    iteration: number
+    epoch: number
   }
   created_at: string
 }
@@ -131,6 +140,13 @@ export interface MemberRemoveEvent {
   user_id: string
 }
 
+export interface SenderKeyDistributionEvent {
+  channel_id: string
+  sender_id: string
+  sender_device_id: string
+  ciphertext: Uint8Array
+}
+
 export interface HeartbeatAckEvent {
   // empty
 }
@@ -147,5 +163,6 @@ export interface WSEventMap {
   CHANNEL_DELETE: ChannelDeleteEvent
   MEMBER_ADD: MemberAddEvent
   MEMBER_REMOVE: MemberRemoveEvent
+  SENDER_KEY_DISTRIBUTION: SenderKeyDistributionEvent
   HEARTBEAT_ACK: HeartbeatAckEvent
 }

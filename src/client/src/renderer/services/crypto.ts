@@ -110,6 +110,42 @@ export interface StoredMessageResult {
   receivedAt: number
 }
 
+export interface EncryptGroupResult {
+  encrypted: {
+    ciphertext: number[]
+    nonce: number[]
+    signature: number[]
+    iteration: number
+    epoch: number
+    sender_device_id: string
+  }
+  distributions?: Array<{ device_id: string; ciphertext: number[] }>
+  needsX3dh?: Array<{ userId: string; deviceId: string }>
+}
+
+export interface DecryptGroupResult {
+  plaintext?: string
+  messageId?: string
+  error?: 'MISSING_SENDER_KEY' | 'DECRYPT_FAILED'
+}
+
+export interface DistributeSenderKeyResult {
+  distributions: Array<{ device_id: string; ciphertext: number[] }>
+}
+
+export interface GetPublicKeysResult {
+  masterVerifyPublicKey: number[]
+  deviceId: string
+  deviceIdentityPublicKey: number[]
+  signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
+  unusedPreKeyCount: number
+}
+
+export interface GenerateOtpResult {
+  startId: number
+  keys: Array<{ keyId: number; publicKey: number[] }>
+}
+
 export const cryptoService = {
   verifyDeviceList(
     userId: string,
@@ -200,5 +236,57 @@ export const cryptoService = {
       limit,
       offset,
     })
+  },
+
+  encryptGroup(params: {
+    channelId: string
+    plaintext: string
+    channelEpoch: number
+    memberDevices: Array<{ userId: string; deviceId: string }>
+  }): Promise<EncryptGroupResult> {
+    return postCryptoOp<EncryptGroupResult>('crypto:encryptGroup', params)
+  },
+
+  decryptGroup(params: {
+    channelId: string
+    senderId: string
+    senderDeviceId: string
+    ciphertext: number[]
+    nonce: number[]
+    signature: number[]
+    iteration: number
+    epoch: number
+    messageId: string
+    createdAt: number
+  }): Promise<DecryptGroupResult> {
+    return postCryptoOp<DecryptGroupResult>('crypto:decryptGroup', params)
+  },
+
+  receiveSenderKeyDistribution(params: {
+    channelId: string
+    senderId: string
+    senderDeviceId: string
+    ciphertext: number[]
+  }): Promise<{ stored: boolean; error?: string }> {
+    return postCryptoOp('crypto:receiveSenderKeyDistribution', params)
+  },
+
+  distributeSenderKeyToDevices(params: {
+    channelId: string
+    devices: Array<{ userId: string; deviceId: string }>
+  }): Promise<DistributeSenderKeyResult> {
+    return postCryptoOp<DistributeSenderKeyResult>('crypto:distributeSenderKeyToDevices', params)
+  },
+
+  markSenderKeyStale(channelId: string): Promise<{ marked: boolean }> {
+    return postCryptoOp('crypto:markSenderKeyStale', { channelId })
+  },
+
+  getPublicKeys(): Promise<GetPublicKeysResult> {
+    return postCryptoOp<GetPublicKeysResult>('crypto:getPublicKeys')
+  },
+
+  generateOneTimePreKeys(count = 100): Promise<GenerateOtpResult> {
+    return postCryptoOp<GenerateOtpResult>('crypto:generateOneTimePreKeys', { count })
   },
 }

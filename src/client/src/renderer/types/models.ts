@@ -25,6 +25,7 @@ export interface Channel {
   name: string
   channel_type: 'text' | 'voice' | 'video'
   encryption_mode: 'standard' | 'private'
+  sender_key_epoch?: number  // present for private channels
   position: number
   topic: string | null
   created_at: string | null
@@ -40,7 +41,7 @@ export interface Message {
   created_at: string | null
   edited_at: string | null
   // Set when decryption fails
-  decrypt_error?: 'NO_SESSION' | 'DECRYPT_FAILED'
+  decrypt_error?: 'NO_SESSION' | 'DECRYPT_FAILED' | 'MISSING_SENDER_KEY'
   // Populated client-side from user data
   sender_username?: string
   sender_avatar_url?: string | null

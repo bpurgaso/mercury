@@ -30,9 +30,18 @@ import {
   verifyTrustedIdentity,
   DeviceListSignatureError,
 } from '../../worker/crypto/device-list'
+import {
+  generateSenderKey,
+  senderKeyEncrypt,
+  senderKeyDecrypt,
+  needsRotation,
+  createDistributionMessage,
+  importDistributionMessage,
+  clearSenderKeyData,
+} from '../../worker/crypto/sender-keys'
 import { KeyStore } from '../../worker/store/keystore'
 import { MessageStore } from '../../worker/store/messages.db'
-import type { KeyBundle, SessionState } from '../../worker/crypto/types'
+import type { KeyBundle, SessionState, SenderKey } from '../../worker/crypto/types'
 
 if (!parentPort) {
   throw new Error('crypto-worker must be run as a Worker Thread')
@@ -594,6 +603,213 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         const newKey = new Uint8Array(msg.data?.newKey as ArrayLike<number>)
         keyStore.storeTrustedIdentity(userId, newKey)
         result = { accepted: true }
+        break
+      }
+
+      case 'crypto:encryptGroup': {
+        // Encrypt a message for a private channel using Sender Keys
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const channelId = msg.data?.channelId as string
+        const plaintext = msg.data?.plaintext as string
+        const channelEpoch = msg.data?.channelEpoch as number
+        const memberDevices = msg.data?.memberDevices as Array<{ userId: string; deviceId: string }>
+        const plaintextBytes = new TextEncoder().encode(plaintext)
+
+        const ourDeviceId = keyStore.getDeviceId()
+        // Use 'self' as userId for our own SenderKey (matches sender_id convention)
+        const ourUserId = 'self'
+
+        // Load or generate our SenderKey for this channel
+        let senderKey: SenderKey | null = keyStore.getSenderKey(channelId, ourUserId, ourDeviceId)
+        let didGenerate = false
+
+        if (!senderKey || needsRotation(senderKey, channelEpoch)) {
+          senderKey = generateSenderKey(channelEpoch)
+          keyStore.storeSenderKey(channelId, ourUserId, ourDeviceId, senderKey)
+          didGenerate = true
+        }
+
+        // Distribute SenderKey to members that have DR sessions
+        const distributions: Array<{ device_id: string; ciphertext: number[] }> = []
+        const needsX3dh: Array<{ userId: string; deviceId: string }> = []
+
+        if (didGenerate) {
+          const distMessage = createDistributionMessage(senderKey)
+
+          for (const device of memberDevices) {
+            const hasSession = sessionIndex.has(sessionKey(device.userId, device.deviceId))
+            if (hasSession) {
+              await withSessionLock(device.userId, device.deviceId, async () => {
+                const session = keyStore!.getSession(device.userId, device.deviceId)
+                if (!session) return
+                const { session: updatedSession, message: ratchetMsg } = ratchetEncrypt(session, distMessage)
+                keyStore!.storeSession(device.userId, device.deviceId, updatedSession)
+                distributions.push({
+                  device_id: device.deviceId,
+                  ciphertext: Array.from(serializeMessage(ratchetMsg)),
+                })
+              })
+            } else {
+              needsX3dh.push(device)
+            }
+          }
+
+          memzero(distMessage)
+        }
+
+        // Encrypt the message
+        const { senderKey: updatedKey, message: skMsg } = senderKeyEncrypt(senderKey, plaintextBytes, channelEpoch)
+        keyStore.storeSenderKey(channelId, ourUserId, ourDeviceId, updatedKey)
+
+        result = {
+          encrypted: {
+            ciphertext: Array.from(skMsg.ciphertext),
+            nonce: Array.from(skMsg.nonce),
+            signature: Array.from(skMsg.signature),
+            iteration: skMsg.iteration,
+            epoch: skMsg.epoch,
+            sender_device_id: ourDeviceId,
+          },
+          distributions: distributions.length > 0 ? distributions : undefined,
+          needsX3dh: needsX3dh.length > 0 ? needsX3dh : undefined,
+        }
+        break
+      }
+
+      case 'crypto:decryptGroup': {
+        // Decrypt an incoming private channel message
+        if (!keyStore || !messageStore) throw new Error('Stores not initialized')
+        const channelId = msg.data?.channelId as string
+        const senderId = msg.data?.senderId as string
+        const senderDeviceId = msg.data?.senderDeviceId as string
+        const messageId = msg.data?.messageId as string
+        const createdAt = msg.data?.createdAt as number
+
+        const ciphertextBytes = new Uint8Array(msg.data?.ciphertext as ArrayLike<number>)
+        const nonceBytes = new Uint8Array(msg.data?.nonce as ArrayLike<number>)
+        const signatureBytes = new Uint8Array(msg.data?.signature as ArrayLike<number>)
+        const iteration = msg.data?.iteration as number
+        const epoch = msg.data?.epoch as number
+
+        // Load sender's SenderKey
+        const senderKey = keyStore.getSenderKey(channelId, senderId, senderDeviceId)
+        if (!senderKey) {
+          result = { error: 'MISSING_SENDER_KEY' }
+          break
+        }
+
+        try {
+          const skMessage = {
+            ciphertext: ciphertextBytes,
+            nonce: nonceBytes,
+            signature: signatureBytes,
+            iteration,
+            epoch,
+          }
+
+          const { senderKey: updatedKey, plaintext } = senderKeyDecrypt(senderKey, skMessage, 0)
+          const plaintextStr = new TextDecoder().decode(plaintext)
+
+          // ATOMIC: persist updated key + message
+          keyStore.storeSenderKey(channelId, senderId, senderDeviceId, updatedKey)
+          messageStore.insertMessage({
+            id: messageId,
+            channelId,
+            senderId,
+            content: plaintextStr,
+            createdAt,
+            receivedAt: Date.now(),
+          })
+
+          result = { plaintext: plaintextStr, messageId }
+        } catch {
+          result = { error: 'DECRYPT_FAILED' }
+        }
+        break
+      }
+
+      case 'crypto:receiveSenderKeyDistribution': {
+        // Receive and import a SenderKey distribution via Double Ratchet
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const channelId = msg.data?.channelId as string
+        const senderId = msg.data?.senderId as string
+        const senderDeviceId = msg.data?.senderDeviceId as string
+        const ciphertextBytes = new Uint8Array(msg.data?.ciphertext as ArrayLike<number>)
+
+        await withSessionLock(senderId, senderDeviceId, async () => {
+          const session = keyStore!.getSession(senderId, senderDeviceId)
+          if (!session) {
+            result = { error: 'NO_SESSION' }
+            return
+          }
+
+          const ratchetMsg = deserializeMessage(ciphertextBytes)
+          try {
+            const { session: updatedSession, plaintext } = ratchetDecrypt(session, ratchetMsg)
+
+            // Import the SenderKey from the distribution message
+            const receivedKey = importDistributionMessage(plaintext)
+            memzero(plaintext)
+
+            // Persist both the updated DR session and the new SenderKey
+            keyStore!.storeSession(senderId, senderDeviceId, updatedSession)
+            keyStore!.storeSenderKey(channelId, senderId, senderDeviceId, receivedKey)
+
+            result = { stored: true, channelId, senderId, senderDeviceId }
+          } catch {
+            result = { error: 'DECRYPT_FAILED' }
+          }
+        })
+        break
+      }
+
+      case 'crypto:distributeSenderKeyToDevices': {
+        // Distribute our SenderKey to specific devices (after X3DH session establishment)
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const channelId = msg.data?.channelId as string
+        const devices = msg.data?.devices as Array<{ userId: string; deviceId: string }>
+
+        const ourDeviceId = keyStore.getDeviceId()
+        const ourUserId = 'self'
+        const senderKey = keyStore.getSenderKey(channelId, ourUserId, ourDeviceId)
+        if (!senderKey) throw new Error('No SenderKey to distribute')
+
+        const distMessage = createDistributionMessage(senderKey)
+        const distributions: Array<{ device_id: string; ciphertext: number[] }> = []
+
+        for (const device of devices) {
+          await withSessionLock(device.userId, device.deviceId, async () => {
+            const session = keyStore!.getSession(device.userId, device.deviceId)
+            if (!session) return
+            const { session: updatedSession, message: ratchetMsg } = ratchetEncrypt(session, distMessage)
+            keyStore!.storeSession(device.userId, device.deviceId, updatedSession)
+            distributions.push({
+              device_id: device.deviceId,
+              ciphertext: Array.from(serializeMessage(ratchetMsg)),
+            })
+          })
+        }
+
+        memzero(distMessage)
+        result = { distributions }
+        break
+      }
+
+      case 'crypto:markSenderKeyStale': {
+        // Delete our SenderKey for a channel (lazy rotation — regenerated on next send)
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const channelId = msg.data?.channelId as string
+        const ourDeviceId = keyStore.getDeviceId()
+        const ourUserId = 'self'
+        const existing = keyStore.getSenderKey(channelId, ourUserId, ourDeviceId)
+        if (existing) {
+          clearSenderKeyData(existing)
+          // Delete by overwriting with null-equivalent (or just let next generate replace it)
+          // We'll use a simple approach: delete the row by storing a marker that needsRotation will catch
+          // Actually, just delete the sender key so next encryptGroup generates a fresh one
+          keyStore.deleteSenderKey(channelId, ourUserId, ourDeviceId)
+        }
+        result = { marked: true }
         break
       }
 

@@ -307,6 +307,12 @@ export class KeyStore implements IKeyStore {
       .run(channelId, userId, deviceId, Buffer.from(key.data))
   }
 
+  deleteSenderKey(channelId: string, userId: string, deviceId: string): void {
+    this.db
+      .prepare('DELETE FROM sender_keys WHERE channel_id = ? AND user_id = ? AND device_id = ?')
+      .run(channelId, userId, deviceId)
+  }
+
   // --- Media keys ---
 
   getMediaKey(roomId: string): Uint8Array | null {

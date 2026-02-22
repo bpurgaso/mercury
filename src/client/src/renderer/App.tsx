@@ -9,7 +9,8 @@ import { initCryptoPort } from './services/crypto'
 import { LoginPage } from './pages/LoginPage'
 import { RegisterPage } from './pages/RegisterPage'
 import { ServerPage } from './pages/ServerPage'
-import type { ReadyEvent, MessageCreateEvent, PresenceUpdateEvent, ChannelCreateEvent, ChannelUpdateEvent, ChannelDeleteEvent, MemberAddEvent, MemberRemoveEvent } from './types/ws'
+import type { ReadyEvent, MessageCreateEvent, PresenceUpdateEvent, ChannelCreateEvent, ChannelUpdateEvent, ChannelDeleteEvent, MemberAddEvent, MemberRemoveEvent, SenderKeyDistributionEvent } from './types/ws'
+import { cryptoService } from './services/crypto'
 
 type AuthView = 'login' | 'register'
 
@@ -62,10 +63,32 @@ export function App(): React.ReactElement {
 
     const unsubMemberAdd = wsManager.on('MEMBER_ADD', (data: MemberAddEvent) => {
       useServerStore.getState().addMember(data.server_id, data.user_id)
+
+      // For private channels: distribute our SenderKey to the new member
+      const channels = useServerStore.getState().getServerChannels(data.server_id)
+      for (const channel of channels) {
+        if (channel.encryption_mode === 'private') {
+          useMessageStore.getState().distributeSenderKeyToNewMember(channel.id, data.user_id)
+          useMessageStore.getState().addSystemMessage(channel.id, `${data.user_id} joined the channel.`)
+        }
+      }
     })
 
     const unsubMemberRemove = wsManager.on('MEMBER_REMOVE', (data: MemberRemoveEvent) => {
       useServerStore.getState().removeMember(data.server_id, data.user_id)
+
+      // For private channels: mark SenderKey as stale (lazy rotation on next send)
+      const channels = useServerStore.getState().getServerChannels(data.server_id)
+      for (const channel of channels) {
+        if (channel.encryption_mode === 'private') {
+          cryptoService.markSenderKeyStale(channel.id)
+          useMessageStore.getState().addSystemMessage(channel.id, `${data.user_id} was removed from the channel.`)
+        }
+      }
+    })
+
+    const unsubSenderKeyDist = wsManager.on('SENDER_KEY_DISTRIBUTION', (data: SenderKeyDistributionEvent) => {
+      useMessageStore.getState().handleSenderKeyDistribution(data)
     })
 
     return () => {
@@ -77,6 +100,7 @@ export function App(): React.ReactElement {
       unsubChannelDelete()
       unsubMemberAdd()
       unsubMemberRemove()
+      unsubSenderKeyDist()
     }
   }, [])
 

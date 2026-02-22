@@ -1,6 +1,7 @@
 import React, { useEffect, useCallback, useState } from 'react'
 import { useServerStore } from '../stores/serverStore'
 import { useMessageStore, setIdentityWarningCallback } from '../stores/messageStore'
+import type { Channel } from '../types/models'
 import { useDmChannelStore } from '../stores/dmChannelStore'
 import { Sidebar } from '../components/layout/Sidebar'
 import { ChannelList } from '../components/layout/ChannelList'
@@ -17,6 +18,7 @@ export function ServerPage(): React.ReactElement {
   const messagesMap = useMessageStore((s) => s.messages)
   const fetchHistory = useMessageStore((s) => s.fetchHistory)
   const fetchDmHistory = useMessageStore((s) => s.fetchDmHistory)
+  const fetchPrivateChannelHistory = useMessageStore((s) => s.fetchPrivateChannelHistory)
   const sendMessage = useMessageStore((s) => s.sendMessage)
   const connectionState = useWsConnectionState()
 
@@ -53,9 +55,13 @@ export function ServerPage(): React.ReactElement {
     if (isDmView && activeDmChannelId) {
       fetchDmHistory(activeDmChannelId)
     } else if (!isDmView && activeChannelId) {
-      fetchHistory(activeChannelId)
+      if (activeChannel?.encryption_mode === 'private') {
+        fetchPrivateChannelHistory(activeChannelId)
+      } else {
+        fetchHistory(activeChannelId)
+      }
     }
-  }, [isDmView, activeDmChannelId, activeChannelId, fetchHistory, fetchDmHistory])
+  }, [isDmView, activeDmChannelId, activeChannelId, activeChannel?.encryption_mode, fetchHistory, fetchDmHistory, fetchPrivateChannelHistory])
 
   const handleLoadMore = useCallback(() => {
     if (!activeId || messages.length === 0) return
@@ -98,7 +104,8 @@ export function ServerPage(): React.ReactElement {
                 <span className="text-text-muted">#</span>
               )}
               <span className="font-semibold text-text-primary">{headerName}</span>
-              {isDmView && <EncryptionBadge />}
+              {isDmView && <EncryptionBadge mode="e2e_dm" />}
+              {!isDmView && activeChannel?.encryption_mode === 'private' && <EncryptionBadge mode="private" />}
             </div>
           ) : (
             <span className="text-text-muted">

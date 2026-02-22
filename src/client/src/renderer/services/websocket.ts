@@ -260,6 +260,10 @@ export class WebSocketManager {
         this.emit('MEMBER_REMOVE', envelope.d as MemberRemoveEvent)
         break
       }
+      case 'SENDER_KEY_DISTRIBUTION': {
+        this.emit('SENDER_KEY_DISTRIBUTION', envelope.d)
+        break
+      }
       default: {
         // Forward any unhandled events (CHANNEL_CREATE, etc.)
         if (envelope.t) {
