@@ -21,6 +21,7 @@ export type ServerEventType =
   | 'MEMBER_ADD'
   | 'MEMBER_REMOVE'
   | 'SENDER_KEY_DISTRIBUTION'
+  | 'ERROR'
   | 'USER_BANNED'
   | 'USER_KICKED'
   | 'USER_MUTED'
@@ -151,6 +152,11 @@ export interface HeartbeatAckEvent {
   // empty
 }
 
+export interface ServerErrorEvent {
+  code: string    // e.g. 'STALE_SENDER_KEY'
+  message: string
+}
+
 // Typed event map for the WebSocket manager
 export interface WSEventMap {
   READY: ReadyEvent
@@ -165,4 +171,5 @@ export interface WSEventMap {
   MEMBER_REMOVE: MemberRemoveEvent
   SENDER_KEY_DISTRIBUTION: SenderKeyDistributionEvent
   HEARTBEAT_ACK: HeartbeatAckEvent
+  ERROR: ServerErrorEvent
 }

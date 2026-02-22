@@ -13,6 +13,8 @@ export function CreateChannelModal({ serverId, onClose }: CreateChannelModalProp
   const [error, setError] = useState('')
   const createChannel = useServerStore((s) => s.createChannel)
   const setActiveChannel = useServerStore((s) => s.setActiveChannel)
+  const memberCount = useServerStore((s) => s.members.get(serverId)?.length ?? 0)
+  const privateDisabled = memberCount > 100
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -73,13 +75,14 @@ export function CreateChannelModal({ serverId, onClose }: CreateChannelModalProp
                 <div className="text-sm text-text-muted">Full message history, searchable. Best for public discussions.</div>
               </div>
             </label>
-            <label className="flex cursor-pointer items-start gap-3 rounded border border-border-subtle p-3 hover:bg-bg-hover">
+            <label className={`flex items-start gap-3 rounded border border-border-subtle p-3 ${privateDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-bg-hover'}`}>
               <input
                 type="radio"
                 name="encryption"
                 value="private"
                 checked={encryptionMode === 'private'}
                 onChange={() => setEncryptionMode('private')}
+                disabled={privateDisabled}
                 className="mt-1"
               />
               <div>
@@ -87,6 +90,11 @@ export function CreateChannelModal({ serverId, onClose }: CreateChannelModalProp
                 <div className="text-sm text-text-muted">
                   End-to-end encrypted. Max 100 members. History only visible from join point.
                 </div>
+                {privateDisabled && (
+                  <div className="mt-1 text-xs text-red-400">
+                    This server has more than 100 members. Private channels are limited to 100 members.
+                  </div>
+                )}
               </div>
             </label>
           </div>

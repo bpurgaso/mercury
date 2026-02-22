@@ -264,6 +264,10 @@ export class WebSocketManager {
         this.emit('SENDER_KEY_DISTRIBUTION', envelope.d)
         break
       }
+      case 'ERROR': {
+        this.emit('ERROR', envelope.d)
+        break
+      }
       default: {
         // Forward any unhandled events (CHANNEL_CREATE, etc.)
         if (envelope.t) {

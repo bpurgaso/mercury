@@ -66,16 +66,32 @@ vi.mock('../../../src/renderer/stores/dmChannelStore', () => ({
 // Mock the serverStore
 vi.mock('../../../src/renderer/stores/serverStore', () => {
   const { create } = require('zustand')
-  const store = create(() => ({
+  const store = create((set: Function, get: Function) => ({
     servers: new Map(),
     channels: new Map(),
     members: new Map(),
     activeServerId: null,
     activeChannelId: null,
     getServerChannels: () => [],
+    updateChannel: (channel: Record<string, unknown>) => {
+      set((state: Record<string, unknown>) => {
+        const channels = new Map(state.channels as Map<string, unknown>)
+        channels.set(channel.id, channel)
+        return { channels }
+      })
+    },
   }))
   return { useServerStore: store }
 })
+
+// Mock the authStore
+vi.mock('../../../src/renderer/stores/authStore', () => ({
+  useAuthStore: {
+    getState: vi.fn(() => ({
+      user: { id: 'user-self' },
+    })),
+  },
+}))
 
 // Mock crypto.randomUUID
 const MOCK_UUID = 'test-uuid-1234'
@@ -876,6 +892,42 @@ describe('messageStore private channel operations', () => {
       await new Promise((r) => setTimeout(r, 100))
 
       expect(cryptoService.generateOneTimePreKeys).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('handleServerError — STALE_SENDER_KEY retry', () => {
+    it('marks key stale, increments epoch, and retries send on STALE_SENDER_KEY', async () => {
+      setupSuccessfulGroupSendMocks()
+      vi.mocked(cryptoService.markSenderKeyStale).mockResolvedValue({ marked: true })
+
+      // First send to populate lastPrivateChannelSend
+      await useMessageStore.getState().sendMessage(MOCK_PRIVATE_CHANNEL.id, 'Hello!')
+      vi.clearAllMocks()
+
+      // Re-setup mocks for the retry send
+      setupSuccessfulGroupSendMocks()
+      vi.mocked(cryptoService.markSenderKeyStale).mockResolvedValue({ marked: true })
+
+      // Simulate STALE_SENDER_KEY error from server
+      await useMessageStore.getState().handleServerError('STALE_SENDER_KEY', 'sender key epoch is stale')
+
+      // Should have marked key stale
+      expect(cryptoService.markSenderKeyStale).toHaveBeenCalledWith(MOCK_PRIVATE_CHANNEL.id)
+
+      // Should have retried the send
+      expect(cryptoService.encryptGroup).toHaveBeenCalled()
+    })
+
+    it('does not retry on non-STALE_SENDER_KEY errors', async () => {
+      setupSuccessfulGroupSendMocks()
+
+      await useMessageStore.getState().sendMessage(MOCK_PRIVATE_CHANNEL.id, 'Hello!')
+      vi.clearAllMocks()
+
+      await useMessageStore.getState().handleServerError('UNKNOWN_ERROR', 'something else')
+
+      expect(cryptoService.markSenderKeyStale).not.toHaveBeenCalled()
+      expect(cryptoService.encryptGroup).not.toHaveBeenCalled()
     })
   })
 

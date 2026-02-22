@@ -5,6 +5,7 @@ import { messages as messagesApi, dm as dmApi, keyBundles as keyBundlesApi, devi
 import { wsManager } from '../services/websocket'
 import { useDmChannelStore } from './dmChannelStore'
 import { useServerStore } from './serverStore'
+import { useAuthStore } from './authStore'
 import { cryptoService } from '../services/crypto'
 
 // Callback for showing TOFU identity warning — set by UI layer
@@ -35,6 +36,9 @@ const joinNoticeShown = new Set<string>()
 // Track whether a stale-key retry is in progress to prevent loops
 let staleRetryInProgress = false
 
+// Track the last private channel send for STALE_SENDER_KEY retry
+let lastPrivateChannelSend: { channelId: string; content: string } | null = null
+
 interface MessageState {
   messages: Map<string, Message[]>
   dmHistoryLoaded: Set<string>
@@ -51,6 +55,7 @@ interface MessageState {
   getChannelMessages(channelId: string): Message[]
   fetchDmHistory(dmChannelId: string): Promise<void>
   distributeSenderKeyToNewMember(channelId: string, userId: string): Promise<void>
+  handleServerError(code: string, message: string): Promise<void>
 }
 
 function base64ToUint8Array(b64: string): Uint8Array {
@@ -237,20 +242,74 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       for (const serverMsg of serverMessages) {
         if (existing.some((m) => m.id === serverMsg.id)) continue
 
-        // Private channel messages from server have encrypted payload
-        // The server returns them with content=null and encrypted fields
+        // Plaintext messages (shouldn't appear in private channels, but handle gracefully)
         if (serverMsg.content != null) {
-          // This is a plaintext message (shouldn't happen for private channels, but handle gracefully)
           get().addMessage(channelId, serverMsg)
           continue
         }
 
-        // For encrypted messages from REST history, the server returns the
-        // encrypted payload. We need to parse and decrypt it.
-        // Note: REST history for private channels may require different handling
-        // depending on how the server serializes the encrypted payload.
-        // For now, skip server catch-up for encrypted messages that we haven't
-        // received via WebSocket (they'll come via the live stream).
+        // Private channel messages from REST history come with the encrypted payload.
+        // The server joins message_recipients (ciphertext blob) for private channels.
+        const encrypted = (serverMsg as Record<string, unknown>).encrypted as {
+          ciphertext: Uint8Array | number[]
+          nonce: Uint8Array | number[]
+          signature: Uint8Array | number[]
+          sender_device_id: string
+          iteration: number
+          epoch: number
+        } | undefined
+
+        if (!encrypted) continue
+
+        try {
+          const result = await cryptoService.decryptGroup({
+            channelId,
+            senderId: serverMsg.sender_id,
+            senderDeviceId: encrypted.sender_device_id,
+            ciphertext: Array.from(encrypted.ciphertext),
+            nonce: Array.from(encrypted.nonce),
+            signature: Array.from(encrypted.signature),
+            iteration: encrypted.iteration,
+            epoch: encrypted.epoch,
+            messageId: serverMsg.id,
+            createdAt: serverMsg.created_at ? new Date(serverMsg.created_at).getTime() : Date.now(),
+          })
+
+          if (result.plaintext) {
+            get().addMessage(channelId, {
+              id: serverMsg.id,
+              channel_id: channelId,
+              sender_id: serverMsg.sender_id,
+              content: result.plaintext,
+              message_type: 'text',
+              created_at: serverMsg.created_at,
+              edited_at: null,
+            })
+          } else {
+            // Decryption failed — show placeholder
+            get().addMessage(channelId, {
+              id: serverMsg.id,
+              channel_id: channelId,
+              sender_id: serverMsg.sender_id,
+              content: null,
+              message_type: 'text',
+              created_at: serverMsg.created_at,
+              edited_at: null,
+              decrypt_error: result.error === 'MISSING_SENDER_KEY' ? 'MISSING_SENDER_KEY' : 'DECRYPT_FAILED',
+            })
+          }
+        } catch {
+          get().addMessage(channelId, {
+            id: serverMsg.id,
+            channel_id: channelId,
+            sender_id: serverMsg.sender_id,
+            content: null,
+            message_type: 'text',
+            created_at: serverMsg.created_at,
+            edited_at: null,
+            decrypt_error: 'DECRYPT_FAILED',
+          })
+        }
       }
     } catch (err) {
       console.error('[MessageStore] Failed to fetch private channel history from server:', err)
@@ -427,6 +486,36 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       console.error('[MessageStore] Failed to distribute SenderKey to new member:', err)
     }
   },
+
+  async handleServerError(code: string, _message: string) {
+    if (code === 'STALE_SENDER_KEY' && lastPrivateChannelSend && !staleRetryInProgress) {
+      staleRetryInProgress = true
+      const { channelId, content } = lastPrivateChannelSend
+      lastPrivateChannelSend = null
+
+      try {
+        // Mark local key stale so next send generates a fresh one
+        await cryptoService.markSenderKeyStale(channelId)
+
+        // Increment local epoch to match server
+        const channel = useServerStore.getState().channels.get(channelId)
+        if (channel) {
+          const newEpoch = (channel.sender_key_epoch ?? 0) + 1
+          useServerStore.getState().updateChannel({
+            ...channel,
+            sender_key_epoch: newEpoch,
+          })
+
+          // Retry the send with the updated epoch (max 1 retry)
+          await get().sendMessage(channelId, content)
+        }
+      } catch (err) {
+        console.error('[MessageStore] STALE_SENDER_KEY retry failed:', err)
+      } finally {
+        staleRetryInProgress = false
+      }
+    }
+  },
 }))
 
 // --- Private channel helpers ---
@@ -437,6 +526,9 @@ async function sendPrivateChannelMessage(
   content: string,
   addMessage: (channelId: string, message: Message) => void,
 ): Promise<void> {
+  // Track for STALE_SENDER_KEY retry
+  lastPrivateChannelSend = { channelId, content }
+
   const channelEpoch = channel.sender_key_epoch ?? 0
 
   // Collect member devices for this channel's server
@@ -889,10 +981,12 @@ async function getChannelMemberDevices(
   serverId: string,
 ): Promise<Array<{ userId: string; deviceId: string }>> {
   const members = useServerStore.getState().members.get(serverId) || []
+  const selfUserId = useAuthStore.getState().user?.id
   const devices: Array<{ userId: string; deviceId: string }> = []
 
   for (const member of members) {
-    // Skip self (sender_id = 'self' convention doesn't apply here — we use userId)
+    // Skip self — we don't distribute our SenderKey to our own devices
+    if (member.user_id === selfUserId) continue
     try {
       const deviceListResponse = await deviceListApi.fetch(member.user_id)
       const verifyResult = await cryptoService.verifyDeviceList(
