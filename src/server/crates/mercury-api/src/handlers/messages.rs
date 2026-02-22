@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use mercury_core::{
     error::MercuryError,
     ids::{ChannelId, MessageId},
@@ -51,7 +52,8 @@ pub struct PrivateMessageResponse {
     pub id: String,
     pub channel_id: Option<String>,
     pub sender_id: String,
-    pub ciphertext: Vec<u8>,
+    /// Base64-encoded ciphertext (MessagePack-encoded SenderKeyPayload)
+    pub ciphertext: String,
     pub message_type: Option<String>,
     pub created_at: Option<String>,
     pub edited_at: Option<String>,
@@ -107,7 +109,7 @@ pub async fn get_messages(
                         id: m.id.to_string(),
                         channel_id: m.channel_id.map(|id| id.to_string()),
                         sender_id: m.sender_id.to_string(),
-                        ciphertext: m.ciphertext,
+                        ciphertext: BASE64.encode(&m.ciphertext),
                         message_type: m.message_type,
                         created_at: m.created_at.map(|t| t.to_rfc3339()),
                         edited_at: m.edited_at.map(|t| t.to_rfc3339()),

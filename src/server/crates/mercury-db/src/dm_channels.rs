@@ -15,11 +15,28 @@ pub struct DmChannelWithRecipient {
 
 /// Get or create a DM channel between two users.
 /// Returns the existing channel if one exists, otherwise creates a new one.
+/// Uses an advisory lock on the sorted user pair to prevent duplicate channels
+/// from concurrent requests.
 pub async fn get_or_create_dm_channel(
     pool: &PgPool,
     user_a: UserId,
     user_b: UserId,
 ) -> Result<DmChannel, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Advisory lock on the sorted user pair to prevent race conditions.
+    // Two concurrent requests between the same users will serialize here.
+    let (low, high) = if user_a.0 < user_b.0 {
+        (user_a, user_b)
+    } else {
+        (user_b, user_a)
+    };
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1::text || ':' || $2::text))")
+        .bind(low.0)
+        .bind(high.0)
+        .execute(&mut *tx)
+        .await?;
+
     // Check if a DM channel already exists between these two users
     let existing: Option<(DmChannelId,)> = sqlx::query_as(
         r#"
@@ -34,7 +51,7 @@ pub async fn get_or_create_dm_channel(
     )
     .bind(user_a)
     .bind(user_b)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     if let Some((dm_channel_id,)) = existing {
@@ -42,14 +59,13 @@ pub async fn get_or_create_dm_channel(
             "SELECT * FROM dm_channels WHERE id = $1",
         )
         .bind(dm_channel_id)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
+        tx.commit().await?;
         return Ok(channel);
     }
 
-    // Create new DM channel in a transaction
-    let mut tx = pool.begin().await?;
-
+    // Create new DM channel
     let channel_id = DmChannelId::new();
     let channel = sqlx::query_as::<_, DmChannel>(
         "INSERT INTO dm_channels (id) VALUES ($1) RETURNING *",

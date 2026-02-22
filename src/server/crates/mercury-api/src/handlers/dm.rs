@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use mercury_core::{
     error::MercuryError,
     ids::{DmChannelId, DeviceId, MessageId, UserId},
@@ -45,9 +46,11 @@ pub struct DmMessageResponse {
     pub id: String,
     pub dm_channel_id: String,
     pub sender_id: String,
-    pub ciphertext: Vec<u8>,
+    /// Base64-encoded ciphertext
+    pub ciphertext: String,
+    /// Base64-encoded X3DH header (MessagePack blob)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub x3dh_header: Option<Vec<u8>>,
+    pub x3dh_header: Option<String>,
     pub created_at: Option<String>,
 }
 
@@ -62,6 +65,11 @@ pub async fn create_or_get_dm(
     let recipient_uuid = uuid::Uuid::parse_str(&body.recipient_id)
         .map_err(|_| MercuryError::BadRequest("invalid recipient_id".into()))?;
     let recipient_id = UserId(recipient_uuid);
+
+    // Prevent creating a DM with yourself
+    if recipient_id == auth_user.user_id {
+        return Err(MercuryError::BadRequest("cannot create a DM with yourself".into()));
+    }
 
     // Verify recipient exists
     let recipient = mercury_db::users::get_user_by_id(&state.db, recipient_id)
@@ -161,8 +169,8 @@ pub async fn get_dm_messages(
             id: m.id.to_string(),
             dm_channel_id: m.dm_channel_id.map(|id| id.to_string()).unwrap_or_default(),
             sender_id: m.sender_id.to_string(),
-            ciphertext: m.ciphertext,
-            x3dh_header: m.x3dh_header,
+            ciphertext: BASE64.encode(&m.ciphertext),
+            x3dh_header: m.x3dh_header.as_ref().map(|h| BASE64.encode(h)),
             created_at: m.created_at.map(|t| t.to_rfc3339()),
         })
         .collect();

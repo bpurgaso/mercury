@@ -2,13 +2,16 @@ use mercury_core::ids::{ChannelId, DeviceId, DmChannelId, MessageId, UserId};
 use mercury_core::models::{Message, MessageRecipient};
 use sqlx::PgPool;
 
-pub async fn create_message(
-    pool: &PgPool,
+pub async fn create_message<'e, E>(
+    executor: E,
     id: MessageId,
     channel_id: ChannelId,
     sender_id: UserId,
     content: Option<&str>,
-) -> Result<Message, sqlx::Error> {
+) -> Result<Message, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query_as::<_, Message>(
         r#"
         INSERT INTO messages (id, channel_id, sender_id, content)
@@ -20,7 +23,7 @@ pub async fn create_message(
     .bind(channel_id)
     .bind(sender_id)
     .bind(content)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
@@ -93,12 +96,15 @@ pub async fn get_messages_paginated(
 }
 
 /// Create a message in a DM channel (content is NULL for E2E DMs).
-pub async fn create_dm_message(
-    pool: &PgPool,
+pub async fn create_dm_message<'e, E>(
+    executor: E,
     id: MessageId,
     dm_channel_id: DmChannelId,
     sender_id: UserId,
-) -> Result<Message, sqlx::Error> {
+) -> Result<Message, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query_as::<_, Message>(
         r#"
         INSERT INTO messages (id, dm_channel_id, sender_id)
@@ -109,18 +115,21 @@ pub async fn create_dm_message(
     .bind(id)
     .bind(dm_channel_id)
     .bind(sender_id)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
 /// Insert a per-device ciphertext row for an E2E message.
-pub async fn create_message_recipient(
-    pool: &PgPool,
+pub async fn create_message_recipient<'e, E>(
+    executor: E,
     message_id: MessageId,
     device_id: Option<DeviceId>,
     ciphertext: &[u8],
     x3dh_header: Option<&[u8]>,
-) -> Result<MessageRecipient, sqlx::Error> {
+) -> Result<MessageRecipient, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query_as::<_, MessageRecipient>(
         r#"
         INSERT INTO message_recipients (message_id, device_id, ciphertext, x3dh_header)
@@ -132,7 +141,7 @@ pub async fn create_message_recipient(
     .bind(device_id)
     .bind(ciphertext)
     .bind(x3dh_header)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 

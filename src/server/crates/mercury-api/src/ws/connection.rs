@@ -756,6 +756,17 @@ async fn handle_binary_message_send(
         m.iter().any(|(k, _)| k.as_str() == Some("encrypted"))
     });
 
+    // Reject ambiguous payloads that contain both DM and private channel fields
+    if has_dm_channel_id && has_encrypted {
+        send_error_json(
+            ws_sink,
+            "BAD_REQUEST",
+            "payload must not contain both dm_channel_id and encrypted",
+        )
+        .await;
+        return;
+    }
+
     if has_dm_channel_id {
         // E2E DM message
         let payload: DmMessageSendPayload = match rmpv::ext::from_value(data) {
@@ -810,10 +821,19 @@ async fn handle_dm_message_send(
         return;
     }
 
+    // Use a transaction so message + all recipients are atomic
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!("failed to begin transaction for DM message: {e}");
+            return;
+        }
+    };
+
     // Create the message row (content = NULL for E2E DMs)
     let message_id = MessageId::new();
     let message = match mercury_db::messages::create_dm_message(
-        &state.db,
+        &mut *tx,
         message_id,
         dm_channel_id,
         sender_id,
@@ -832,7 +852,7 @@ async fn handle_dm_message_send(
         .map(|t| t.to_rfc3339())
         .unwrap_or_default();
 
-    // Store per-device ciphertexts and send MESSAGE_CREATE to each device
+    // Store per-device ciphertexts within the transaction
     for recipient in &payload.recipients {
         let device_uuid = match uuid::Uuid::parse_str(&recipient.device_id) {
             Ok(u) => u,
@@ -847,7 +867,7 @@ async fn handle_dm_message_send(
 
         // Store in message_recipients
         if let Err(e) = mercury_db::messages::create_message_recipient(
-            &state.db,
+            &mut *tx,
             message_id,
             Some(device_id),
             &recipient.ciphertext,
@@ -856,10 +876,19 @@ async fn handle_dm_message_send(
         .await
         {
             tracing::warn!("failed to store message recipient: {e}");
-            continue;
+            // Roll back entire message on recipient insert failure
+            return;
         }
+    }
 
-        // Build per-device MESSAGE_CREATE payload
+    // Commit the transaction — all inserts succeeded
+    if let Err(e) = tx.commit().await {
+        tracing::warn!("failed to commit DM message transaction: {e}");
+        return;
+    }
+
+    // Broadcast per-device MESSAGE_CREATE events (after commit)
+    for recipient in &payload.recipients {
         let x3dh_payload = recipient.x3dh_header.as_ref().map(|h| X3dhHeaderPayload {
             sender_identity_key: h.sender_identity_key.clone(),
             ephemeral_key: h.ephemeral_key.clone(),
@@ -925,10 +954,19 @@ async fn handle_private_message_send(
         return;
     }
 
+    // Use a transaction so message + recipient are atomic
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!("failed to begin transaction for private message: {e}");
+            return;
+        }
+    };
+
     // Create the message row (content = NULL for private channels)
     let message_id = MessageId::new();
     let message = match mercury_db::messages::create_message(
-        &state.db,
+        &mut *tx,
         message_id,
         channel_id,
         sender_id,
@@ -946,7 +984,7 @@ async fn handle_private_message_send(
     // Store the broadcast ciphertext (device_id = NULL)
     let encrypted_blob = rmp_serde::to_vec(&payload.encrypted).unwrap_or_default();
     if let Err(e) = mercury_db::messages::create_message_recipient(
-        &state.db,
+        &mut *tx,
         message_id,
         None, // broadcast
         &encrypted_blob,
@@ -955,6 +993,12 @@ async fn handle_private_message_send(
     .await
     {
         tracing::warn!("failed to store private channel recipient: {e}");
+        return;
+    }
+
+    // Commit the transaction
+    if let Err(e) = tx.commit().await {
+        tracing::warn!("failed to commit private message transaction: {e}");
         return;
     }
 
@@ -1013,6 +1057,17 @@ async fn handle_sender_key_distribute(
         _ => return,
     };
 
+    // Only allow sender key distribution on private channels
+    if channel.encryption_mode != "private" {
+        send_error_json(
+            _ws_sink,
+            "INVALID_ENCRYPTION_MODE",
+            "sender key distribution is only allowed on private channels",
+        )
+        .await;
+        return;
+    }
+
     let is_member = mercury_db::servers::is_member(&state.db, sender_id, channel.server_id)
         .await
         .unwrap_or(false);
@@ -1038,10 +1093,18 @@ async fn handle_sender_key_distribute(
         // Deliver to the target device if online
         state.ws_manager.send_binary_to_device(&dist.device_id, &bytes);
 
-        // Store for offline delivery as a system message
+        // Store for offline delivery as a system message (in a transaction)
+        let mut tx = match state.db.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!("failed to begin transaction for sender key storage: {e}");
+                continue;
+            }
+        };
+
         let msg_id = MessageId::new();
         if let Ok(_msg) = mercury_db::messages::create_message(
-            &state.db,
+            &mut *tx,
             msg_id,
             channel_id,
             sender_id,
@@ -1055,7 +1118,7 @@ async fn handle_sender_key_distribute(
                 // Encode the full distribution event as the ciphertext
                 let dist_blob = rmp_serde::to_vec(&event_payload).unwrap_or_default();
                 let _ = mercury_db::messages::create_message_recipient(
-                    &state.db,
+                    &mut *tx,
                     msg_id,
                     Some(target_device_id),
                     &dist_blob,
@@ -1064,6 +1127,8 @@ async fn handle_sender_key_distribute(
                 .await;
             }
         }
+
+        let _ = tx.commit().await;
     }
 }
 

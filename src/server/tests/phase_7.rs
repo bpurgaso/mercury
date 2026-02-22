@@ -483,7 +483,7 @@ fn test_e2e_dm_with_x3dh_header() {
         assert_eq!(resp.status(), 200);
         let messages: Vec<Value> = resp.json().await.unwrap();
         assert_eq!(messages.len(), 1);
-        assert!(messages[0]["x3dh_header"].is_array(), "x3dh_header should be in history");
+        assert!(messages[0]["x3dh_header"].is_string(), "x3dh_header should be base64 in REST history");
 
         ws_a.close().await;
         ws_b.close().await;
@@ -549,8 +549,8 @@ fn test_private_channel_message() {
         assert_eq!(resp.status(), 200);
         let messages: Vec<Value> = resp.json().await.unwrap();
         assert_eq!(messages.len(), 1);
-        // Private channel messages have ciphertext, not content
-        assert!(messages[0]["ciphertext"].is_array());
+        // Private channel messages have ciphertext as base64 string, not content
+        assert!(messages[0]["ciphertext"].is_string());
 
         ws_a.close().await;
         ws_b.close().await;
@@ -700,9 +700,9 @@ fn test_dm_history() {
         let messages: Vec<Value> = resp.json().await.unwrap();
         assert_eq!(messages.len(), 3, "should have 3 DM messages");
 
-        // Each message should have a ciphertext for device_b
+        // Each message should have a base64-encoded ciphertext for device_b
         for msg in &messages {
-            assert!(msg["ciphertext"].is_array(), "each message should have ciphertext");
+            assert!(msg["ciphertext"].is_string(), "each message should have base64 ciphertext");
         }
 
         ws_a.close().await;
@@ -962,6 +962,173 @@ fn test_sender_key_distribution() {
         assert!(event["d"]["sender_id"].is_string());
         assert!(event["d"]["sender_device_id"].is_string());
         assert!(event["d"]["ciphertext"].is_array());
+
+        ws_a.close().await;
+        ws_b.close().await;
+    });
+}
+
+// ────────────────────────────────────────────────────────────
+//  Negative / security tests
+// ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_self_dm_rejected() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let (token_a, user_a) = register_user(srv, "selfdm_a", "selfdm_a@example.com").await;
+
+        // Attempt to create DM with self
+        let resp = reqwest::Client::new()
+            .post(format!("{}/dm", srv.base_url()))
+            .header("Authorization", format!("Bearer {}", token_a))
+            .json(&json!({ "recipient_id": user_a }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "self-DM should be rejected");
+    });
+}
+
+#[test]
+fn test_non_member_dm_rejected() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let (token_a, _user_a) = register_user(srv, "nondm_a", "nondm_a@example.com").await;
+        let (token_b, user_b) = register_user(srv, "nondm_b", "nondm_b@example.com").await;
+        let (_token_c, _user_c) = register_user(srv, "nondm_c", "nondm_c@example.com").await;
+
+        let _device_a = create_device(srv, &token_a, "device-a").await;
+        let device_b = create_device(srv, &token_b, "device-b").await;
+
+        // Create DM between A and B
+        let resp = reqwest::Client::new()
+            .post(format!("{}/dm", srv.base_url()))
+            .header("Authorization", format!("Bearer {}", token_a))
+            .json(&json!({ "recipient_id": user_b }))
+            .send()
+            .await
+            .unwrap();
+        let dm_body: Value = resp.json().await.unwrap();
+        let dm_channel_id = dm_body["id"].as_str().unwrap().to_string();
+
+        // Login as user C (NOT a DM member) and try to send a message
+        let (token_c, _) = {
+            let mut c = srv.client();
+            c.login_raw("nondm_c@example.com", "password123").await;
+            (c.access_token.unwrap(), c.user_id.unwrap())
+        };
+        let device_c = create_device(srv, &token_c, "device-c").await;
+
+        let mut ws_c = srv.ws_client(&token_c).await;
+        ws_c.identify(&token_c, &device_c).await;
+        let _ = ws_c.receive_any_timeout(Duration::from_millis(500)).await;
+
+        // User C sends a DM message to A-B channel — should be silently dropped
+        let msg_bytes = build_dm_message_send(
+            &dm_channel_id,
+            vec![(&device_b, b"attacker-ciphertext", None)],
+        );
+        ws_c.send_binary(&msg_bytes).await;
+
+        // Connect user B to verify no message arrives
+        let mut ws_b = srv.ws_client(&token_b).await;
+        ws_b.identify(&token_b, &device_b).await;
+        let _ = ws_b.receive_any_timeout(Duration::from_millis(500)).await;
+
+        // No MESSAGE_CREATE should arrive for user B within a reasonable timeout
+        let msg = wait_for_event(&mut ws_b, "MESSAGE_CREATE", Duration::from_secs(2)).await;
+        assert!(msg.is_none(), "non-member DM message should be rejected");
+
+        ws_c.close().await;
+        ws_b.close().await;
+    });
+}
+
+#[test]
+fn test_sender_key_distribute_rejected_on_standard_channel() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let (token_a, _) = register_user(srv, "skdstd_a", "skdstd_a@example.com").await;
+        let (token_b, _) = register_user(srv, "skdstd_b", "skdstd_b@example.com").await;
+
+        let device_a = create_device(srv, &token_a, "device-a").await;
+        let device_b = create_device(srv, &token_b, "device-b").await;
+
+        let (server_id, invite_code) = create_server(srv, &token_a, "skdstd-server").await;
+        join_server(srv, &token_b, &invite_code).await;
+        // Create a STANDARD channel (not private)
+        let channel_id =
+            create_channel(srv, &token_a, &server_id, "general", "standard").await;
+
+        let mut ws_a = srv.ws_client(&token_a).await;
+        ws_a.identify(&token_a, &device_a).await;
+        let _ = ws_a.receive_any_timeout(Duration::from_millis(500)).await;
+
+        // Attempt sender_key_distribute on a standard channel
+        let dist_bytes = build_sender_key_distribute(
+            &channel_id,
+            vec![(&device_b, b"sender-key-ciphertext")],
+        );
+        ws_a.send_binary(&dist_bytes).await;
+
+        // Should receive ERROR with INVALID_ENCRYPTION_MODE
+        let error = wait_for_event(&mut ws_a, "ERROR", Duration::from_secs(5))
+            .await
+            .expect("should receive ERROR for sender_key_distribute on standard channel");
+
+        assert_eq!(error["d"]["code"], "INVALID_ENCRYPTION_MODE");
+
+        ws_a.close().await;
+    });
+}
+
+#[test]
+fn test_non_member_private_channel_rejected() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let (token_a, _) = register_user(srv, "nonpriv_a", "nonpriv_a@example.com").await;
+        let (token_b, _) = register_user(srv, "nonpriv_b", "nonpriv_b@example.com").await;
+
+        let device_a = create_device(srv, &token_a, "device-a").await;
+        let device_b = create_device(srv, &token_b, "device-b").await;
+
+        let (server_id, _invite_code) = create_server(srv, &token_a, "nonpriv-server").await;
+        // User B does NOT join the server
+        let channel_id =
+            create_channel(srv, &token_a, &server_id, "secret", "private").await;
+
+        // Connect user B (not a server member)
+        let mut ws_b = srv.ws_client(&token_b).await;
+        ws_b.identify(&token_b, &device_b).await;
+        let _ = ws_b.receive_any_timeout(Duration::from_millis(500)).await;
+
+        // User B sends a private channel message — should be silently dropped
+        let msg_bytes = build_private_message_send(
+            &channel_id,
+            b"unauthorized-ciphertext",
+            b"fake-signature",
+            &device_b,
+            1,
+            0,
+        );
+        ws_b.send_binary(&msg_bytes).await;
+
+        // Connect user A to verify no message arrives
+        let mut ws_a = srv.ws_client(&token_a).await;
+        ws_a.identify(&token_a, &device_a).await;
+        let _ = ws_a.receive_any_timeout(Duration::from_millis(500)).await;
+
+        let msg = wait_for_event(&mut ws_a, "MESSAGE_CREATE", Duration::from_secs(2)).await;
+        assert!(msg.is_none(), "non-member private channel message should be rejected");
 
         ws_a.close().await;
         ws_b.close().await;
