@@ -203,6 +203,10 @@ fn build_private_message_send(
                             rmpv::Value::Binary(ciphertext.to_vec()),
                         ),
                         (
+                            rmpv::Value::String("nonce".into()),
+                            rmpv::Value::Binary(vec![0u8; 12]),
+                        ),
+                        (
                             rmpv::Value::String("signature".into()),
                             rmpv::Value::Binary(signature.to_vec()),
                         ),
