@@ -76,6 +76,7 @@ pub struct MessageRecipient {
     pub message_id: MessageId,
     pub device_id: Option<DeviceId>,
     pub ciphertext: Vec<u8>,
+    pub x3dh_header: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

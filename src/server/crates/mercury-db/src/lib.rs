@@ -1,6 +1,7 @@
 pub mod channels;
 pub mod device_lists;
 pub mod devices;
+pub mod dm_channels;
 pub mod messages;
 pub mod pool;
 pub mod servers;

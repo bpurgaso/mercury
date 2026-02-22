@@ -4,14 +4,14 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use fred::prelude::*;
 use futures_util::{SinkExt, StreamExt};
 use mercury_auth::jwt;
-use mercury_core::ids::{ChannelId, MessageId, UserId};
+use mercury_core::ids::{ChannelId, DeviceId, DmChannelId, MessageId, UserId};
 use mercury_db::{channels, users};
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Instant};
 
 use crate::state::AppState;
 
-use super::manager::{ConnectionHandle, SessionState};
+use super::manager::{BufferedEvent, ConnectionHandle, SessionState};
 use super::presence;
 use super::protocol::*;
 
@@ -242,6 +242,11 @@ async fn handle_identify(
         .await
         .unwrap_or_default();
 
+    // Query user's DM channels for READY payload
+    let user_dm_channels = mercury_db::dm_channels::list_dm_channels_for_user(&state.db, user_id)
+        .await
+        .unwrap_or_default();
+
     let servers_json: Vec<serde_json::Value> = user_servers
         .iter()
         .map(|s| {
@@ -270,6 +275,22 @@ async fn handle_identify(
         })
         .collect();
 
+    let dm_channels_json: Vec<serde_json::Value> = user_dm_channels
+        .iter()
+        .map(|dm| {
+            serde_json::json!({
+                "id": dm.id.to_string(),
+                "recipient": {
+                    "id": dm.recipient_id.to_string(),
+                    "username": dm.recipient_username,
+                    "display_name": dm.recipient_display_name,
+                    "avatar_url": dm.recipient_avatar_url,
+                },
+                "created_at": dm.created_at.map(|t| t.to_rfc3339()),
+            })
+        })
+        .collect();
+
     // Build and send READY payload
     let ready = ReadyPayload {
         user: ReadyUser {
@@ -281,7 +302,7 @@ async fn handle_identify(
             status: user.status,
         },
         servers: servers_json,
-        dm_channels: vec![],
+        dm_channels: dm_channels_json,
         session_id: session_id.clone(),
         heartbeat_interval: state.heartbeat_interval_secs,
         channels: channels_json,
@@ -359,12 +380,14 @@ async fn handle_resume(
     let missed_events = session_state.events_since(payload.seq);
     let replayed_count = missed_events.len() as u64;
 
-    for event_json in &missed_events {
-        if ws_sink
-            .send(Message::Text(event_json.clone().into()))
-            .await
-            .is_err()
-        {
+    for event in &missed_events {
+        let send_result = match event {
+            BufferedEvent::Text(json) => ws_sink.send(Message::Text(json.clone().into())).await,
+            BufferedEvent::Binary(bytes) => {
+                ws_sink.send(Message::Binary(bytes.clone().into())).await
+            }
+        };
+        if send_result.is_err() {
             return;
         }
     }
@@ -428,7 +451,7 @@ async fn run_event_loop(
     state: AppState,
     mut ws_sink: futures_util::stream::SplitSink<WebSocket, Message>,
     mut ws_stream: futures_util::stream::SplitStream<WebSocket>,
-    mut rx: mpsc::UnboundedReceiver<ServerMessage>,
+    mut rx: mpsc::UnboundedReceiver<EncodedServerMessage>,
     session_state: Arc<SessionState>,
     session_id: String,
     user_id: UserId,
@@ -448,19 +471,28 @@ async fn run_event_loop(
             // Outgoing: server events to send to this client
             Some(event) = rx.recv() => {
                 let seq = session_state.next_seq();
-                let mut msg = event;
-                msg.seq = Some(seq);
 
-                let json = match serde_json::to_string(&msg) {
-                    Ok(j) => j,
-                    Err(_) => continue,
-                };
-
-                // Buffer for potential replay
-                session_state.buffer_event(seq, json.clone());
-
-                if ws_sink.send(Message::Text(json.into())).await.is_err() {
-                    break;
+                match event {
+                    EncodedServerMessage::Text(mut msg) => {
+                        msg.seq = Some(seq);
+                        let json = match serde_json::to_string(&msg) {
+                            Ok(j) => j,
+                            Err(_) => continue,
+                        };
+                        session_state.buffer_event(seq, BufferedEvent::Text(json.clone()));
+                        if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    EncodedServerMessage::Binary(bytes) => {
+                        // For binary frames, inject seq into the bytes.
+                        // The bytes are a MessagePack map — we re-encode with seq added.
+                        let bytes_with_seq = inject_seq_into_msgpack(&bytes, seq);
+                        session_state.buffer_event(seq, BufferedEvent::Binary(bytes_with_seq.clone()));
+                        if ws_sink.send(Message::Binary(bytes_with_seq.into())).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -474,70 +506,34 @@ async fn run_event_loop(
                             Err(_) => continue,
                         };
 
-                        match client_msg.op {
-                            ClientOp::Heartbeat => {
-                                last_heartbeat = Instant::now();
-
-                                // Refresh presence TTL
-                                let _ = presence::refresh_presence(&state.redis, &user_id).await;
-
-                                // Send HEARTBEAT_ACK
-                                let ack = ServerMessage {
-                                    t: ServerEvent::HEARTBEAT_ACK,
-                                    d: serde_json::json!({}),
-                                    seq: None,
-                                };
-                                let ack_json = serde_json::to_string(&ack).unwrap_or_default();
-                                if ws_sink.send(Message::Text(ack_json.into())).await.is_err() {
-                                    break;
-                                }
-                            }
-                            ClientOp::PresenceUpdate => {
-                                if let Ok(payload) = serde_json::from_value::<PresenceUpdatePayload>(client_msg.d) {
-                                    match payload.status.as_str() {
-                                        "online" | "idle" | "dnd" | "offline" => {
-                                            let _ = presence::update_status(
-                                                &state.redis,
-                                                &state.ws_manager,
-                                                user_id,
-                                                &payload.status,
-                                            ).await;
-                                        }
-                                        _ => {} // Invalid status, ignore
-                                    }
-                                }
-                            }
-                            ClientOp::TypingStart => {
-                                if let Ok(payload) = serde_json::from_value::<TypingStartPayload>(client_msg.d) {
-                                    let typing_key = format!("typing:{}:{}", payload.channel_id, user_id);
-                                    let _ = state.redis.set::<(), _, _>(
-                                        &typing_key,
-                                        "1",
-                                        Some(Expiration::EX(5)),
-                                        None,
-                                        false,
-                                    ).await;
-
-                                    // Broadcast typing event
-                                    let event = ServerMessage {
-                                        t: ServerEvent::TYPING_START,
-                                        d: serde_json::json!({
-                                            "channel_id": payload.channel_id,
-                                            "user_id": user_id.to_string(),
-                                        }),
-                                        seq: None,
-                                    };
-                                    let connected = state.ws_manager.connected_user_ids();
-                                    state.ws_manager.send_to_users(&connected, &event);
-                                }
-                            }
-                            ClientOp::MessageSend => {
-                                if let Ok(payload) = serde_json::from_value::<MessageSendPayload>(client_msg.d) {
-                                    handle_message_send(&state, user_id, payload).await;
-                                }
-                            }
-                            _ => {}
+                        // Handle heartbeat inline to update last_heartbeat
+                        if client_msg.op == ClientOp::Heartbeat {
+                            last_heartbeat = Instant::now();
+                            let _ = presence::refresh_presence(&state.redis, &user_id).await;
+                            let ack = ServerMessage {
+                                t: ServerEvent::HEARTBEAT_ACK,
+                                d: serde_json::json!({}),
+                                seq: None,
+                            };
+                            let ack_json = serde_json::to_string(&ack).unwrap_or_default();
+                            let _ = ws_sink.send(Message::Text(ack_json.into())).await;
+                        } else {
+                            handle_client_op(&state, &mut ws_sink, user_id, &device_id, client_msg).await;
                         }
+                    }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        // MessagePack binary frame — check size limit
+                        if bytes.len() > MAX_MESSAGE_PAYLOAD_SIZE {
+                            send_error_json(&mut ws_sink, "MESSAGE_TOO_LARGE", "message payload exceeds 65536 bytes").await;
+                            continue;
+                        }
+
+                        let client_msg: BinaryClientMessage = match rmp_serde::from_slice(&bytes) {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        };
+
+                        handle_binary_client_op(&state, &mut ws_sink, user_id, &device_id, client_msg).await;
                     }
                     Some(Ok(Message::Close(_))) => break,
                     Some(Err(_)) => break,
@@ -568,9 +564,103 @@ async fn run_event_loop(
     cleanup_connection(&state, &session_id, user_id, &device_id).await;
 }
 
-/// Handle a message_send op: validate membership, store in DB, broadcast MESSAGE_CREATE.
-async fn handle_message_send(
+/// Handle a JSON text-frame client operation.
+async fn handle_client_op(
     state: &AppState,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    user_id: UserId,
+    _device_id: &str,
+    client_msg: ClientMessage,
+) {
+    match client_msg.op {
+        ClientOp::Heartbeat => {
+            // Handled inline in event loop (needs access to last_heartbeat)
+        }
+        ClientOp::PresenceUpdate => {
+            if let Ok(payload) =
+                serde_json::from_value::<PresenceUpdatePayload>(client_msg.d)
+            {
+                match payload.status.as_str() {
+                    "online" | "idle" | "dnd" | "offline" => {
+                        let _ = presence::update_status(
+                            &state.redis,
+                            &state.ws_manager,
+                            user_id,
+                            &payload.status,
+                        )
+                        .await;
+                    }
+                    _ => {} // Invalid status, ignore
+                }
+            }
+        }
+        ClientOp::TypingStart => {
+            if let Ok(payload) =
+                serde_json::from_value::<TypingStartPayload>(client_msg.d)
+            {
+                let typing_key = format!("typing:{}:{}", payload.channel_id, user_id);
+                let _ = state
+                    .redis
+                    .set::<(), _, _>(
+                        &typing_key,
+                        "1",
+                        Some(Expiration::EX(5)),
+                        None,
+                        false,
+                    )
+                    .await;
+
+                // Broadcast typing event
+                let event = ServerMessage {
+                    t: ServerEvent::TYPING_START,
+                    d: serde_json::json!({
+                        "channel_id": payload.channel_id,
+                        "user_id": user_id.to_string(),
+                    }),
+                    seq: None,
+                };
+                let connected = state.ws_manager.connected_user_ids();
+                state.ws_manager.send_to_users(&connected, &event);
+            }
+        }
+        ClientOp::MessageSend => {
+            // JSON text frame message_send = standard channel message
+            if let Ok(payload) =
+                serde_json::from_value::<MessageSendPayload>(client_msg.d)
+            {
+                // Check size (JSON text frame payloads)
+                handle_standard_message_send(state, ws_sink, user_id, payload).await;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle a MessagePack binary-frame client operation.
+async fn handle_binary_client_op(
+    state: &AppState,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    user_id: UserId,
+    device_id: &str,
+    client_msg: BinaryClientMessage,
+) {
+    match client_msg.op {
+        ClientOp::MessageSend => {
+            // Binary frame message_send — could be DM or private channel
+            // Try to determine the type from the payload fields
+            handle_binary_message_send(state, ws_sink, user_id, device_id, client_msg.d).await;
+        }
+        ClientOp::SenderKeyDistribute => {
+            handle_sender_key_distribute(state, ws_sink, user_id, device_id, client_msg.d).await;
+        }
+        _ => {}
+    }
+}
+
+/// Handle a standard channel message_send (JSON text frame, plaintext).
+async fn handle_standard_message_send(
+    state: &AppState,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     sender_id: UserId,
     payload: MessageSendPayload,
 ) {
@@ -587,6 +677,17 @@ async fn handle_message_send(
         _ => return,
     };
 
+    // Reject standard messages on private/E2E channels
+    if channel.encryption_mode != "standard" {
+        send_error_json(
+            ws_sink,
+            "INVALID_ENCRYPTION_MODE",
+            "use encrypted payload for non-standard channels",
+        )
+        .await;
+        return;
+    }
+
     // Verify sender is a member of this server
     let is_member = mercury_db::servers::is_member(&state.db, sender_id, channel.server_id)
         .await
@@ -595,11 +696,7 @@ async fn handle_message_send(
         return;
     }
 
-    // For standard channels, store plaintext content
-    let content = match channel.encryption_mode.as_str() {
-        "standard" => payload.content.as_deref(),
-        _ => None, // E2E channels: content stays None, ciphertext handled in Phase 7
-    };
+    let content = payload.content.as_deref();
 
     let message_id = MessageId::new();
     let message = match mercury_db::messages::create_message(
@@ -618,28 +715,393 @@ async fn handle_message_send(
         }
     };
 
-    // Build MESSAGE_CREATE event
-    let event = ServerMessage {
-        t: ServerEvent::MESSAGE_CREATE,
-        d: serde_json::to_value(MessageCreatePayload {
-            id: message.id.to_string(),
-            channel_id: channel_id.to_string(),
-            sender_id: sender_id.to_string(),
-            content: message.content,
-            created_at: message
-                .created_at
-                .map(|t| t.to_rfc3339())
-                .unwrap_or_default(),
-        })
-        .unwrap_or_default(),
-        seq: None,
+    // Build MESSAGE_CREATE event — use MessagePack binary frame
+    let create_payload = MessageCreatePayload {
+        id: message.id.to_string(),
+        channel_id: channel_id.to_string(),
+        sender_id: sender_id.to_string(),
+        content: message.content,
+        created_at: message
+            .created_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default(),
     };
+
+    let bytes = encode_msgpack_server_message(
+        ServerEvent::MESSAGE_CREATE,
+        &create_payload,
+        None,
+    );
 
     // Broadcast to all connected members of this server
     let member_ids = mercury_db::servers::get_member_user_ids(&state.db, channel.server_id)
         .await
         .unwrap_or_default();
-    state.ws_manager.send_to_users(&member_ids, &event);
+    state.ws_manager.send_binary_to_users(&member_ids, &bytes);
+}
+
+/// Handle a binary message_send — determine if it's a DM or private channel message.
+async fn handle_binary_message_send(
+    state: &AppState,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    sender_id: UserId,
+    sender_device_id: &str,
+    data: rmpv::Value,
+) {
+    // Check which fields are present to determine message type
+    let has_dm_channel_id = data.as_map().map_or(false, |m| {
+        m.iter().any(|(k, _)| k.as_str() == Some("dm_channel_id"))
+    });
+    let has_encrypted = data.as_map().map_or(false, |m| {
+        m.iter().any(|(k, _)| k.as_str() == Some("encrypted"))
+    });
+
+    if has_dm_channel_id {
+        // E2E DM message
+        let payload: DmMessageSendPayload = match rmpv::ext::from_value(data) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("invalid DM message_send payload: {e}");
+                return;
+            }
+        };
+        handle_dm_message_send(state, ws_sink, sender_id, sender_device_id, payload).await;
+    } else if has_encrypted {
+        // Private channel (Sender Key) message
+        let payload: PrivateMessageSendPayload = match rmpv::ext::from_value(data) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("invalid private channel message_send payload: {e}");
+                return;
+            }
+        };
+        handle_private_message_send(state, ws_sink, sender_id, payload).await;
+    } else {
+        tracing::debug!("binary message_send missing dm_channel_id or encrypted field");
+    }
+}
+
+/// Handle an E2E DM message_send.
+async fn handle_dm_message_send(
+    state: &AppState,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    sender_id: UserId,
+    _sender_device_id: &str,
+    payload: DmMessageSendPayload,
+) {
+    // Parse dm_channel_id
+    let dm_channel_uuid = match uuid::Uuid::parse_str(&payload.dm_channel_id) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    let dm_channel_id = DmChannelId(dm_channel_uuid);
+
+    // Validate membership
+    let is_member = mercury_db::dm_channels::is_dm_member(&state.db, sender_id, dm_channel_id)
+        .await
+        .unwrap_or(false);
+    if !is_member {
+        return;
+    }
+
+    // Validate non-empty recipients
+    if payload.recipients.is_empty() {
+        send_error_json(ws_sink, "BAD_REQUEST", "recipients array is empty").await;
+        return;
+    }
+
+    // Create the message row (content = NULL for E2E DMs)
+    let message_id = MessageId::new();
+    let message = match mercury_db::messages::create_dm_message(
+        &state.db,
+        message_id,
+        dm_channel_id,
+        sender_id,
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("failed to store DM message: {e}");
+            return;
+        }
+    };
+
+    let created_at = message
+        .created_at
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_default();
+
+    // Store per-device ciphertexts and send MESSAGE_CREATE to each device
+    for recipient in &payload.recipients {
+        let device_uuid = match uuid::Uuid::parse_str(&recipient.device_id) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+        let device_id = DeviceId(device_uuid);
+
+        // Serialize x3dh_header as MessagePack if present
+        let x3dh_header_bytes = recipient.x3dh_header.as_ref().map(|h| {
+            rmp_serde::to_vec(h).unwrap_or_default()
+        });
+
+        // Store in message_recipients
+        if let Err(e) = mercury_db::messages::create_message_recipient(
+            &state.db,
+            message_id,
+            Some(device_id),
+            &recipient.ciphertext,
+            x3dh_header_bytes.as_deref(),
+        )
+        .await
+        {
+            tracing::warn!("failed to store message recipient: {e}");
+            continue;
+        }
+
+        // Build per-device MESSAGE_CREATE payload
+        let x3dh_payload = recipient.x3dh_header.as_ref().map(|h| X3dhHeaderPayload {
+            sender_identity_key: h.sender_identity_key.clone(),
+            ephemeral_key: h.ephemeral_key.clone(),
+            prekey_id: h.prekey_id,
+        });
+
+        let create_payload = DmMessageCreatePayload {
+            id: message_id.to_string(),
+            dm_channel_id: dm_channel_id.to_string(),
+            sender_id: sender_id.to_string(),
+            ciphertext: recipient.ciphertext.clone(),
+            x3dh_header: x3dh_payload,
+            created_at: created_at.clone(),
+        };
+
+        let bytes = encode_msgpack_server_message(
+            ServerEvent::MESSAGE_CREATE,
+            &create_payload,
+            None,
+        );
+
+        // Send to the target device
+        state.ws_manager.send_binary_to_device(&recipient.device_id, &bytes);
+    }
+}
+
+/// Handle a private channel (Sender Key) message_send.
+async fn handle_private_message_send(
+    state: &AppState,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    sender_id: UserId,
+    payload: PrivateMessageSendPayload,
+) {
+    // Parse channel_id
+    let channel_uuid = match uuid::Uuid::parse_str(&payload.channel_id) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    let channel_id = ChannelId(channel_uuid);
+
+    // Look up the channel
+    let channel = match channels::get_channel_by_id(&state.db, channel_id).await {
+        Ok(Some(c)) => c,
+        _ => return,
+    };
+
+    // Verify sender is a member of this server
+    let is_member = mercury_db::servers::is_member(&state.db, sender_id, channel.server_id)
+        .await
+        .unwrap_or(false);
+    if !is_member {
+        return;
+    }
+
+    // Epoch validation — reject if message epoch < channel's sender_key_epoch
+    if payload.encrypted.epoch < channel.sender_key_epoch {
+        send_error_json(
+            ws_sink,
+            "STALE_SENDER_KEY",
+            "sender key epoch is stale, re-key required",
+        )
+        .await;
+        return;
+    }
+
+    // Create the message row (content = NULL for private channels)
+    let message_id = MessageId::new();
+    let message = match mercury_db::messages::create_message(
+        &state.db,
+        message_id,
+        channel_id,
+        sender_id,
+        None,
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("failed to store private channel message: {e}");
+            return;
+        }
+    };
+
+    // Store the broadcast ciphertext (device_id = NULL)
+    let encrypted_blob = rmp_serde::to_vec(&payload.encrypted).unwrap_or_default();
+    if let Err(e) = mercury_db::messages::create_message_recipient(
+        &state.db,
+        message_id,
+        None, // broadcast
+        &encrypted_blob,
+        None,
+    )
+    .await
+    {
+        tracing::warn!("failed to store private channel recipient: {e}");
+        return;
+    }
+
+    let created_at = message
+        .created_at
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_default();
+
+    // Build MESSAGE_CREATE payload with the encrypted data
+    let create_payload = PrivateMessageCreatePayload {
+        id: message_id.to_string(),
+        channel_id: channel_id.to_string(),
+        sender_id: sender_id.to_string(),
+        encrypted: payload.encrypted,
+        created_at,
+    };
+
+    let bytes = encode_msgpack_server_message(
+        ServerEvent::MESSAGE_CREATE,
+        &create_payload,
+        None,
+    );
+
+    // Broadcast to all connected members of this server
+    let member_ids = mercury_db::servers::get_member_user_ids(&state.db, channel.server_id)
+        .await
+        .unwrap_or_default();
+    state.ws_manager.send_binary_to_users(&member_ids, &bytes);
+}
+
+/// Handle sender_key_distribute op.
+async fn handle_sender_key_distribute(
+    state: &AppState,
+    _ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    sender_id: UserId,
+    sender_device_id: &str,
+    data: rmpv::Value,
+) {
+    let payload: SenderKeyDistributePayload = match rmpv::ext::from_value(data) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("invalid sender_key_distribute payload: {e}");
+            return;
+        }
+    };
+
+    // Parse channel_id and verify membership
+    let channel_uuid = match uuid::Uuid::parse_str(&payload.channel_id) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    let channel_id = ChannelId(channel_uuid);
+
+    let channel = match channels::get_channel_by_id(&state.db, channel_id).await {
+        Ok(Some(c)) => c,
+        _ => return,
+    };
+
+    let is_member = mercury_db::servers::is_member(&state.db, sender_id, channel.server_id)
+        .await
+        .unwrap_or(false);
+    if !is_member {
+        return;
+    }
+
+    // For each distribution, deliver to the target device
+    for dist in &payload.distributions {
+        let event_payload = SenderKeyDistributionEvent {
+            channel_id: payload.channel_id.clone(),
+            sender_id: sender_id.to_string(),
+            sender_device_id: sender_device_id.to_string(),
+            ciphertext: dist.ciphertext.clone(),
+        };
+
+        let bytes = encode_msgpack_server_message(
+            ServerEvent::SENDER_KEY_DISTRIBUTION,
+            &event_payload,
+            None,
+        );
+
+        // Deliver to the target device if online
+        state.ws_manager.send_binary_to_device(&dist.device_id, &bytes);
+
+        // Store for offline delivery as a system message
+        let msg_id = MessageId::new();
+        if let Ok(_msg) = mercury_db::messages::create_message(
+            &state.db,
+            msg_id,
+            channel_id,
+            sender_id,
+            None,
+        )
+        .await
+        {
+            // Store as a message_recipient for the target device
+            let target_device = uuid::Uuid::parse_str(&dist.device_id).ok().map(DeviceId);
+            if let Some(target_device_id) = target_device {
+                // Encode the full distribution event as the ciphertext
+                let dist_blob = rmp_serde::to_vec(&event_payload).unwrap_or_default();
+                let _ = mercury_db::messages::create_message_recipient(
+                    &state.db,
+                    msg_id,
+                    Some(target_device_id),
+                    &dist_blob,
+                    None,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+/// Send a JSON error event.
+async fn send_error_json(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    code: &str,
+    message: &str,
+) {
+    let error = ServerMessage {
+        t: ServerEvent::ERROR,
+        d: serde_json::to_value(ErrorPayload {
+            code: code.to_string(),
+            message: message.to_string(),
+        })
+        .unwrap_or_default(),
+        seq: None,
+    };
+    let json = serde_json::to_string(&error).unwrap_or_default();
+    let _ = ws_sink.send(Message::Text(json.into())).await;
+}
+
+/// Inject a seq field into a pre-encoded MessagePack binary.
+/// Decodes the map, adds "seq" key, re-encodes.
+fn inject_seq_into_msgpack(bytes: &[u8], seq: u64) -> Vec<u8> {
+    match rmpv::decode::read_value(&mut &bytes[..]) {
+        Ok(rmpv::Value::Map(mut pairs)) => {
+            pairs.push((
+                rmpv::Value::String("seq".into()),
+                rmpv::Value::Integer(seq.into()),
+            ));
+            let map = rmpv::Value::Map(pairs);
+            let mut buf = Vec::new();
+            rmpv::encode::write_value(&mut buf, &map).unwrap_or_default();
+            buf
+        }
+        _ => bytes.to_vec(), // fallback: return as-is
+    }
 }
 
 /// Clean up after a connection closes.
@@ -701,5 +1163,22 @@ mod tests {
     #[test]
     fn heartbeat_interval_is_30s() {
         assert_eq!(HEARTBEAT_INTERVAL_SECS, 30);
+    }
+
+    #[test]
+    fn inject_seq_into_msgpack_works() {
+        // Create a simple MessagePack map
+        let map = rmpv::Value::Map(vec![
+            (rmpv::Value::String("t".into()), rmpv::Value::String("MESSAGE_CREATE".into())),
+            (rmpv::Value::String("d".into()), rmpv::Value::Nil),
+        ]);
+        let mut buf = Vec::new();
+        rmpv::encode::write_value(&mut buf, &map).unwrap();
+
+        let result = inject_seq_into_msgpack(&buf, 42);
+        let decoded = rmpv::decode::read_value(&mut &result[..]).unwrap();
+        let pairs = decoded.as_map().unwrap();
+        let seq_val = pairs.iter().find(|(k, _)| k.as_str() == Some("seq")).unwrap().1.as_u64();
+        assert_eq!(seq_val, Some(42));
     }
 }

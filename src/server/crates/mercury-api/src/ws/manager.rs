@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use mercury_core::ids::UserId;
 use tokio::sync::mpsc;
 
-use super::protocol::ServerMessage;
+use super::protocol::{EncodedServerMessage, ServerMessage};
 
 /// Maximum number of events buffered per session for replay on resume.
 const EVENT_BUFFER_CAPACITY: usize = 1000;
@@ -17,7 +17,7 @@ pub struct ConnectionHandle {
     pub session_id: String,
     pub device_id: String,
     pub user_id: UserId,
-    pub tx: mpsc::UnboundedSender<ServerMessage>,
+    pub tx: mpsc::UnboundedSender<EncodedServerMessage>,
 }
 
 /// In-memory state for a session, supporting resume after disconnect.
@@ -28,7 +28,15 @@ pub struct SessionState {
     /// Next sequence number to assign.
     next_seq: AtomicU64,
     /// Ring buffer of recent events for replay on resume.
-    event_buffer: parking_lot::Mutex<VecDeque<(u64, String)>>,
+    /// Stores (seq, encoded_bytes) — bytes can be JSON text or MessagePack binary.
+    event_buffer: parking_lot::Mutex<VecDeque<(u64, BufferedEvent)>>,
+}
+
+/// A buffered event for replay — can be either JSON text or MessagePack binary.
+#[derive(Clone)]
+pub enum BufferedEvent {
+    Text(String),
+    Binary(Vec<u8>),
 }
 
 impl SessionState {
@@ -53,20 +61,20 @@ impl SessionState {
     }
 
     /// Buffer an event for potential replay.
-    pub fn buffer_event(&self, seq: u64, json: String) {
+    pub fn buffer_event(&self, seq: u64, event: BufferedEvent) {
         let mut buf = self.event_buffer.lock();
         if buf.len() >= EVENT_BUFFER_CAPACITY {
             buf.pop_front();
         }
-        buf.push_back((seq, json));
+        buf.push_back((seq, event));
     }
 
     /// Get all events after the given sequence number for replay.
-    pub fn events_since(&self, last_seq: u64) -> Vec<String> {
+    pub fn events_since(&self, last_seq: u64) -> Vec<BufferedEvent> {
         let buf = self.event_buffer.lock();
         buf.iter()
             .filter(|(seq, _)| *seq > last_seq)
-            .map(|(_, json)| json.clone())
+            .map(|(_, event)| event.clone())
             .collect()
     }
 }
@@ -149,19 +157,58 @@ impl ConnectionManager {
         self.sessions.remove(session_id);
     }
 
-    /// Send an event to all connections of a specific user.
+    /// Send a JSON text event to all connections of a specific user.
     pub fn send_to_user(&self, user_id: &UserId, message: &ServerMessage) {
         if let Some(conns) = self.connections.get(user_id) {
             for conn in conns.iter() {
-                let _ = conn.tx.send(message.clone());
+                let _ = conn.tx.send(EncodedServerMessage::Text(message.clone()));
             }
         }
     }
 
-    /// Send an event to all connections of multiple users.
+    /// Send a JSON text event to all connections of multiple users.
     pub fn send_to_users(&self, user_ids: &[UserId], message: &ServerMessage) {
         for user_id in user_ids {
             self.send_to_user(user_id, message);
+        }
+    }
+
+    /// Send a pre-encoded binary event to a specific device by device_id.
+    /// Searches all connections for a matching device_id.
+    pub fn send_binary_to_device(&self, device_id: &str, bytes: &[u8]) {
+        for entry in self.connections.iter() {
+            for conn in entry.value().iter() {
+                if conn.device_id == device_id {
+                    let _ = conn.tx.send(EncodedServerMessage::Binary(bytes.to_vec()));
+                }
+            }
+        }
+    }
+
+    /// Send a pre-encoded binary event to all connections of multiple users.
+    pub fn send_binary_to_users(&self, user_ids: &[UserId], bytes: &[u8]) {
+        for user_id in user_ids {
+            if let Some(conns) = self.connections.get(user_id) {
+                for conn in conns.iter() {
+                    let _ = conn.tx.send(EncodedServerMessage::Binary(bytes.to_vec()));
+                }
+            }
+        }
+    }
+
+    /// Send a pre-encoded binary event to all devices of a user EXCEPT a specific device.
+    pub fn send_binary_to_user_except_device(
+        &self,
+        user_id: &UserId,
+        exclude_device_id: &str,
+        bytes: &[u8],
+    ) {
+        if let Some(conns) = self.connections.get(user_id) {
+            for conn in conns.iter() {
+                if conn.device_id != exclude_device_id {
+                    let _ = conn.tx.send(EncodedServerMessage::Binary(bytes.to_vec()));
+                }
+            }
         }
     }
 

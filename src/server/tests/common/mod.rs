@@ -589,6 +589,64 @@ impl TestWsClient {
         events
     }
 
+    /// Send a MessagePack binary frame.
+    pub async fn send_binary(&mut self, bytes: &[u8]) {
+        self.stream
+            .send(Message::Binary(bytes.to_vec().into()))
+            .await
+            .expect("failed to send binary WS message");
+    }
+
+    /// Send a MessagePack-encoded message_send op.
+    pub async fn send_msgpack(&mut self, value: &rmpv::Value) {
+        let mut buf = Vec::new();
+        rmpv::encode::write_value(&mut buf, value).expect("failed to encode msgpack");
+        self.send_binary(&buf).await;
+    }
+
+    /// Receive the next message (text or binary) within the given timeout.
+    /// Returns the decoded rmpv::Value from either JSON text or MessagePack binary.
+    pub async fn receive_any_timeout(&mut self, dur: Duration) -> Option<Value> {
+        match timeout(dur, self.next_any()).await {
+            Ok(Some(WsFrame::Text(text))) => serde_json::from_str(&text).ok(),
+            Ok(Some(WsFrame::Binary(bytes))) => {
+                // Decode MessagePack to rmpv::Value, then convert to serde_json::Value
+                let val: rmpv::Value = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
+                rmpv_to_json(&val)
+            }
+            _ => None,
+        }
+    }
+
+    /// Receive the next message (text or binary) within default timeout.
+    pub async fn receive_any(&mut self) -> Option<Value> {
+        self.receive_any_timeout(FAST_TIMEOUT).await
+    }
+
+    /// Receive a binary (MessagePack) frame within timeout, return raw bytes.
+    pub async fn receive_binary_timeout(&mut self, dur: Duration) -> Option<Vec<u8>> {
+        match timeout(dur, self.next_binary()).await {
+            Ok(Some(bytes)) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Drain all pending messages (text or binary), collecting events of a specific type.
+    pub async fn collect_any_events(&mut self, event_type: &str, dur: Duration) -> Vec<Value> {
+        let mut events = Vec::new();
+        loop {
+            match self.receive_any_timeout(dur).await {
+                Some(msg) => {
+                    if msg["t"] == event_type {
+                        events.push(msg);
+                    }
+                }
+                None => break,
+            }
+        }
+        events
+    }
+
     // ── Private helpers ─────────────────────────────────────
 
     async fn next_text(&mut self) -> Option<String> {
@@ -599,6 +657,31 @@ impl TestWsClient {
                 Some(Err(_)) => return None,
                 None => return None,
                 _ => continue, // skip Ping/Pong/Binary
+            }
+        }
+    }
+
+    async fn next_binary(&mut self) -> Option<Vec<u8>> {
+        loop {
+            match self.stream.next().await {
+                Some(Ok(Message::Binary(bytes))) => return Some(bytes.to_vec()),
+                Some(Ok(Message::Close(_))) => return None,
+                Some(Err(_)) => return None,
+                None => return None,
+                _ => continue,
+            }
+        }
+    }
+
+    async fn next_any(&mut self) -> Option<WsFrame> {
+        loop {
+            match self.stream.next().await {
+                Some(Ok(Message::Text(text))) => return Some(WsFrame::Text(text.to_string())),
+                Some(Ok(Message::Binary(bytes))) => return Some(WsFrame::Binary(bytes.to_vec())),
+                Some(Ok(Message::Close(_))) => return None,
+                Some(Err(_)) => return None,
+                None => return None,
+                _ => continue,
             }
         }
     }
@@ -615,5 +698,53 @@ impl TestWsClient {
                 _ => continue,
             }
         }
+    }
+}
+
+enum WsFrame {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+/// Convert an rmpv::Value to a serde_json::Value.
+fn rmpv_to_json(val: &rmpv::Value) -> Option<Value> {
+    match val {
+        rmpv::Value::Nil => Some(Value::Null),
+        rmpv::Value::Boolean(b) => Some(Value::Bool(*b)),
+        rmpv::Value::Integer(i) => {
+            if let Some(n) = i.as_u64() {
+                Some(Value::Number(n.into()))
+            } else if let Some(n) = i.as_i64() {
+                Some(Value::Number(n.into()))
+            } else {
+                None
+            }
+        }
+        rmpv::Value::F32(f) => serde_json::Number::from_f64(*f as f64).map(Value::Number),
+        rmpv::Value::F64(f) => serde_json::Number::from_f64(*f).map(Value::Number),
+        rmpv::Value::String(s) => Some(Value::String(s.as_str().unwrap_or("").to_string())),
+        rmpv::Value::Binary(b) => {
+            // Represent binary as array of numbers for JSON
+            Some(Value::Array(b.iter().map(|&byte| Value::Number(byte.into())).collect()))
+        }
+        rmpv::Value::Array(arr) => {
+            let items: Option<Vec<Value>> = arr.iter().map(rmpv_to_json).collect();
+            items.map(Value::Array)
+        }
+        rmpv::Value::Map(pairs) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in pairs {
+                let key = match k {
+                    rmpv::Value::String(s) => s.as_str().unwrap_or("").to_string(),
+                    rmpv::Value::Integer(i) => i.to_string(),
+                    _ => continue,
+                };
+                if let Some(val) = rmpv_to_json(v) {
+                    map.insert(key, val);
+                }
+            }
+            Some(Value::Object(map))
+        }
+        rmpv::Value::Ext(_, _) => None,
     }
 }

@@ -63,6 +63,12 @@ pub fn create_router(state: AppState) -> Router {
             get(handlers::messages::get_messages),
         );
 
+    // DM routes — require authentication
+    let dm_routes = Router::new()
+        .route("/", post(handlers::dm::create_or_get_dm))
+        .route("/", get(handlers::dm::list_dm_channels))
+        .route("/{id}/messages", get(handlers::dm::get_dm_messages));
+
     let cors = CorsLayer::new()
         .allow_methods([
             Method::GET,
@@ -84,6 +90,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/servers", server_routes)
         .nest("/devices", device_routes)
         .nest("/channels", channel_routes)
+        .nest("/dm", dm_routes)
         // Key bundle fetch routes nested under /users (any authenticated user can fetch)
         .route(
             "/users/{user_id}/devices/{device_id}/keys",

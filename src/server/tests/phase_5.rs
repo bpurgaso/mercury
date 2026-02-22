@@ -567,9 +567,10 @@ fn test_message_send_and_receive() {
         let mut owner_got_msg = false;
         let mut member_got_msg = false;
 
+        // MESSAGE_CREATE now arrives as binary (MessagePack) frames, use receive_any_timeout
         for _ in 0..5 {
             if let Some(msg) = ws_owner
-                .receive_json_timeout(Duration::from_secs(3))
+                .receive_any_timeout(Duration::from_secs(3))
                 .await
             {
                 if msg["t"] == "MESSAGE_CREATE" {
@@ -585,7 +586,7 @@ fn test_message_send_and_receive() {
 
         for _ in 0..5 {
             if let Some(msg) = ws_member
-                .receive_json_timeout(Duration::from_secs(3))
+                .receive_any_timeout(Duration::from_secs(3))
                 .await
             {
                 if msg["t"] == "MESSAGE_CREATE" {
