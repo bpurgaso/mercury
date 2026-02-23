@@ -188,6 +188,14 @@ pub async fn join_server(
 
     mercury_db::servers::add_member(&state.db, auth_user.user_id, server.id).await?;
 
+    // Add new member to all existing private channels in this server
+    mercury_db::channels::add_member_to_server_private_channels(
+        &state.db,
+        auth_user.user_id,
+        server.id,
+    )
+    .await?;
+
     // Broadcast MEMBER_ADD to all connected members of this server
     let member_ids = mercury_db::servers::get_member_user_ids(&state.db, server.id).await?;
     let event = ServerMessage {

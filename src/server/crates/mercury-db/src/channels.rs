@@ -138,6 +138,26 @@ pub async fn add_all_server_members_to_channel(
     Ok(())
 }
 
+/// Add a user to all private channels in a server (used when a new member joins).
+pub async fn add_member_to_server_private_channels(
+    pool: &PgPool,
+    user_id: UserId,
+    server_id: ServerId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO channel_members (channel_id, user_id)
+        SELECT id, $1 FROM channels WHERE server_id = $2 AND encryption_mode = 'private'
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(user_id)
+    .bind(server_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Remove a user from all channels in a server (used when leaving a server).
 pub async fn remove_member_from_server_channels(
     pool: &PgPool,
