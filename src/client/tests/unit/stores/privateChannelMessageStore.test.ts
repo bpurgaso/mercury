@@ -24,6 +24,9 @@ vi.mock('../../../src/renderer/services/api', () => ({
     getPending: vi.fn(),
     acknowledge: vi.fn(),
   },
+  servers: {
+    listMembers: vi.fn(),
+  },
   setTokenProvider: vi.fn(),
 }))
 
@@ -51,6 +54,7 @@ vi.mock('../../../src/renderer/services/crypto', () => ({
     decryptGroup: vi.fn(),
     receiveSenderKeyDistribution: vi.fn(),
     distributeSenderKeyToDevices: vi.fn(),
+    establishAndDistributeSenderKey: vi.fn(),
     markSenderKeyStale: vi.fn(),
     getPublicKeys: vi.fn(),
     generateOneTimePreKeys: vi.fn(),
@@ -113,6 +117,7 @@ import {
   deviceList as deviceListApi,
   devices as devicesApi,
   senderKeys as senderKeysApi,
+  servers as serversApi,
 } from '../../../src/renderer/services/api'
 
 // Helper: base64 encode a Uint8Array
@@ -191,6 +196,10 @@ function setupServerStoreForPrivateChannel(): void {
 }
 
 function setupSuccessfulGroupSendMocks(): void {
+  vi.mocked(serversApi.listMembers).mockResolvedValue([
+    { user_id: 'user-alice' },
+    { user_id: 'user-bob' },
+  ])
   vi.mocked(deviceListApi.fetch).mockResolvedValue(MOCK_DEVICE_LIST_RESPONSE)
 
   vi.mocked(cryptoService.verifyDeviceList).mockResolvedValue({
@@ -287,65 +296,36 @@ describe('messageStore private channel operations', () => {
     })
 
     it('handles X3DH establishment when needsX3dh is populated', async () => {
-      vi.mocked(deviceListApi.fetch).mockResolvedValue(MOCK_DEVICE_LIST_RESPONSE)
-      vi.mocked(cryptoService.verifyDeviceList).mockResolvedValue({
-        verified: true,
-        firstSeen: true,
-        devices: [{ device_id: 'device-alice-1', identity_key: 'a' }],
-      })
+      setupSuccessfulGroupSendMocks()
 
-      // encryptGroup returns needsX3dh for one device
+      // encryptGroup returns needsX3dh for one device + rawDistribution
       vi.mocked(cryptoService.encryptGroup).mockResolvedValue({
         encrypted: MOCK_ENCRYPT_GROUP_RESULT.encrypted,
         distributions: [{ device_id: 'device-alice-1', ciphertext: [100] }],
         needsX3dh: [{ userId: 'user-bob', deviceId: 'device-bob-1' }],
+        rawDistribution: [1, 2, 3],
       })
-
-      // Session check shows no session
-      vi.mocked(cryptoService.hasSessions).mockResolvedValue([
-        { userId: 'user-bob', deviceId: 'device-bob-1', hasSession: false },
-      ])
 
       vi.mocked(keyBundlesApi.fetchAllForUser).mockResolvedValue(MOCK_KEY_BUNDLES)
       vi.mocked(keyBundlesApi.claimOtp).mockResolvedValue({
         key_id: 1,
         prekey: toBase64(new Uint8Array(32).fill(0x44)),
       })
-      vi.mocked(cryptoService.establishAndEncryptDm).mockResolvedValue({
-        recipients: [{
-          device_id: 'device-bob-1',
-          ciphertext: new Uint8Array([10, 20, 30]),
-          ratchet_header: new Uint8Array(0),
-          x3dh_header: {
-            sender_identity_key: new Uint8Array(32).fill(0xaa),
-            ephemeral_key: new Uint8Array(32).fill(0xbb),
-            prekey_id: 1,
-          },
-        }],
-      })
 
-      // After X3DH, distribute SenderKey to new session
-      vi.mocked(cryptoService.distributeSenderKeyToDevices).mockResolvedValue({
+      // Combined X3DH + SenderKey distribution
+      vi.mocked(cryptoService.establishAndDistributeSenderKey).mockResolvedValue({
         distributions: [{ device_id: 'device-bob-1', ciphertext: [200] }],
-      })
-
-      vi.mocked(cryptoService.storeMessage).mockResolvedValue({ stored: true })
-      vi.mocked(cryptoService.getPublicKeys).mockResolvedValue({
-        masterVerifyPublicKey: [1], deviceId: 'device-self-1',
-        deviceIdentityPublicKey: [4], signedPreKey: { keyId: 1, publicKey: [7], signature: [10] },
-        unusedPreKeyCount: 50,
       })
 
       await useMessageStore.getState().sendMessage(MOCK_PRIVATE_CHANNEL.id, 'Hello!')
 
-      // Should have established X3DH session
-      expect(cryptoService.establishAndEncryptDm).toHaveBeenCalled()
-
-      // Should have distributed SenderKey to the new session
-      expect(cryptoService.distributeSenderKeyToDevices).toHaveBeenCalledWith({
-        channelId: MOCK_PRIVATE_CHANNEL.id,
-        devices: [{ userId: 'user-bob', deviceId: 'device-bob-1' }],
-      })
+      // Should have used combined X3DH + SenderKey distribution
+      expect(cryptoService.establishAndDistributeSenderKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channelId: MOCK_PRIVATE_CHANNEL.id,
+          rawDistribution: [1, 2, 3],
+        }),
+      )
     })
 
     it('skips SenderKey distribution send when distributions list is empty', async () => {
@@ -518,7 +498,7 @@ describe('messageStore private channel operations', () => {
       useMessageStore.getState().handleMessageCreate({
         id: 'msg-self-echo',
         channel_id: MOCK_PRIVATE_CHANNEL.id,
-        sender_id: 'self',
+        sender_id: 'user-self',
         encrypted: {
           ciphertext: new Uint8Array([1]),
           nonce: new Uint8Array([2]),
@@ -772,19 +752,7 @@ describe('messageStore private channel operations', () => {
         key_id: 1,
         prekey: toBase64(new Uint8Array(32).fill(0x44)),
       })
-      vi.mocked(cryptoService.establishAndEncryptDm).mockResolvedValue({
-        recipients: [{
-          device_id: 'device-new-1',
-          ciphertext: new Uint8Array([10]),
-          ratchet_header: new Uint8Array(0),
-          x3dh_header: {
-            sender_identity_key: new Uint8Array(32),
-            ephemeral_key: new Uint8Array(32),
-            prekey_id: 1,
-          },
-        }],
-      })
-      vi.mocked(cryptoService.distributeSenderKeyToDevices).mockResolvedValue({
+      vi.mocked(cryptoService.establishAndDistributeSenderKey).mockResolvedValue({
         distributions: [{ device_id: 'device-new-1', ciphertext: [50, 51] }],
       })
 
@@ -796,14 +764,12 @@ describe('messageStore private channel operations', () => {
       // Should have verified device list
       expect(cryptoService.verifyDeviceList).toHaveBeenCalled()
 
-      // Should have established session via X3DH
-      expect(cryptoService.establishAndEncryptDm).toHaveBeenCalled()
-
-      // Should have distributed SenderKey
-      expect(cryptoService.distributeSenderKeyToDevices).toHaveBeenCalledWith({
-        channelId: MOCK_PRIVATE_CHANNEL.id,
-        devices: [{ userId: 'user-new', deviceId: 'device-new-1' }],
-      })
+      // Should have established session + distributed SenderKey via combined X3DH path
+      expect(cryptoService.establishAndDistributeSenderKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channelId: MOCK_PRIVATE_CHANNEL.id,
+        }),
+      )
 
       // Should have sent distribution via WebSocket
       expect(wsManager.send).toHaveBeenCalledWith('sender_key_distribute', {

@@ -190,6 +190,9 @@ export const servers = {
 
   leave: (id: string) =>
     request<void>(`/servers/${id}/members/me`, { method: 'DELETE' }),
+
+  listMembers: (id: string) =>
+    request<Array<{ user_id: string }>>(`/servers/${id}/members`),
 }
 
 // Channel endpoints
@@ -215,6 +218,12 @@ export const channels = {
 
 // Device / key bundle endpoints
 export const devices = {
+  register: (deviceName: string) =>
+    request<{ device_id: string; device_name: string }>('/devices', {
+      method: 'POST',
+      body: JSON.stringify({ device_name: deviceName }),
+    }),
+
   uploadKeyBundle: (deviceId: string, bundle: unknown) =>
     request<void>(`/devices/${deviceId}/keys`, {
       method: 'PUT',
@@ -263,6 +272,12 @@ export const dm = {
 export const deviceList = {
   fetch: (userId: string) =>
     request<DeviceListResponse>(`/users/${userId}/device-list`),
+
+  upload: (data: { signed_list: string; master_verify_key: string; signature: string }) =>
+    request<void>('/users/me/device-list', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
 }
 
 // Key bundle endpoints

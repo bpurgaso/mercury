@@ -73,7 +73,16 @@ export interface MercuryAPI {
     getVersion(): string
     getPlatform(): string
   }
+  /** @deprecated Use crypto.send/onMessage/onReady instead */
   onCryptoPort(callback: (port: MessagePort) => void): void
+  crypto: {
+    /** Send a message to the crypto worker */
+    send(data: unknown): void
+    /** Register callback for messages from the crypto worker */
+    onMessage(callback: (data: unknown) => void): void
+    /** Register callback for when the crypto port is ready */
+    onReady(callback: () => void): void
+  }
 }
 
 declare global {

@@ -11,6 +11,13 @@ vi.mock('../../../src/renderer/services/api', () => ({
   users: {
     me: vi.fn(),
   },
+  devices: {
+    register: vi.fn().mockResolvedValue({ device_id: 'mock-device-id' }),
+    uploadKeyBundle: vi.fn().mockResolvedValue({}),
+  },
+  deviceList: {
+    upload: vi.fn().mockResolvedValue({}),
+  },
   setTokenProvider: vi.fn(),
 }))
 
@@ -19,7 +26,19 @@ vi.mock('../../../src/renderer/services/websocket', () => ({
   wsManager: {
     connect: vi.fn(),
     disconnect: vi.fn(),
+    getState: vi.fn(() => 'CONNECTED'),
+    onStateChange: vi.fn(),
   },
+}))
+
+// Mock the crypto service (initializeDevice calls getPublicKeys on startup)
+vi.mock('../../../src/renderer/services/crypto', () => ({
+  cryptoService: {
+    getPublicKeys: vi.fn().mockResolvedValue({}),
+    generateAllKeys: vi.fn(),
+    createSignedDeviceList: vi.fn(),
+  },
+  initCryptoPort: vi.fn(),
 }))
 
 // Mock localStorage

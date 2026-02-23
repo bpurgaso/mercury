@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Message, Channel } from '../types/models'
 import type { MessageCreateEvent, SenderKeyDistributionEvent } from '../types/ws'
-import { messages as messagesApi, dm as dmApi, keyBundles as keyBundlesApi, deviceList as deviceListApi, devices as devicesApi, senderKeys as senderKeysApi } from '../services/api'
+import { messages as messagesApi, dm as dmApi, keyBundles as keyBundlesApi, deviceList as deviceListApi, devices as devicesApi, senderKeys as senderKeysApi, servers as serversApi } from '../services/api'
 import { wsManager } from '../services/websocket'
 import { useDmChannelStore } from './dmChannelStore'
 import { useServerStore } from './serverStore'
@@ -144,6 +144,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         senderDeviceId: event.sender_device_id,
         ciphertext: Array.from(event.ciphertext),
       })
+
+
 
       if (result.error) {
         console.error('[MessageStore] Failed to receive SenderKey distribution:', result.error)
@@ -471,19 +473,76 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         deviceId: d.device_id,
       }))
 
-      // Establish sessions for devices without DR sessions
-      await ensureSessionsForDevices(userId, devices, deviceListResponse)
+      // Split devices into those with/without DR sessions
+      const sessionChecks = await cryptoService.hasSessions(devices)
+      const withSession = devices.filter((_, i) => sessionChecks[i]?.hasSession)
+      const withoutSession = devices.filter((_, i) => !sessionChecks[i]?.hasSession)
 
-      // Distribute our SenderKey
-      const distResult = await cryptoService.distributeSenderKeyToDevices({
-        channelId,
-        devices,
-      })
+      const allDistributions: Array<{ device_id: string; ciphertext: number[] }> = []
 
-      if (distResult.distributions.length > 0) {
+      // For devices WITH existing sessions, use normal DR encrypt
+      if (withSession.length > 0) {
+        const distResult = await cryptoService.distributeSenderKeyToDevices({
+          channelId,
+          devices: withSession,
+        })
+        allDistributions.push(...distResult.distributions)
+      }
+
+      // For devices WITHOUT sessions, use combined X3DH + embedded SenderKey distribution
+      if (withoutSession.length > 0) {
+        const bundles = await keyBundlesApi.fetchAllForUser(userId)
+        const devicesWithBundles: Array<{
+          userId: string
+          deviceId: string
+          identityKey: number[]
+          signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
+          oneTimePreKey?: { keyId: number; publicKey: number[] }
+        }> = []
+
+        for (const device of withoutSession) {
+          const bundle = bundles.devices.find((d) => d.device_id === device.deviceId)
+          if (!bundle) continue
+
+          let otp: { keyId: number; publicKey: number[] } | undefined
+          try {
+            const otpResponse = await keyBundlesApi.claimOtp(userId, device.deviceId)
+            otp = {
+              keyId: otpResponse.key_id,
+              publicKey: Array.from(base64ToUint8Array(otpResponse.prekey)),
+            }
+          } catch {
+            // No OTPs available
+          }
+
+          devicesWithBundles.push({
+            userId: device.userId,
+            deviceId: device.deviceId,
+            identityKey: Array.from(base64ToUint8Array(bundle.identity_key)),
+            signedPreKey: {
+              keyId: bundle.signed_prekey_id,
+              publicKey: Array.from(base64ToUint8Array(bundle.signed_prekey)),
+              signature: Array.from(base64ToUint8Array(bundle.prekey_signature)),
+            },
+            oneTimePreKey: otp,
+          })
+        }
+
+        if (devicesWithBundles.length > 0) {
+          // Combined X3DH + SenderKey distribution (embeds X3DH header in ciphertext).
+          // rawDistribution is omitted — the crypto worker will load the existing SenderKey.
+          const distResult = await cryptoService.establishAndDistributeSenderKey({
+            channelId,
+            devices: devicesWithBundles,
+          })
+          allDistributions.push(...distResult.distributions)
+        }
+      }
+
+      if (allDistributions.length > 0) {
         wsManager.send('sender_key_distribute', {
           channel_id: channelId,
-          distributions: distResult.distributions,
+          distributions: allDistributions,
         })
       }
     } catch (err) {
@@ -590,7 +649,16 @@ async function sendPrivateChannelMessage(
 
   // If some devices need X3DH session establishment first
   if (encryptResult.needsX3dh && encryptResult.needsX3dh.length > 0) {
-    // Group by userId for batch session establishment
+    // Fetch key bundles and perform combined X3DH + SenderKey distribution
+    const devicesWithBundles: Array<{
+      userId: string
+      deviceId: string
+      identityKey: number[]
+      signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
+      oneTimePreKey?: { keyId: number; publicKey: number[] }
+    }> = []
+
+    // Group by userId for batch key bundle fetching
     const byUser = new Map<string, Array<{ userId: string; deviceId: string }>>()
     for (const dev of encryptResult.needsX3dh) {
       const list = byUser.get(dev.userId) || []
@@ -599,22 +667,51 @@ async function sendPrivateChannelMessage(
     }
 
     for (const [userId, devices] of byUser) {
-      const deviceListResponse = await deviceListApi.fetch(userId)
-      await ensureSessionsForDevices(userId, devices, deviceListResponse)
+      const bundles = await keyBundlesApi.fetchAllForUser(userId)
+
+      for (const device of devices) {
+        const bundle = bundles.devices.find((d) => d.device_id === device.deviceId)
+        if (!bundle) continue
+
+        let otp: { keyId: number; publicKey: number[] } | undefined
+        try {
+          const otpResponse = await keyBundlesApi.claimOtp(userId, device.deviceId)
+          otp = {
+            keyId: otpResponse.key_id,
+            publicKey: Array.from(base64ToUint8Array(otpResponse.prekey)),
+          }
+        } catch {
+          // No OTPs available
+        }
+
+        devicesWithBundles.push({
+          userId: device.userId,
+          deviceId: device.deviceId,
+          identityKey: Array.from(base64ToUint8Array(bundle.identity_key)),
+          signedPreKey: {
+            keyId: bundle.signed_prekey_id,
+            publicKey: Array.from(base64ToUint8Array(bundle.signed_prekey)),
+            signature: Array.from(base64ToUint8Array(bundle.prekey_signature)),
+          },
+          oneTimePreKey: otp,
+        })
+      }
     }
 
-    // Now distribute SenderKey to the newly established sessions
-    const distResult = await cryptoService.distributeSenderKeyToDevices({
-      channelId,
-      devices: encryptResult.needsX3dh,
-    })
+    if (devicesWithBundles.length > 0 && encryptResult.rawDistribution) {
+      // Combined X3DH + SenderKey distribution (embeds X3DH header in ciphertext)
+      const distResult = await cryptoService.establishAndDistributeSenderKey({
+        channelId,
+        rawDistribution: encryptResult.rawDistribution,
+        devices: devicesWithBundles,
+      })
 
-    // Send these distributions too
-    if (distResult.distributions.length > 0) {
-      if (encryptResult.distributions) {
-        encryptResult.distributions.push(...distResult.distributions)
-      } else {
-        encryptResult.distributions = distResult.distributions
+      if (distResult.distributions.length > 0) {
+        if (encryptResult.distributions) {
+          encryptResult.distributions.push(...distResult.distributions)
+        } else {
+          encryptResult.distributions = distResult.distributions
+        }
       }
     }
   }
@@ -667,7 +764,8 @@ async function handlePrivateChannelMessageCreate(
   const encrypted = event.encrypted!
 
   // Self-echo skip: if we sent this message, we already have the plaintext
-  if (event.sender_id === 'self') return
+  const selfUserId = useAuthStore.getState().user?.id
+  if (selfUserId && event.sender_id === selfUserId) return
 
   try {
     const result = await cryptoService.decryptGroup({
@@ -953,6 +1051,19 @@ async function handleDmMessageCreate(
   const dmChannelId = event.dm_channel_id!
   const ciphertext = event.ciphertext!
 
+  // Ensure the DM channel exists in the store — it may be new if the sender
+  // just created it while we were already connected (no READY refresh).
+  const dmStore = useDmChannelStore.getState()
+  if (!dmStore.dmChannels.has(dmChannelId)) {
+    try {
+      const channels = await dmApi.list()
+      const channel = channels.find((ch) => ch.id === dmChannelId)
+      if (channel) dmStore.addDmChannel(channel)
+    } catch {
+      // Continue — message will still be decrypted; channel appears on next READY
+    }
+  }
+
   let x3dhHeader: {
     senderIdentityKey: number[]
     ephemeralKey: number[]
@@ -1026,11 +1137,13 @@ async function handleDmMessageCreate(
 async function getChannelMemberDevices(
   serverId: string,
 ): Promise<Array<{ userId: string; deviceId: string }>> {
-  const members = useServerStore.getState().members.get(serverId) || []
+  // Fetch authoritative member list from server (not the in-memory store,
+  // which may not include members who joined before our WS connection)
+  const memberList = await serversApi.listMembers(serverId)
   const selfUserId = useAuthStore.getState().user?.id
   const devices: Array<{ userId: string; deviceId: string }> = []
 
-  for (const member of members) {
+  for (const member of memberList) {
     // Skip self — we don't distribute our SenderKey to our own devices
     if (member.user_id === selfUserId) continue
     try {
@@ -1128,4 +1241,22 @@ function maybeReplenishPreKeys(): void {
   }).catch(() => {
     // Ignore — non-critical
   })
+}
+
+// --- Test hooks (available in renderer context for E2E tests) ---
+if (typeof window !== 'undefined') {
+  ;(window as Record<string, unknown>).__mercury_test__ = {
+    triggerIdentityWarning: async (userId: string) => {
+      if (identityWarningCallback) {
+        return identityWarningCallback(userId, [0], [1])
+      }
+      return false
+    },
+    injectMessageCreate: (event: MessageCreateEvent) => {
+      useMessageStore.getState().handleMessageCreate(event)
+    },
+    getMessages: (channelId: string) => {
+      return useMessageStore.getState().getChannelMessages(channelId)
+    },
+  }
 }

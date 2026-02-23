@@ -35,6 +35,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/{id}", patch(handlers::servers::update_server))
         .route("/{id}", delete(handlers::servers::delete_server))
         .route(
+            "/{id}/members",
+            get(handlers::servers::list_members),
+        )
+        .route(
             "/{id}/members/me",
             delete(handlers::servers::leave_server),
         )

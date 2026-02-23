@@ -1,6 +1,7 @@
 [server]
 host = "0.0.0.0"
 port = 8443
+auth_rate_limit_per_min = 100
 
 [database]
 url = "postgres://mercury:mercury@localhost:5432/mercury"

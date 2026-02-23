@@ -1,5 +1,8 @@
 // Renderer-side crypto service — communicates with the Crypto Worker
-// via the Electron MessagePort bridge.
+// via the preload bridge (send/onMessage/onReady).
+//
+// The MessagePort stays in the preload context to avoid contextBridge
+// transfer issues. The renderer only sends/receives plain data objects.
 //
 // The renderer never touches libsodium, private keys, or raw ciphertext bytes.
 // It only posts requests and receives results.
@@ -9,7 +12,6 @@ type PendingOp = {
   reject: (err: Error) => void
 }
 
-let cryptoPort: MessagePort | null = null
 const pendingOps = new Map<string, PendingOp>()
 let counter = 0
 let portReadyResolve: (() => void) | null = null
@@ -17,24 +19,26 @@ const portReady = new Promise<void>((resolve) => {
   portReadyResolve = resolve
 })
 
-// Called from App init when the crypto port is received from main process
+// Called from App init to wire up the crypto message bridge
 export function initCryptoPort(): void {
-  if (typeof window !== 'undefined' && window.mercury) {
-    window.mercury.onCryptoPort((port: MessagePort) => {
-      cryptoPort = port
-      port.onmessage = (event: MessageEvent) => {
-        const msg = event.data as { op: string; id: string; data?: unknown; error?: string }
-        if (msg.op === 'crypto:result' || msg.op === 'crypto:error') {
-          const pending = pendingOps.get(msg.id)
-          if (!pending) return
-          pendingOps.delete(msg.id)
-          if (msg.op === 'crypto:error') {
-            pending.reject(new Error(msg.error || 'Unknown crypto error'))
-          } else {
-            pending.resolve(msg.data)
-          }
+  if (typeof window !== 'undefined' && window.mercury?.crypto) {
+    // Register message handler — receives responses from crypto worker
+    window.mercury.crypto.onMessage((data: unknown) => {
+      const msg = data as { op: string; id: string; data?: unknown; error?: string }
+      if (msg.op === 'crypto:result' || msg.op === 'crypto:error') {
+        const pending = pendingOps.get(msg.id)
+        if (!pending) return
+        pendingOps.delete(msg.id)
+        if (msg.op === 'crypto:error') {
+          pending.reject(new Error(msg.error || 'Unknown crypto error'))
+        } else {
+          pending.resolve(msg.data)
         }
       }
+    })
+
+    // Resolve portReady when the crypto port is available in the preload
+    window.mercury.crypto.onReady(() => {
       portReadyResolve?.()
     })
   }
@@ -42,7 +46,6 @@ export function initCryptoPort(): void {
 
 async function postCryptoOp<T = unknown>(op: string, data?: Record<string, unknown>): Promise<T> {
   await portReady
-  if (!cryptoPort) throw new Error('Crypto port not available')
 
   return new Promise<T>((resolve, reject) => {
     const id = `crypto-${++counter}`
@@ -50,7 +53,7 @@ async function postCryptoOp<T = unknown>(op: string, data?: Record<string, unkno
       resolve: (result) => resolve(result as T),
       reject,
     })
-    cryptoPort!.postMessage({ op, id, data })
+    window.mercury.crypto.send({ op, id, data })
   })
 }
 
@@ -121,6 +124,7 @@ export interface EncryptGroupResult {
   }
   distributions?: Array<{ device_id: string; ciphertext: number[] }>
   needsX3dh?: Array<{ userId: string; deviceId: string }>
+  rawDistribution?: number[]
 }
 
 export interface DecryptGroupResult {
@@ -139,6 +143,21 @@ export interface GetPublicKeysResult {
   deviceIdentityPublicKey: number[]
   signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
   unusedPreKeyCount: number
+}
+
+export interface GenerateAllKeysResult {
+  masterVerifyPublicKey: number[]
+  deviceId: string
+  deviceIdentityPublicKey: number[]
+  deviceIdentityEd25519PublicKey: number[]
+  signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
+  oneTimePreKeys: Array<{ keyId: number; publicKey: number[] }>
+}
+
+export interface CreateSignedDeviceListResult {
+  signedList: number[]
+  signature: number[]
+  masterVerifyKey: number[]
 }
 
 export interface GenerateOtpResult {
@@ -278,12 +297,34 @@ export const cryptoService = {
     return postCryptoOp<DistributeSenderKeyResult>('crypto:distributeSenderKeyToDevices', params)
   },
 
+  establishAndDistributeSenderKey(params: {
+    channelId: string
+    rawDistribution?: number[]
+    devices: Array<{
+      userId: string
+      deviceId: string
+      identityKey: number[]
+      signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
+      oneTimePreKey?: { keyId: number; publicKey: number[] }
+    }>
+  }): Promise<DistributeSenderKeyResult> {
+    return postCryptoOp<DistributeSenderKeyResult>('crypto:establishAndDistributeSenderKey', params)
+  },
+
   markSenderKeyStale(channelId: string): Promise<{ marked: boolean }> {
     return postCryptoOp('crypto:markSenderKeyStale', { channelId })
   },
 
   getPublicKeys(): Promise<GetPublicKeysResult> {
     return postCryptoOp<GetPublicKeysResult>('crypto:getPublicKeys')
+  },
+
+  generateAllKeys(deviceId: string): Promise<GenerateAllKeysResult> {
+    return postCryptoOp<GenerateAllKeysResult>('crypto:generateAllKeys', { deviceId })
+  },
+
+  createSignedDeviceList(deviceId: string, identityKeyB64: string): Promise<CreateSignedDeviceListResult> {
+    return postCryptoOp<CreateSignedDeviceListResult>('crypto:createSignedDeviceList', { deviceId, identityKeyB64 })
   },
 
   generateOneTimePreKeys(count = 100): Promise<GenerateOtpResult> {

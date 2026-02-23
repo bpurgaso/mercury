@@ -204,6 +204,31 @@ pub async fn join_server(
     Ok((StatusCode::OK, Json(ServerResponse::from(server))))
 }
 
+/// GET /servers/:id/members — list server members.
+pub async fn list_members(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(server_id): Path<uuid::Uuid>,
+) -> Result<Json<Vec<MemberResponse>>, MercuryError> {
+    let server_id = ServerId(server_id);
+    require_membership(&state, auth_user.user_id, server_id).await?;
+
+    let user_ids = mercury_db::servers::get_member_user_ids(&state.db, server_id).await?;
+    let members: Vec<MemberResponse> = user_ids
+        .into_iter()
+        .map(|uid| MemberResponse {
+            user_id: uid.to_string(),
+        })
+        .collect();
+
+    Ok(Json(members))
+}
+
+#[derive(Serialize)]
+pub struct MemberResponse {
+    pub user_id: String,
+}
+
 /// DELETE /servers/:id/members/me — leave a server.
 pub async fn leave_server(
     State(state): State<AppState>,

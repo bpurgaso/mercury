@@ -26,6 +26,7 @@ import {
   deserializeMessage,
 } from '../../worker/crypto/double-ratchet'
 import {
+  createSignedDeviceList,
   verifySignedDeviceList,
   verifyTrustedIdentity,
   DeviceListSignatureError,
@@ -479,15 +480,13 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
 
             const serialized = serializeMessage(ratchetMsg)
 
-            // Convert our device identity Ed25519 public key to match what the receiver expects
-            const ourDeviceX25519 = identityKeyToX25519(ourIdentityKP)
-
             recipients.push({
               device_id: bundle.deviceId,
               ciphertext: serialized,
               ratchet_header: new Uint8Array(0),
               x3dh_header: {
-                sender_identity_key: ourDeviceX25519.publicKey,
+                // Send Ed25519 form — respondX3DH converts to X25519 internally
+                sender_identity_key: ourIdentityKP.publicKey,
                 ephemeral_key: x3dhResult.ephemeralPublicKey,
                 prekey_id: x3dhResult.usedPreKeyId ?? -1,
               },
@@ -495,7 +494,6 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
 
             // Zero sensitive material
             memzero(x3dhResult.sharedSecret)
-            memzero(ourDeviceX25519.privateKey)
           })
         }
 
@@ -632,9 +630,12 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         // Distribute SenderKey to members that have DR sessions
         const distributions: Array<{ device_id: string; ciphertext: number[] }> = []
         const needsX3dh: Array<{ userId: string; deviceId: string }> = []
+        let rawDistribution: number[] | undefined
 
         if (didGenerate) {
           const distMessage = createDistributionMessage(senderKey)
+          // Save raw distribution bytes for needsX3dh devices (before key state advances)
+          rawDistribution = Array.from(distMessage)
 
           for (const device of memberDevices) {
             const hasSession = sessionIndex.has(sessionKey(device.userId, device.deviceId))
@@ -672,6 +673,7 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
           },
           distributions: distributions.length > 0 ? distributions : undefined,
           needsX3dh: needsX3dh.length > 0 ? needsX3dh : undefined,
+          rawDistribution: needsX3dh.length > 0 ? rawDistribution : undefined,
         }
         break
       }
@@ -729,7 +731,9 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
       }
 
       case 'crypto:receiveSenderKeyDistribution': {
-        // Receive and import a SenderKey distribution via Double Ratchet
+        // Receive and import a SenderKey distribution via Double Ratchet.
+        // The ciphertext may have an embedded X3DH header (prefix byte 0x01)
+        // for first-time session establishment.
         if (!keyStore) throw new Error('KeyStore not initialized')
         const channelId = msg.data?.channelId as string
         const senderId = msg.data?.senderId as string
@@ -737,13 +741,51 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         const ciphertextBytes = new Uint8Array(msg.data?.ciphertext as ArrayLike<number>)
 
         await withSessionLock(senderId, senderDeviceId, async () => {
-          const session = keyStore!.getSession(senderId, senderDeviceId)
+          let session = keyStore!.getSession(senderId, senderDeviceId)
+          let drCiphertext = ciphertextBytes
+
           if (!session) {
-            result = { error: 'NO_SESSION' }
-            return
+            // Check for embedded X3DH header (prefix byte 0x01)
+            if (ciphertextBytes.length > 69 && ciphertextBytes[0] === 0x01) {
+              // Parse: [1 flag][32 identity_key][32 ephemeral_key][4 prekey_id LE][DR ciphertext]
+              const senderIdentityKey = ciphertextBytes.slice(1, 33)
+              const ephemeralKey = ciphertextBytes.slice(33, 65)
+              const prekeyIdBuf = ciphertextBytes.slice(65, 69)
+              const prekeyId = prekeyIdBuf[0] | (prekeyIdBuf[1] << 8) | (prekeyIdBuf[2] << 16) | (prekeyIdBuf[3] << 24)
+              drCiphertext = ciphertextBytes.slice(69)
+
+              // Perform responder X3DH to establish session
+              const ourIdentityKP = keyStore!.getDeviceIdentityKeyPair()
+              const ourSignedPreKey = keyStore!.getSignedPreKey()
+              let ourOtp = null
+              if (prekeyId >= 0) {
+                ourOtp = keyStore!.getOneTimePreKey(prekeyId)
+              }
+
+              const sharedSecret = respondX3DH(
+                ourIdentityKP,
+                ourSignedPreKey,
+                ourOtp,
+                senderIdentityKey,
+                ephemeralKey,
+              )
+
+              if (ourOtp && prekeyId >= 0) {
+                keyStore!.deleteOneTimePreKey(prekeyId)
+              }
+
+              session = initReceiverSession(sharedSecret, ourSignedPreKey.keyPair)
+              memzero(sharedSecret)
+              memzero(ourIdentityKP.privateKey)
+              if (ourOtp) memzero(ourOtp.keyPair.privateKey)
+              memzero(ourSignedPreKey.keyPair.privateKey)
+            } else {
+              result = { error: 'NO_SESSION' }
+              return
+            }
           }
 
-          const ratchetMsg = deserializeMessage(ciphertextBytes)
+          const ratchetMsg = deserializeMessage(drCiphertext)
           try {
             const { session: updatedSession, plaintext } = ratchetDecrypt(session, ratchetMsg)
 
@@ -753,6 +795,7 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
 
             // Persist both the updated DR session and the new SenderKey
             keyStore!.storeSession(senderId, senderDeviceId, updatedSession)
+            sessionIndex.add(sessionKey(senderId, senderDeviceId))
             keyStore!.storeSenderKey(channelId, senderId, senderDeviceId, receivedKey)
 
             result = { stored: true, channelId, senderId, senderDeviceId }
@@ -795,6 +838,93 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         break
       }
 
+      case 'crypto:establishAndDistributeSenderKey': {
+        // Perform X3DH + distribute SenderKey in one step.
+        // Embeds the X3DH header in the ciphertext (prefix byte 0x01) so the
+        // receiver can establish the DR session and decrypt in a single message.
+        // Uses rawDistribution bytes if provided (from encryptGroup, captured before
+        // key state advanced), or loads the current SenderKey from the store.
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const channelId = msg.data?.channelId as string
+        let rawDistBytes = msg.data?.rawDistribution as number[] | undefined
+        const devices = msg.data?.devices as Array<{
+          userId: string
+          deviceId: string
+          identityKey: number[]
+          signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
+          oneTimePreKey?: { keyId: number; publicKey: number[] }
+        }>
+
+        // If no rawDistribution provided, load current SenderKey and create distribution
+        let ownedDistMessage: Uint8Array | null = null
+        if (!rawDistBytes || rawDistBytes.length === 0) {
+          const ourDeviceId = keyStore.getDeviceId()
+          const senderKey = keyStore.getSenderKey(channelId, 'self', ourDeviceId)
+          if (!senderKey) throw new Error('No SenderKey to distribute')
+          ownedDistMessage = createDistributionMessage(senderKey)
+          rawDistBytes = Array.from(ownedDistMessage)
+        }
+
+        const distMessage = new Uint8Array(rawDistBytes)
+        const distributions: Array<{ device_id: string; ciphertext: number[] }> = []
+        const ourIdentityKP = keyStore.getDeviceIdentityKeyPair()
+
+        for (const device of devices) {
+          const keyBundle: KeyBundle = {
+            identityKey: new Uint8Array(device.identityKey),
+            signedPreKey: {
+              keyId: device.signedPreKey.keyId,
+              publicKey: new Uint8Array(device.signedPreKey.publicKey),
+              signature: new Uint8Array(device.signedPreKey.signature),
+            },
+          }
+          if (device.oneTimePreKey) {
+            keyBundle.oneTimePreKey = {
+              keyId: device.oneTimePreKey.keyId,
+              publicKey: new Uint8Array(device.oneTimePreKey.publicKey),
+            }
+          }
+
+          const x3dhResult = performX3DH(ourIdentityKP, keyBundle)
+
+          const session = initSenderSession(
+            x3dhResult.sharedSecret,
+            keyBundle.signedPreKey.publicKey,
+          )
+
+          const { session: updatedSession, message: ratchetMsg } = ratchetEncrypt(session, distMessage)
+          keyStore.storeSession(device.userId, device.deviceId, updatedSession)
+          sessionIndex.add(sessionKey(device.userId, device.deviceId))
+
+          const serialized = serializeMessage(ratchetMsg)
+
+          // Build compound ciphertext: [0x01][32B identity_key][32B ephemeral_key][4B prekey_id LE][DR ciphertext]
+          const prekeyId = x3dhResult.usedPreKeyId ?? -1
+          const compound = new Uint8Array(1 + 32 + 32 + 4 + serialized.length)
+          compound[0] = 0x01
+          compound.set(ourIdentityKP.publicKey, 1)
+          compound.set(x3dhResult.ephemeralPublicKey, 33)
+          compound[65] = prekeyId & 0xff
+          compound[66] = (prekeyId >> 8) & 0xff
+          compound[67] = (prekeyId >> 16) & 0xff
+          compound[68] = (prekeyId >> 24) & 0xff
+          compound.set(serialized, 69)
+
+          distributions.push({
+            device_id: device.deviceId,
+            ciphertext: Array.from(compound),
+          })
+
+          memzero(x3dhResult.sharedSecret)
+        }
+
+        memzero(ourIdentityKP.privateKey)
+        memzero(distMessage)
+        if (ownedDistMessage) memzero(ownedDistMessage)
+        result = { distributions }
+        break
+      }
+
       case 'crypto:markSenderKeyStale': {
         // Delete our SenderKey for a channel (lazy rotation — regenerated on next send)
         if (!keyStore) throw new Error('KeyStore not initialized')
@@ -810,6 +940,26 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
           keyStore.deleteSenderKey(channelId, ourUserId, ourDeviceId)
         }
         result = { marked: true }
+        break
+      }
+
+      case 'crypto:createSignedDeviceList': {
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const dlDeviceId = msg.data?.deviceId as string
+        const dlIdentityKeyB64 = msg.data?.identityKeyB64 as string
+
+        const dlMasterKP = keyStore.getMasterVerifyKeyPair()
+        const dlSigned = await createSignedDeviceList(dlMasterKP, [
+          { device_id: dlDeviceId, identity_key: dlIdentityKeyB64 },
+        ])
+        const dlMasterPub = new Uint8Array(dlMasterKP.publicKey)
+        memzero(dlMasterKP.privateKey)
+
+        result = {
+          signedList: Array.from(dlSigned.signed_list),
+          signature: Array.from(dlSigned.signature),
+          masterVerifyKey: Array.from(dlMasterPub),
+        }
         break
       }
 

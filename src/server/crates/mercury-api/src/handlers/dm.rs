@@ -157,6 +157,7 @@ pub async fn get_dm_messages(
         &state.db,
         dm_channel_id,
         device_id,
+        auth_user.user_id,
         before,
         after,
         limit,

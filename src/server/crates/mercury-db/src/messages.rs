@@ -158,12 +158,15 @@ pub struct DmMessageRow {
     pub x3dh_header: Option<Vec<u8>>,
 }
 
-/// Fetch DM message history filtered by device_id.
-/// Returns messages with the ciphertext row for the requesting device only.
+/// Fetch DM message history for a user+device.
+/// Returns messages the user received (filtered by device_id) AND messages
+/// the user sent. For sent messages, ciphertext is taken from any recipient
+/// row so the caller can verify E2E encryption is in use.
 pub async fn get_dm_messages_paginated(
     pool: &PgPool,
     dm_channel_id: DmChannelId,
     device_id: DeviceId,
+    sender_id: UserId,
     before: Option<MessageId>,
     after: Option<MessageId>,
     limit: i64,
@@ -176,17 +179,23 @@ pub async fn get_dm_messages_paginated(
                 r#"
                 SELECT m.id, m.dm_channel_id, m.sender_id, m.message_type,
                        m.created_at, m.edited_at,
-                       mr.ciphertext, mr.x3dh_header
+                       COALESCE(mr.ciphertext,
+                         (SELECT mr2.ciphertext FROM message_recipients mr2
+                          WHERE mr2.message_id = m.id LIMIT 1)) AS ciphertext,
+                       mr.x3dh_header
                 FROM messages m
-                INNER JOIN message_recipients mr ON mr.message_id = m.id AND mr.device_id = $2
+                LEFT JOIN message_recipients mr
+                  ON mr.message_id = m.id AND mr.device_id = $2
                 WHERE m.dm_channel_id = $1
-                  AND m.created_at < (SELECT created_at FROM messages WHERE id = $3)
+                  AND (mr.device_id IS NOT NULL OR m.sender_id = $3)
+                  AND m.created_at < (SELECT created_at FROM messages WHERE id = $4)
                 ORDER BY m.created_at DESC
-                LIMIT $4
+                LIMIT $5
                 "#,
             )
             .bind(dm_channel_id)
             .bind(device_id)
+            .bind(sender_id)
             .bind(before_id)
             .bind(limit)
             .fetch_all(pool)
@@ -197,17 +206,23 @@ pub async fn get_dm_messages_paginated(
                 r#"
                 SELECT m.id, m.dm_channel_id, m.sender_id, m.message_type,
                        m.created_at, m.edited_at,
-                       mr.ciphertext, mr.x3dh_header
+                       COALESCE(mr.ciphertext,
+                         (SELECT mr2.ciphertext FROM message_recipients mr2
+                          WHERE mr2.message_id = m.id LIMIT 1)) AS ciphertext,
+                       mr.x3dh_header
                 FROM messages m
-                INNER JOIN message_recipients mr ON mr.message_id = m.id AND mr.device_id = $2
+                LEFT JOIN message_recipients mr
+                  ON mr.message_id = m.id AND mr.device_id = $2
                 WHERE m.dm_channel_id = $1
-                  AND m.created_at > (SELECT created_at FROM messages WHERE id = $3)
+                  AND (mr.device_id IS NOT NULL OR m.sender_id = $3)
+                  AND m.created_at > (SELECT created_at FROM messages WHERE id = $4)
                 ORDER BY m.created_at ASC
-                LIMIT $4
+                LIMIT $5
                 "#,
             )
             .bind(dm_channel_id)
             .bind(device_id)
+            .bind(sender_id)
             .bind(after_id)
             .bind(limit)
             .fetch_all(pool)
@@ -218,16 +233,22 @@ pub async fn get_dm_messages_paginated(
                 r#"
                 SELECT m.id, m.dm_channel_id, m.sender_id, m.message_type,
                        m.created_at, m.edited_at,
-                       mr.ciphertext, mr.x3dh_header
+                       COALESCE(mr.ciphertext,
+                         (SELECT mr2.ciphertext FROM message_recipients mr2
+                          WHERE mr2.message_id = m.id LIMIT 1)) AS ciphertext,
+                       mr.x3dh_header
                 FROM messages m
-                INNER JOIN message_recipients mr ON mr.message_id = m.id AND mr.device_id = $2
+                LEFT JOIN message_recipients mr
+                  ON mr.message_id = m.id AND mr.device_id = $2
                 WHERE m.dm_channel_id = $1
+                  AND (mr.device_id IS NOT NULL OR m.sender_id = $3)
                 ORDER BY m.created_at DESC
-                LIMIT $3
+                LIMIT $4
                 "#,
             )
             .bind(dm_channel_id)
             .bind(device_id)
+            .bind(sender_id)
             .bind(limit)
             .fetch_all(pool)
             .await
