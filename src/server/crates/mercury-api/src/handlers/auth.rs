@@ -152,14 +152,29 @@ pub async fn refresh(
     Ok((StatusCode::OK, Json(response)))
 }
 
-/// POST /auth/logout — Invalidate the current session.
+/// POST /auth/logout — Invalidate the current session and its paired refresh token.
 pub async fn logout(
     State(state): State<AppState>,
     auth_user: AuthUser,
 ) -> Result<impl IntoResponse, MercuryError> {
+    // Read the access session to find the paired refresh token JTI
+    let session_data = session::get_session(&state.redis, &auth_user.jti)
+        .await
+        .map_err(|e| MercuryError::Internal(anyhow::anyhow!("redis error: {e}")))?;
+
+    // Delete the access token session
     session::delete_session(&state.redis, &auth_user.jti)
         .await
         .map_err(|e| MercuryError::Internal(anyhow::anyhow!("redis error: {e}")))?;
+
+    // Also revoke the paired refresh token session
+    if let Some(data) = session_data {
+        if let Some(refresh_jti) = data.paired_refresh_jti {
+            session::delete_session(&state.redis, &refresh_jti)
+                .await
+                .map_err(|e| MercuryError::Internal(anyhow::anyhow!("redis error: {e}")))?;
+        }
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -177,12 +192,15 @@ async fn create_tokens_and_sessions(
     let access_ttl = state.auth_config.jwt_expiry_minutes * 60;
     let refresh_ttl = state.auth_config.refresh_token_expiry_days * 86400;
 
-    session::create_session(
+    // Store access session with a reference to the paired refresh JTI
+    // so logout can revoke both tokens
+    session::create_session_with_refresh_jti(
         &state.redis,
         &token_pair.access_token_jti,
         user_id,
         token_pair.access_token_exp,
         access_ttl,
+        &token_pair.refresh_token_jti,
     )
     .await
     .map_err(|e| MercuryError::Internal(anyhow::anyhow!("redis error: {e}")))?;

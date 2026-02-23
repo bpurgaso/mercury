@@ -107,6 +107,12 @@ pub async fn create_channel(
     )
     .await?;
 
+    // For private channels, seed channel_members with all current server members
+    if req.encryption_mode == "private" {
+        mercury_db::channels::add_all_server_members_to_channel(&state.db, channel_id, server_id)
+            .await?;
+    }
+
     // Broadcast CHANNEL_CREATE to all connected members of this server
     let member_ids = mercury_db::servers::get_member_user_ids(&state.db, server_id).await?;
     let event = ServerMessage {

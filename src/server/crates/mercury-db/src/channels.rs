@@ -1,4 +1,4 @@
-use mercury_core::ids::{ChannelId, ServerId};
+use mercury_core::ids::{ChannelId, ServerId, UserId};
 use mercury_core::models::Channel;
 use sqlx::PgPool;
 
@@ -81,7 +81,7 @@ pub async fn delete_channel(pool: &PgPool, id: ChannelId) -> Result<bool, sqlx::
 /// List all channels across all servers a user is a member of.
 pub async fn list_channels_for_user(
     pool: &PgPool,
-    user_id: mercury_core::ids::UserId,
+    user_id: UserId,
 ) -> Result<Vec<Channel>, sqlx::Error> {
     sqlx::query_as::<_, Channel>(
         r#"
@@ -94,4 +94,114 @@ pub async fn list_channels_for_user(
     .bind(user_id)
     .fetch_all(pool)
     .await
+}
+
+// ── Channel Membership (private channels) ──────────────────
+
+/// Add a user as a member of a private channel.
+pub async fn add_channel_member(
+    pool: &PgPool,
+    channel_id: ChannelId,
+    user_id: UserId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO channel_members (channel_id, user_id)
+        VALUES ($1, $2)
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Add all current server members to a channel (used when creating a private channel).
+pub async fn add_all_server_members_to_channel(
+    pool: &PgPool,
+    channel_id: ChannelId,
+    server_id: ServerId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO channel_members (channel_id, user_id)
+        SELECT $1, user_id FROM server_members WHERE server_id = $2
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(channel_id)
+    .bind(server_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Remove a user from all channels in a server (used when leaving a server).
+pub async fn remove_member_from_server_channels(
+    pool: &PgPool,
+    user_id: UserId,
+    server_id: ServerId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        DELETE FROM channel_members
+        WHERE user_id = $1
+          AND channel_id IN (SELECT id FROM channels WHERE server_id = $2)
+        "#,
+    )
+    .bind(user_id)
+    .bind(server_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Check if a user is a member of a specific channel.
+pub async fn is_channel_member(
+    pool: &PgPool,
+    user_id: UserId,
+    channel_id: ChannelId,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 as n FROM channel_members WHERE user_id = $1 AND channel_id = $2",
+    )
+    .bind(user_id)
+    .bind(channel_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// Get all user IDs that are members of a specific channel.
+pub async fn get_channel_member_user_ids(
+    pool: &PgPool,
+    channel_id: ChannelId,
+) -> Result<Vec<UserId>, sqlx::Error> {
+    let rows: Vec<(UserId,)> =
+        sqlx::query_as("SELECT user_id FROM channel_members WHERE channel_id = $1")
+            .bind(channel_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Increment sender_key_epoch for all private channels in a server.
+/// Called when a member leaves/is kicked to trigger lazy re-keying.
+pub async fn increment_epoch_for_server_private_channels(
+    pool: &PgPool,
+    server_id: ServerId,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        UPDATE channels
+        SET sender_key_epoch = sender_key_epoch + 1
+        WHERE server_id = $1 AND encryption_mode = 'private'
+        "#,
+    )
+    .bind(server_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }

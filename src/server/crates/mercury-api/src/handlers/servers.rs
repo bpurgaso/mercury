@@ -248,7 +248,20 @@ pub async fn leave_server(
         ));
     }
 
+    // Remove from channel_members for all channels in this server
+    mercury_db::channels::remove_member_from_server_channels(
+        &state.db,
+        auth_user.user_id,
+        server_id,
+    )
+    .await?;
+
     mercury_db::servers::remove_member(&state.db, auth_user.user_id, server_id).await?;
+
+    // Increment sender_key_epoch for all private channels in this server
+    // to trigger lazy re-keying by remaining members
+    mercury_db::channels::increment_epoch_for_server_private_channels(&state.db, server_id)
+        .await?;
 
     // Broadcast MEMBER_REMOVE to remaining connected members
     let member_ids = mercury_db::servers::get_member_user_ids(&state.db, server_id).await?;

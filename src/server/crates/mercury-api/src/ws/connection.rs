@@ -183,6 +183,7 @@ async fn handle_identify(
         user_id: user_id.0.to_string(),
         device_id: Some(payload.device_id.clone()),
         expires_at: claims.exp,
+        paired_refresh_jti: None,
     };
     let session_json = serde_json::to_string(&session_data).unwrap_or_default();
     let session_key = format!("session:{}", claims.jti);
@@ -501,6 +502,13 @@ async fn run_event_loop(
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         let text_str = text.to_string();
+
+                        // Enforce size limit on text frames (same as binary frames)
+                        if text_str.len() > MAX_MESSAGE_PAYLOAD_SIZE {
+                            send_error_json(&mut ws_sink, "MESSAGE_TOO_LARGE", "message payload exceeds 65536 bytes").await;
+                            continue;
+                        }
+
                         let client_msg: ClientMessage = match serde_json::from_str(&text_str) {
                             Ok(m) => m,
                             Err(_) => continue,
@@ -664,6 +672,12 @@ async fn handle_standard_message_send(
     sender_id: UserId,
     payload: MessageSendPayload,
 ) {
+    // Per-user rate limit
+    if !check_message_rate_limit(state, sender_id).await {
+        send_error_json(ws_sink, "RATE_LIMITED", "message send rate limit exceeded").await;
+        return;
+    }
+
     // Parse channel_id
     let channel_uuid = match uuid::Uuid::parse_str(&payload.channel_id) {
         Ok(u) => u,
@@ -676,6 +690,19 @@ async fn handle_standard_message_send(
         Ok(Some(c)) => c,
         _ => return,
     };
+
+    // Enforce content length limit
+    if let Some(ref content) = payload.content {
+        if content.len() > MAX_MESSAGE_CONTENT_LENGTH {
+            send_error_json(
+                ws_sink,
+                "CONTENT_TOO_LONG",
+                "message content exceeds 4000 characters",
+            )
+            .await;
+            return;
+        }
+    }
 
     // Reject standard messages on private/E2E channels
     if channel.encryption_mode != "standard" {
@@ -800,6 +827,12 @@ async fn handle_dm_message_send(
     _sender_device_id: &str,
     payload: DmMessageSendPayload,
 ) {
+    // Per-user rate limit
+    if !check_message_rate_limit(state, sender_id).await {
+        send_error_json(ws_sink, "RATE_LIMITED", "message send rate limit exceeded").await;
+        return;
+    }
+
     // Parse dm_channel_id
     let dm_channel_uuid = match uuid::Uuid::parse_str(&payload.dm_channel_id) {
         Ok(u) => u,
@@ -923,6 +956,12 @@ async fn handle_private_message_send(
     sender_id: UserId,
     payload: PrivateMessageSendPayload,
 ) {
+    // Per-user rate limit
+    if !check_message_rate_limit(state, sender_id).await {
+        send_error_json(ws_sink, "RATE_LIMITED", "message send rate limit exceeded").await;
+        return;
+    }
+
     // Parse channel_id
     let channel_uuid = match uuid::Uuid::parse_str(&payload.channel_id) {
         Ok(u) => u,
@@ -936,11 +975,18 @@ async fn handle_private_message_send(
         _ => return,
     };
 
-    // Verify sender is a member of this server
+    // Verify sender is a member of this server AND this private channel
     let is_member = mercury_db::servers::is_member(&state.db, sender_id, channel.server_id)
         .await
         .unwrap_or(false);
     if !is_member {
+        return;
+    }
+    let is_channel_member =
+        channels::is_channel_member(&state.db, sender_id, channel_id)
+            .await
+            .unwrap_or(false);
+    if !is_channel_member {
         return;
     }
 
@@ -1026,8 +1072,8 @@ async fn handle_private_message_send(
         None,
     );
 
-    // Broadcast to all connected members of this server
-    let member_ids = mercury_db::servers::get_member_user_ids(&state.db, channel.server_id)
+    // Broadcast to channel members only (not all server members)
+    let member_ids = channels::get_channel_member_user_ids(&state.db, channel_id)
         .await
         .unwrap_or_default();
     state.ws_manager.send_binary_to_users(&member_ids, &bytes);
@@ -1076,6 +1122,13 @@ async fn handle_sender_key_distribute(
         .await
         .unwrap_or(false);
     if !is_member {
+        return;
+    }
+    let is_channel_member =
+        channels::is_channel_member(&state.db, sender_id, channel_id)
+            .await
+            .unwrap_or(false);
+    if !is_channel_member {
         return;
     }
 
@@ -1134,6 +1187,40 @@ async fn handle_sender_key_distribute(
 
         let _ = tx.commit().await;
     }
+}
+
+/// Maximum content length for standard (plaintext) messages in characters.
+const MAX_MESSAGE_CONTENT_LENGTH: usize = 4000;
+
+/// Per-user rate limit for message_send operations.
+/// Uses a Redis counter with a 1-second sliding window.
+/// Returns true if allowed, false if rate limited.
+const MESSAGE_SEND_RATE_LIMIT: u64 = 10; // messages per second per user
+
+async fn check_message_rate_limit(state: &AppState, user_id: UserId) -> bool {
+    let key = format!("rate:msg:{}", user_id);
+    let now_micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_micros() as f64;
+    let window_micros = 1_000_000.0; // 1 second
+    let cutoff = now_micros - window_micros;
+
+    // Remove entries older than the window
+    let _ = state.redis.zremrangebyscore::<i64, _, _, _>(&key, f64::NEG_INFINITY, cutoff).await;
+
+    // Count entries in the current window
+    let count: u64 = state.redis.zcard(&key).await.unwrap_or(0);
+    if count >= MESSAGE_SEND_RATE_LIMIT {
+        return false;
+    }
+
+    // Add the new request
+    let member = format!("{now_micros}");
+    let _ = state.redis.zadd::<i64, _, _>(&key, None, None, false, false, (now_micros, member)).await;
+    let _ = state.redis.expire::<bool, _>(&key, 2).await;
+
+    true
 }
 
 /// Send a JSON error event.

@@ -141,6 +141,7 @@ pub async fn setup(server: &TestServer) {
             messages,
             dm_members,
             dm_channels,
+            channel_members,
             server_members,
             channels,
             servers,

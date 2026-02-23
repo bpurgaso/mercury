@@ -8,6 +8,10 @@ pub struct SessionData {
     pub user_id: String,
     pub device_id: Option<String>,
     pub expires_at: i64,
+    /// For access token sessions, the JTI of the paired refresh token.
+    /// Used to revoke the refresh session on logout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired_refresh_jti: Option<String>,
 }
 
 /// Store a session in Redis with the key `session:{jti}` and a TTL matching the token expiry.
@@ -18,11 +22,36 @@ pub async fn create_session(
     expires_at: i64,
     ttl_seconds: u64,
 ) -> Result<(), RedisError> {
+    create_session_inner(redis, jti, user_id, expires_at, ttl_seconds, None).await
+}
+
+/// Store an access-token session that records the paired refresh token's JTI,
+/// so logout can revoke both tokens.
+pub async fn create_session_with_refresh_jti(
+    redis: &RedisClient,
+    jti: &str,
+    user_id: UserId,
+    expires_at: i64,
+    ttl_seconds: u64,
+    refresh_jti: &str,
+) -> Result<(), RedisError> {
+    create_session_inner(redis, jti, user_id, expires_at, ttl_seconds, Some(refresh_jti)).await
+}
+
+async fn create_session_inner(
+    redis: &RedisClient,
+    jti: &str,
+    user_id: UserId,
+    expires_at: i64,
+    ttl_seconds: u64,
+    paired_refresh_jti: Option<&str>,
+) -> Result<(), RedisError> {
     let key = format!("session:{jti}");
     let data = SessionData {
         user_id: user_id.0.to_string(),
         device_id: None,
         expires_at,
+        paired_refresh_jti: paired_refresh_jti.map(String::from),
     };
     let json =
         serde_json::to_string(&data).map_err(|e| RedisError::new(RedisErrorKind::Parse, e.to_string()))?;

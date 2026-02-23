@@ -86,6 +86,19 @@ pub async fn get_messages(
 
     require_membership(&state, auth_user.user_id, channel.server_id).await?;
 
+    // Private channels require channel-level membership, not just server membership
+    if channel.encryption_mode == "private" {
+        let is_channel_member =
+            mercury_db::channels::is_channel_member(&state.db, auth_user.user_id, channel_id)
+                .await
+                .map_err(|e| MercuryError::Database(e))?;
+        if !is_channel_member {
+            return Err(MercuryError::Forbidden(
+                "not a member of this private channel".into(),
+            ));
+        }
+    }
+
     let limit = query.limit.unwrap_or(50).min(100).max(1);
     let before = query.before.map(MessageId);
     let after = query.after.map(MessageId);
