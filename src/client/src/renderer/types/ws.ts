@@ -42,6 +42,7 @@ export type ClientOp =
   | 'webrtc_signal'
   | 'presence_update'
   | 'sender_key_distribute'
+  | 'media_key_distribute'
 
 // Server → Client message envelope
 export interface ServerMessage {
@@ -186,9 +187,9 @@ export interface WebRTCSignalEvent {
 
 export interface MediaKeyEvent {
   room_id: string
-  key: Uint8Array   // 32 bytes raw AES-256 key
-  epoch: number
-  from_user: string
+  sender_id: string
+  sender_device_id: string
+  ciphertext: number[]  // DR-encrypted payload containing key + epoch
 }
 
 export interface CallConfigEvent {

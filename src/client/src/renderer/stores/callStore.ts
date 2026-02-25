@@ -13,6 +13,7 @@ import { webRTCManager, CALL_CONFIG_TIMEOUT_MS } from '../services/webrtc'
 import { MediaKeyRing } from '../services/media-key-ring'
 import { generateMediaKey, exportMediaKey, importMediaKey } from '../services/frame-crypto'
 import { cryptoService } from '../services/crypto'
+import { useAuthStore } from './authStore'
 
 interface DiagnosticState {
   failed: boolean
@@ -77,6 +78,49 @@ export const useCallStore = create<CallState>((set, get) => {
     })
   }
 
+  // Encrypt a media key via DR and send the per-device payloads over WS
+  function distributeMediaKeyViaWs(roomId: string, recipientIds: string[], key: number[], epoch: number): void {
+    cryptoService.distributeMediaKey({ roomId, recipientIds, key, epoch })
+      .then((res) => {
+        if (res.recipients.length > 0) {
+          wsManager.send('media_key_distribute', {
+            room_id: roomId,
+            recipients: res.recipients,
+          })
+        }
+      })
+      .catch(() => {
+        // Silent — media key distribution is best-effort
+      })
+  }
+
+  // Generate a new media key, rotate the keyRing, and distribute to all participants
+  function rotateAndDistributeMediaKey(): void {
+    const { activeCall, participants } = get()
+    if (!activeCall) return
+
+    const keyRing = webRTCManager.getMediaKeyRing()
+    if (!keyRing) return
+
+    generateMediaKey()
+      .then(async (newKey) => {
+        keyRing.rotateKey(newKey)
+        const rawKey = await exportMediaKey(newKey)
+        const participantIds = Array.from(participants.keys())
+        if (participantIds.length > 0) {
+          distributeMediaKeyViaWs(
+            activeCall.roomId,
+            participantIds,
+            Array.from(rawKey),
+            keyRing.currentEpoch,
+          )
+        }
+      })
+      .catch(() => {
+        // Silent — rotation failure is non-fatal
+      })
+  }
+
   // Subscribe to WebSocket events for voice/call
   function setupWsListeners(): void {
     wsManager.on('VOICE_STATE_UPDATE', (data: VoiceStateUpdateEvent) => {
@@ -92,8 +136,21 @@ export const useCallStore = create<CallState>((set, get) => {
           remoteStreams.delete(data.user_id)
           return { participants, remoteStreams }
         })
+
+        // Rotate key so the leaver cannot decrypt future frames
+        const localUserId = useAuthStore.getState().user?.id
+        if (localUserId) {
+          const remainingIds = Array.from(get().participants.keys())
+          const allIds = [...remainingIds, localUserId]
+          allIds.sort()
+          if (allIds[0] === localUserId) {
+            rotateAndDistributeMediaKey()
+          }
+        }
       } else {
-        // Participant updated state in this call
+        // Participant joined or updated state in this call
+        const isNewParticipant = !get().participants.has(data.user_id)
+
         set((state) => {
           const participants = new Map(state.participants)
           const existing = participants.get(data.user_id)
@@ -106,6 +163,19 @@ export const useCallStore = create<CallState>((set, get) => {
           })
           return { participants }
         })
+
+        // When a new participant joins, rotate key so they get a fresh key
+        if (isNewParticipant) {
+          const localUserId = useAuthStore.getState().user?.id
+          if (localUserId) {
+            const participantIds = Array.from(get().participants.keys())
+            const allIds = [...participantIds, localUserId]
+            allIds.sort()
+            if (allIds[0] === localUserId) {
+              rotateAndDistributeMediaKey()
+            }
+          }
+        }
       }
     })
 
@@ -158,7 +228,7 @@ export const useCallStore = create<CallState>((set, get) => {
       webRTCManager.handleSignal(data.signal)
     })
 
-    // Handle incoming media key distribution
+    // Handle incoming media key distribution (DR-encrypted)
     wsManager.on('MEDIA_KEY', (data: MediaKeyEvent) => {
       const { activeCall } = get()
       if (!activeCall || activeCall.roomId !== data.room_id) return
@@ -166,14 +236,21 @@ export const useCallStore = create<CallState>((set, get) => {
       const keyRing = webRTCManager.getMediaKeyRing()
       if (!keyRing) return
 
-      importMediaKey(data.key).then((cryptoKey) => {
-        if (data.epoch === 0 && keyRing.currentKey === null) {
-          keyRing.setInitialKey(cryptoKey, data.epoch)
-        } else {
-          keyRing.rotateKey(cryptoKey)
-        }
+      cryptoService.decryptMediaKey({
+        senderId: data.sender_id,
+        senderDeviceId: data.sender_device_id,
+        ciphertext: data.ciphertext,
+      }).then((res) => {
+        if (res.error || !res.key) return
+        return importMediaKey(new Uint8Array(res.key)).then((cryptoKey) => {
+          if (keyRing.currentKey === null) {
+            keyRing.setInitialKey(cryptoKey, res.epoch ?? 0)
+          } else {
+            keyRing.rotateKey(cryptoKey)
+          }
+        })
       }).catch(() => {
-        // Failed to import media key — ignore
+        // Failed to decrypt/import media key — ignore
       })
     })
 
@@ -353,16 +430,11 @@ export const useCallStore = create<CallState>((set, get) => {
         const mediaKey = await generateMediaKey()
         keyRing.setInitialKey(mediaKey, 0)
 
-        // Distribute initial key to all current participants
+        // Distribute initial key to all current participants via DR-encrypted WS
         const participantIds = Array.from(get().participants.keys())
         if (participantIds.length > 0) {
           const rawKey = await exportMediaKey(mediaKey)
-          await cryptoService.distributeMediaKey({
-            roomId,
-            recipientIds: participantIds,
-            key: Array.from(rawKey),
-            epoch: 0,
-          })
+          distributeMediaKeyViaWs(roomId, participantIds, Array.from(rawKey), 0)
         }
       } catch {
         // Key generation/distribution failure is non-fatal for call setup.

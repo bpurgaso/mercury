@@ -56,7 +56,16 @@ vi.mock('../../../src/renderer/services/frame-crypto', () => ({
 
 vi.mock('../../../src/renderer/services/crypto', () => ({
   cryptoService: {
-    distributeMediaKey: vi.fn(async () => ({ distributed: true })),
+    distributeMediaKey: vi.fn(async () => ({ distributed: true, recipients: [] })),
+    decryptMediaKey: vi.fn(async () => ({ key: Array.from(new Uint8Array(32)), epoch: 0, roomId: 'room-123' })),
+  },
+}))
+
+// --- Mock auth store (provides local userId for key rotation coordination) ---
+
+vi.mock('../../../src/renderer/stores/authStore', () => ({
+  useAuthStore: {
+    getState: vi.fn(() => ({ user: { id: 'local-user' } })),
   },
 }))
 
@@ -261,6 +270,9 @@ function emitWsStateChange(state: string): void {
 import { useCallStore } from '../../../src/renderer/stores/callStore'
 import { wsManager } from '../../../src/renderer/services/websocket'
 import { webRTCManager } from '../../../src/renderer/services/webrtc'
+import { cryptoService } from '../../../src/renderer/services/crypto'
+import { useAuthStore } from '../../../src/renderer/stores/authStore'
+import { generateMediaKey, exportMediaKey, importMediaKey } from '../../../src/renderer/services/frame-crypto'
 
 // --- Mock CALL_CONFIG data ---
 
@@ -309,6 +321,9 @@ describe('callStore', () => {
     pcOnIceCandidate = null
     pcOnTrack = null
     pcOnConnectionStateChange = null
+
+    // Reset auth store mock to default
+    vi.mocked(useAuthStore.getState).mockReturnValue({ user: { id: 'local-user' } } as ReturnType<typeof useAuthStore.getState>)
 
     // Default getUserMedia mock: returns audio track
     mockGetUserMedia.mockReset()
@@ -980,6 +995,80 @@ describe('callStore', () => {
       })
       expect(useCallStore.getState().participants.has('user-2')).toBe(false)
     })
+
+    it('triggers key rotation when a new participant joins and local user is lowest ID', async () => {
+      await setupActiveCall()
+      vi.mocked(cryptoService.distributeMediaKey).mockClear()
+      vi.mocked(useAuthStore.getState).mockReturnValue({ user: { id: 'aaa-local' } } as ReturnType<typeof useAuthStore.getState>)
+
+      // New participant joins with a higher userId
+      emitWsEvent('VOICE_STATE_UPDATE', {
+        user_id: 'zzz-remote',
+        channel_id: 'channel-1',
+        self_mute: false,
+        self_deaf: false,
+      })
+
+      // Give async rotation a tick
+      await new Promise((r) => setTimeout(r, 50))
+
+      // generateMediaKey should have been called for the rotation
+      expect(generateMediaKey).toHaveBeenCalled()
+    })
+
+    it('does NOT trigger key rotation when local user is NOT lowest ID on join', async () => {
+      await setupActiveCall()
+      vi.mocked(generateMediaKey as Mock).mockClear()
+      vi.mocked(useAuthStore.getState).mockReturnValue({ user: { id: 'zzz-local' } } as ReturnType<typeof useAuthStore.getState>)
+
+      // New participant joins with a lower userId
+      emitWsEvent('VOICE_STATE_UPDATE', {
+        user_id: 'aaa-remote',
+        channel_id: 'channel-1',
+        self_mute: false,
+        self_deaf: false,
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+
+      // generateMediaKey should NOT have been called (aaa-remote is lowest, not us)
+      expect(generateMediaKey).not.toHaveBeenCalled()
+    })
+
+    it('triggers key rotation when participant leaves and local user is lowest remaining ID', async () => {
+      await setupActiveCall()
+      vi.mocked(useAuthStore.getState).mockReturnValue({ user: { id: 'aaa-local' } } as ReturnType<typeof useAuthStore.getState>)
+
+      // Add two participants
+      emitWsEvent('VOICE_STATE_UPDATE', {
+        user_id: 'bbb-remote',
+        channel_id: 'channel-1',
+        self_mute: false,
+        self_deaf: false,
+      })
+      emitWsEvent('VOICE_STATE_UPDATE', {
+        user_id: 'ccc-remote',
+        channel_id: 'channel-1',
+        self_mute: false,
+        self_deaf: false,
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+      vi.mocked(generateMediaKey as Mock).mockClear()
+
+      // One participant leaves
+      emitWsEvent('VOICE_STATE_UPDATE', {
+        user_id: 'ccc-remote',
+        channel_id: null,
+        self_mute: false,
+        self_deaf: false,
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+
+      // Should rotate since local user (aaa-local) is the lowest among remaining
+      expect(generateMediaKey).toHaveBeenCalled()
+    })
   })
 
   describe('CALL_STARTED event', () => {
@@ -1022,6 +1111,59 @@ describe('callStore', () => {
       expect(state.activeCall).toBeNull()
       expect(state.localStream).toBeNull()
       expect(state.callConfig).toBeNull()
+    })
+  })
+
+  describe('MEDIA_KEY event', () => {
+    async function setupActiveCall(): Promise<void> {
+      const joinPromise = useCallStore.getState().joinCall('channel-1')
+      emitWsEvent('CALL_CONFIG', mockCallConfigEvent)
+      await joinPromise
+    }
+
+    it('decrypts media key via DR and imports into keyRing', async () => {
+      await setupActiveCall()
+      vi.mocked(cryptoService.decryptMediaKey).mockClear()
+      vi.mocked(importMediaKey as Mock).mockClear()
+
+      const keyRing = webRTCManager.getMediaKeyRing()!
+      expect(keyRing.currentKey).not.toBeNull() // set during joinCall
+
+      emitWsEvent('MEDIA_KEY', {
+        room_id: 'room-123',
+        sender_id: 'user-2',
+        sender_device_id: 'device-2',
+        ciphertext: [1, 2, 3],
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+
+      // Should have called decryptMediaKey with DR params
+      expect(cryptoService.decryptMediaKey).toHaveBeenCalledWith({
+        senderId: 'user-2',
+        senderDeviceId: 'device-2',
+        ciphertext: [1, 2, 3],
+      })
+
+      // Should have imported the decrypted key
+      expect(importMediaKey).toHaveBeenCalled()
+    })
+
+    it('does not import key when decryption fails', async () => {
+      await setupActiveCall()
+      vi.mocked(cryptoService.decryptMediaKey).mockResolvedValueOnce({ error: 'DECRYPT_FAILED' })
+      vi.mocked(importMediaKey as Mock).mockClear()
+
+      emitWsEvent('MEDIA_KEY', {
+        room_id: 'room-123',
+        sender_id: 'user-2',
+        sender_device_id: 'device-2',
+        ciphertext: [1, 2, 3],
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(importMediaKey).not.toHaveBeenCalled()
     })
   })
 

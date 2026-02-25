@@ -943,6 +943,84 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         break
       }
 
+      case 'crypto:distributeMediaKey': {
+        // Encrypt a media key for distribution to each recipient's devices via Double Ratchet
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const roomId = msg.data?.roomId as string
+        const recipientIds = msg.data?.recipientIds as string[]
+        const key = msg.data?.key as number[]
+        const epoch = msg.data?.epoch as number
+
+        const payload = JSON.stringify({ type: 'media_key', room_id: roomId, key, epoch })
+        const plaintextBytes = new TextEncoder().encode(payload)
+
+        const recipients: Array<{ user_id: string; device_id: string; ciphertext: number[] }> = []
+
+        for (const userId of recipientIds) {
+          // Find all devices for this user by scanning sessionIndex
+          const deviceIds: string[] = []
+          for (const entry of sessionIndex) {
+            if (entry.startsWith(userId + ':')) {
+              deviceIds.push(entry.slice(userId.length + 1))
+            }
+          }
+
+          for (const deviceId of deviceIds) {
+            await withSessionLock(userId, deviceId, async () => {
+              const session = keyStore!.getSession(userId, deviceId)
+              if (!session) return
+
+              const { session: updatedSession, message: ratchetMsg } = ratchetEncrypt(session, plaintextBytes)
+              keyStore!.storeSession(userId, deviceId, updatedSession)
+
+              recipients.push({
+                user_id: userId,
+                device_id: deviceId,
+                ciphertext: Array.from(serializeMessage(ratchetMsg)),
+              })
+            })
+          }
+        }
+
+        memzero(plaintextBytes)
+        result = { distributed: true, recipients }
+        break
+      }
+
+      case 'crypto:decryptMediaKey': {
+        // Decrypt an incoming media key distributed via Double Ratchet
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const senderId = msg.data?.senderId as string
+        const senderDeviceId = msg.data?.senderDeviceId as string
+        const ciphertextBytes = new Uint8Array(msg.data?.ciphertext as ArrayLike<number>)
+
+        await withSessionLock(senderId, senderDeviceId, async () => {
+          const session = keyStore!.getSession(senderId, senderDeviceId)
+          if (!session) {
+            result = { error: 'NO_SESSION' }
+            return
+          }
+
+          const ratchetMsg = deserializeMessage(ciphertextBytes)
+          try {
+            const { session: updatedSession, plaintext } = ratchetDecrypt(session, ratchetMsg)
+            keyStore!.storeSession(senderId, senderDeviceId, updatedSession)
+
+            const parsed = JSON.parse(new TextDecoder().decode(plaintext))
+            memzero(plaintext)
+
+            result = {
+              key: parsed.key as number[],
+              epoch: parsed.epoch as number,
+              roomId: parsed.room_id as string,
+            }
+          } catch {
+            result = { error: 'DECRYPT_FAILED' }
+          }
+        })
+        break
+      }
+
       case 'crypto:createSignedDeviceList': {
         if (!keyStore) throw new Error('KeyStore not initialized')
         const dlDeviceId = msg.data?.deviceId as string

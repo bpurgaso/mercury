@@ -165,6 +165,18 @@ export interface GenerateOtpResult {
   keys: Array<{ keyId: number; publicKey: number[] }>
 }
 
+export interface DistributeMediaKeyResult {
+  distributed: boolean
+  recipients: Array<{ user_id: string; device_id: string; ciphertext: number[] }>
+}
+
+export interface DecryptMediaKeyResult {
+  key?: number[]
+  epoch?: number
+  roomId?: string
+  error?: 'NO_SESSION' | 'DECRYPT_FAILED'
+}
+
 export const cryptoService = {
   verifyDeviceList(
     userId: string,
@@ -316,8 +328,16 @@ export const cryptoService = {
     recipientIds: string[]
     key: number[]
     epoch: number
-  }): Promise<{ distributed: boolean }> {
-    return postCryptoOp('crypto:distributeMediaKey', params)
+  }): Promise<DistributeMediaKeyResult> {
+    return postCryptoOp<DistributeMediaKeyResult>('crypto:distributeMediaKey', params)
+  },
+
+  decryptMediaKey(params: {
+    senderId: string
+    senderDeviceId: string
+    ciphertext: number[]
+  }): Promise<DecryptMediaKeyResult> {
+    return postCryptoOp<DecryptMediaKeyResult>('crypto:decryptMediaKey', params)
   },
 
   markSenderKeyStale(channelId: string): Promise<{ marked: boolean }> {
