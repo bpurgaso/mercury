@@ -157,6 +157,56 @@ export interface ServerErrorEvent {
   message: string
 }
 
+export interface VoiceStateUpdateEvent {
+  user_id: string
+  channel_id: string | null
+  self_mute: boolean
+  self_deaf: boolean
+}
+
+export interface CallStartedEvent {
+  room_id: string
+  channel_id: string
+  initiator_id: string
+}
+
+export interface CallEndedEvent {
+  room_id: string
+}
+
+export interface WebRTCSignalEvent {
+  from_user: string
+  signal: {
+    type: 'offer' | 'answer' | 'ice_candidate'
+    sdp?: string
+    candidate?: string
+  }
+}
+
+export interface CallConfigEvent {
+  room_id: string
+  turn_urls: string[]
+  stun_urls: string[]
+  username: string
+  credential: string
+  ttl: number
+  audio: {
+    max_bitrate_kbps: number
+    preferred_bitrate_kbps: number
+  }
+  video: {
+    max_bitrate_kbps: number
+    max_resolution: string
+    max_framerate: number
+    simulcast_enabled?: boolean
+    simulcast_layers?: {
+      rid: string
+      max_bitrate_kbps: number
+      scale_down: number
+    }[]
+  }
+}
+
 // Typed event map for the WebSocket manager
 export interface WSEventMap {
   READY: ReadyEvent
@@ -164,6 +214,11 @@ export interface WSEventMap {
   MESSAGE_CREATE: MessageCreateEvent
   TYPING_START: TypingStartEvent
   PRESENCE_UPDATE: PresenceUpdateEvent
+  VOICE_STATE_UPDATE: VoiceStateUpdateEvent
+  CALL_STARTED: CallStartedEvent
+  CALL_ENDED: CallEndedEvent
+  WEBRTC_SIGNAL: WebRTCSignalEvent
+  CALL_CONFIG: CallConfigEvent
   CHANNEL_CREATE: ChannelCreateEvent
   CHANNEL_UPDATE: ChannelUpdateEvent
   CHANNEL_DELETE: ChannelDeleteEvent
