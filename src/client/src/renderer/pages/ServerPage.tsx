@@ -1,6 +1,7 @@
-import React, { useEffect, useCallback, useState } from 'react'
+import React, { useEffect, useCallback, useState, useMemo } from 'react'
 import { useServerStore } from '../stores/serverStore'
 import { useMessageStore, setIdentityWarningCallback } from '../stores/messageStore'
+import { useCallStore } from '../stores/callStore'
 import type { Channel } from '../types/models'
 import { useDmChannelStore } from '../stores/dmChannelStore'
 import { Sidebar } from '../components/layout/Sidebar'
@@ -10,6 +11,8 @@ import { EncryptionBadge } from '../components/dm/EncryptionBadge'
 import { IdentityWarningDialog } from '../components/dm/IdentityWarningDialog'
 import { MessageList } from '../components/chat/MessageList'
 import { MessageInput } from '../components/chat/MessageInput'
+import { VideoGrid } from '../components/voice/VideoGrid'
+import { DiagnosticPanel } from '../components/voice/DiagnosticPanel'
 import { wsManager } from '../services/websocket'
 
 export function ServerPage(): React.ReactElement {
@@ -80,6 +83,20 @@ export function ServerPage(): React.ReactElement {
     [activeId, sendMessage]
   )
 
+  // Check if video grid should be shown
+  const activeCall = useCallStore((s) => s.activeCall)
+  const isCameraOn = useCallStore((s) => s.isCameraOn)
+  const participants = useCallStore((s) => s.participants)
+  const diagnosticState = useCallStore((s) => s.diagnosticState)
+
+  const hasAnyVideo = useMemo(() => {
+    if (isCameraOn) return true
+    for (const p of participants.values()) {
+      if (p.hasVideo) return true
+    }
+    return false
+  }, [isCameraOn, participants])
+
   const headerName = isDmView
     ? activeDmChannel?.recipient.display_name || activeDmChannel?.recipient.username
     : activeChannel?.name
@@ -124,6 +141,12 @@ export function ServerPage(): React.ReactElement {
             </span>
           )}
         </div>
+
+        {/* Diagnostic panel (shown on WebRTC connection failure) */}
+        {diagnosticState?.failed && <DiagnosticPanel />}
+
+        {/* Video grid (shown when any participant has video) */}
+        {activeCall && hasAnyVideo && <VideoGrid />}
 
         {/* Message area */}
         {(isDmView ? activeDmChannel : activeChannel) ? (

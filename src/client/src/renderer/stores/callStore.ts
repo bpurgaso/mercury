@@ -14,6 +14,8 @@ import { MediaKeyRing } from '../services/media-key-ring'
 import { generateMediaKey, exportMediaKey, importMediaKey } from '../services/frame-crypto'
 import { cryptoService } from '../services/crypto'
 import { useAuthStore } from './authStore'
+import { activeSpeakerDetector } from '../services/active-speaker'
+import { audioCuePlayer } from '../services/audio-cues'
 
 interface DiagnosticState {
   failed: boolean
@@ -34,6 +36,11 @@ interface CallState {
   error: string | null
   // Track which channels have active calls (channelId → roomId)
   activeChannelCalls: Map<string, string>
+  // Track who is speaking
+  speakingUsers: Map<string, boolean>
+  activeSpeakerId: string | null
+  // Track voice channel participants globally (channelId → Set<userId>)
+  voiceChannelParticipants: Map<string, Set<string>>
 
   joinCall(channelId: string): Promise<void>
   leaveCall(): Promise<void>
@@ -46,6 +53,9 @@ export const useCallStore = create<CallState>((set, get) => {
   // Internal state: was the user manually muted before deafening?
   let wasMutedBeforeDeafen = false
 
+  // beforeunload handler reference for cleanup
+  let beforeUnloadHandler: (() => void) | null = null
+
   // Send a webrtc_signal through the WebSocket
   function sendSignal(roomId: string, signal: { type: string; sdp?: string; candidate?: string }): void {
     wsManager.send('webrtc_signal', { room_id: roomId, signal })
@@ -55,10 +65,19 @@ export const useCallStore = create<CallState>((set, get) => {
   function cleanUpCall(): void {
     const { activeCall } = get()
 
+    // Stop active speaker detection
+    activeSpeakerDetector.stop()
+
     webRTCManager.leaveCall()
 
     if (activeCall) {
       wsManager.send('voice_state_update', { channel_id: null })
+    }
+
+    // Remove beforeunload handler
+    if (beforeUnloadHandler) {
+      window.removeEventListener('beforeunload', beforeUnloadHandler)
+      beforeUnloadHandler = null
     }
 
     wasMutedBeforeDeafen = false
@@ -75,6 +94,8 @@ export const useCallStore = create<CallState>((set, get) => {
       connectionState: null,
       diagnosticState: null,
       error: null,
+      speakingUsers: new Map(),
+      activeSpeakerId: null,
     })
   }
 
@@ -124,11 +145,44 @@ export const useCallStore = create<CallState>((set, get) => {
   // Subscribe to WebSocket events for voice/call
   function setupWsListeners(): void {
     wsManager.on('VOICE_STATE_UPDATE', (data: VoiceStateUpdateEvent) => {
+      const localUserId = useAuthStore.getState().user?.id
+      // Skip events about ourselves
+      if (data.user_id === localUserId) return
+
+      // Update global voice channel participants tracking
+      set((state) => {
+        const voiceChannelParticipants = new Map(state.voiceChannelParticipants)
+
+        // Remove user from all channels first
+        for (const [chId, users] of voiceChannelParticipants) {
+          const newSet = new Set(users)
+          if (newSet.delete(data.user_id)) {
+            if (newSet.size === 0) {
+              voiceChannelParticipants.delete(chId)
+            } else {
+              voiceChannelParticipants.set(chId, newSet)
+            }
+          }
+        }
+
+        // Add to the new channel if not null
+        if (data.channel_id !== null) {
+          const existing = voiceChannelParticipants.get(data.channel_id) ?? new Set()
+          const updated = new Set(existing)
+          updated.add(data.user_id)
+          voiceChannelParticipants.set(data.channel_id, updated)
+        }
+
+        return { voiceChannelParticipants }
+      })
+
       const { activeCall } = get()
       if (!activeCall) return
 
       if (data.channel_id === null || data.channel_id !== activeCall.channelId) {
         // Participant left this call
+        const wasInCall = get().participants.has(data.user_id)
+
         set((state) => {
           const participants = new Map(state.participants)
           participants.delete(data.user_id)
@@ -137,8 +191,12 @@ export const useCallStore = create<CallState>((set, get) => {
           return { participants, remoteStreams }
         })
 
+        // Play leave sound
+        if (wasInCall) {
+          audioCuePlayer.playLeave()
+        }
+
         // Rotate key so the leaver cannot decrypt future frames
-        const localUserId = useAuthStore.getState().user?.id
         if (localUserId) {
           const remainingIds = Array.from(get().participants.keys())
           const allIds = [...remainingIds, localUserId]
@@ -164,9 +222,13 @@ export const useCallStore = create<CallState>((set, get) => {
           return { participants }
         })
 
+        // Play join sound for new participants
+        if (isNewParticipant) {
+          audioCuePlayer.playJoin()
+        }
+
         // When a new participant joins, rotate key so they get a fresh key
         if (isNewParticipant) {
-          const localUserId = useAuthStore.getState().user?.id
           if (localUserId) {
             const participantIds = Array.from(get().participants.keys())
             const allIds = [...participantIds, localUserId]
@@ -204,8 +266,15 @@ export const useCallStore = create<CallState>((set, get) => {
       })
 
       if (activeCall && activeCall.roomId === data.room_id) {
+        activeSpeakerDetector.stop()
         webRTCManager.leaveCall()
         wasMutedBeforeDeafen = false
+
+        if (beforeUnloadHandler) {
+          window.removeEventListener('beforeunload', beforeUnloadHandler)
+          beforeUnloadHandler = null
+        }
+
         set({
           activeCall: null,
           localStream: null,
@@ -218,6 +287,8 @@ export const useCallStore = create<CallState>((set, get) => {
           connectionState: null,
           diagnosticState: null,
           error: null,
+          speakingUsers: new Map(),
+          activeSpeakerId: null,
         })
       }
     })
@@ -259,8 +330,15 @@ export const useCallStore = create<CallState>((set, get) => {
       if (state === 'DISCONNECTED') {
         const { activeCall } = get()
         if (activeCall) {
+          activeSpeakerDetector.stop()
           webRTCManager.leaveCall()
           wasMutedBeforeDeafen = false
+
+          if (beforeUnloadHandler) {
+            window.removeEventListener('beforeunload', beforeUnloadHandler)
+            beforeUnloadHandler = null
+          }
+
           set({
             activeCall: null,
             localStream: null,
@@ -273,6 +351,8 @@ export const useCallStore = create<CallState>((set, get) => {
             connectionState: null,
             diagnosticState: null,
             error: 'WebSocket disconnected',
+            speakingUsers: new Map(),
+            activeSpeakerId: null,
           })
         }
       }
@@ -345,9 +425,20 @@ export const useCallStore = create<CallState>((set, get) => {
     })
   }
 
+  // Set up active speaker detection listener
+  function setupSpeakerDetection(): void {
+    activeSpeakerDetector.onSpeakingChange((speakers, loudestId) => {
+      set({
+        speakingUsers: speakers,
+        activeSpeakerId: loudestId,
+      })
+    })
+  }
+
   // Initialize listeners
   setupWsListeners()
   setupRemoteTrackListeners()
+  setupSpeakerDetection()
 
   return {
     activeCall: null,
@@ -362,6 +453,9 @@ export const useCallStore = create<CallState>((set, get) => {
     diagnosticState: null,
     error: null,
     activeChannelCalls: new Map(),
+    speakingUsers: new Map(),
+    activeSpeakerId: null,
+    voiceChannelParticipants: new Map(),
 
     async joinCall(channelId: string) {
       const { activeCall } = get()
@@ -469,10 +563,25 @@ export const useCallStore = create<CallState>((set, get) => {
 
       // Step 6: Update store state
       set({
-        activeCall: { roomId, channelId },
+        activeCall: { roomId, channelId, joinedAt: Date.now() },
         localStream,
         connectionState: pc.connectionState,
       })
+
+      // Step 7: Start active speaker detection
+      const localUserId = useAuthStore.getState().user?.id
+      if (localUserId) {
+        activeSpeakerDetector.start(localUserId, () => ({
+          localStream: get().localStream,
+          remoteStreams: get().remoteStreams,
+        }))
+      }
+
+      // Step 8: Register beforeunload handler
+      beforeUnloadHandler = () => {
+        cleanUpCall()
+      }
+      window.addEventListener('beforeunload', beforeUnloadHandler)
     },
 
     async leaveCall() {

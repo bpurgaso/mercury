@@ -69,6 +69,35 @@ vi.mock('../../../src/renderer/stores/authStore', () => ({
   },
 }))
 
+// --- Mock active speaker detector (to avoid real AudioContext in tests) ---
+
+vi.mock('../../../src/renderer/services/active-speaker', () => ({
+  activeSpeakerDetector: {
+    start: vi.fn(),
+    stop: vi.fn(),
+    onSpeakingChange: vi.fn(() => () => {}),
+  },
+}))
+
+// --- Mock audio cue player (to avoid real AudioContext in tests) ---
+
+vi.mock('../../../src/renderer/services/audio-cues', () => ({
+  audioCuePlayer: {
+    playJoin: vi.fn(),
+    playLeave: vi.fn(),
+    dispose: vi.fn(),
+  },
+}))
+
+// --- Stub global `window` for Node test environment ---
+
+if (typeof window === 'undefined') {
+  (globalThis as Record<string, unknown>).window = {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }
+}
+
 // --- Mock RTCPeerConnection and related WebRTC APIs ---
 
 class MockRTCSessionDescription {
@@ -369,7 +398,8 @@ describe('callStore', () => {
 
       // Verify store state
       const state = useCallStore.getState()
-      expect(state.activeCall).toEqual({ roomId: 'room-123', channelId: 'channel-1' })
+      expect(state.activeCall).toMatchObject({ roomId: 'room-123', channelId: 'channel-1' })
+      expect(state.activeCall?.joinedAt).toBeGreaterThan(0)
       expect(state.localStream).not.toBeNull()
       expect(state.error).toBeNull()
     })

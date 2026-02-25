@@ -1,6 +1,7 @@
 export interface ActiveCall {
   roomId: string
   channelId: string
+  joinedAt: number // Date.now() at join time
 }
 
 export interface ParticipantState {

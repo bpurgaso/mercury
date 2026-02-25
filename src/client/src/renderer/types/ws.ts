@@ -43,6 +43,7 @@ export type ClientOp =
   | 'presence_update'
   | 'sender_key_distribute'
   | 'media_key_distribute'
+  | 'ice_diagnostic'
 
 // Server → Client message envelope
 export interface ServerMessage {
@@ -214,6 +215,14 @@ export interface CallConfigEvent {
       scale_down: number
     }[]
   }
+}
+
+export interface IceDiagnosticPayload {
+  call_id: string
+  stun: boolean
+  turn_udp: boolean
+  turn_tcp: boolean
+  time_to_connected_ms: number | null
 }
 
 // Typed event map for the WebSocket manager
