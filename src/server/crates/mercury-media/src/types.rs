@@ -126,6 +126,8 @@ pub struct VideoLimits {
     pub max_bitrate_kbps: u32,
     pub max_resolution: String,
     pub max_framerate: u32,
+    pub simulcast_enabled: bool,
+    pub simulcast_layers: Vec<mercury_core::config::SimulcastLayer>,
 }
 
 #[derive(Debug, Clone)]

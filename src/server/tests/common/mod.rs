@@ -94,11 +94,7 @@ impl TestServer {
                     max_bitrate_kbps: 128,
                     preferred_bitrate_kbps: 64,
                 },
-                video: VideoConfig {
-                    max_bitrate_kbps: 2500,
-                    max_resolution: "1280x720".to_string(),
-                    max_framerate: 30,
-                },
+                video: VideoConfig::default(),
                 bandwidth: BandwidthConfig {
                     total_mbps: 100,
                     per_user_kbps: 4000,
@@ -153,9 +149,10 @@ impl TestServer {
 // ── Setup (truncate tables + flush Redis) ───────────────────
 
 pub async fn setup(server: &TestServer) {
-    // Truncate all tables in reverse dependency order
-    sqlx::query(
-        "TRUNCATE TABLE
+    // Truncate all tables in reverse dependency order.
+    // Retry on deadlock — background SFU event handlers may hold row locks
+    // that conflict with TRUNCATE's AccessExclusiveLock.
+    let truncate_sql = "TRUNCATE TABLE
             abuse_signals,
             mod_audit_log,
             reports,
@@ -176,11 +173,19 @@ pub async fn setup(server: &TestServer) {
             channels,
             servers,
             users
-        CASCADE",
-    )
-    .execute(&server.db)
-    .await
-    .expect("failed to truncate tables");
+        CASCADE";
+    for attempt in 0..5 {
+        match sqlx::query(truncate_sql).execute(&server.db).await {
+            Ok(_) => break,
+            Err(e) if attempt < 4 => {
+                // Deadlock or lock timeout — wait and retry
+                tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt + 1) as u64))
+                    .await;
+                eprintln!("truncate retry {}: {e}", attempt + 1);
+            }
+            Err(e) => panic!("failed to truncate tables after retries: {e}"),
+        }
+    }
 
     // Flush all Redis keys
     let _: () = server

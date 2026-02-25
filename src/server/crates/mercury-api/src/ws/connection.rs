@@ -1206,6 +1206,7 @@ async fn handle_sender_key_distribute(
 // ── Voice / Call Handlers ───────────────────────────────────
 
 /// Handle voice_state_update: join/leave voice channel, update mute/deaf.
+/// Supports both server voice channels and DM channels.
 async fn handle_voice_state_update(
     state: &AppState,
     ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
@@ -1225,34 +1226,53 @@ async fn handle_voice_state_update(
             };
             let channel_id = ChannelId(channel_uuid);
 
-            // Look up the channel
-            let channel = match channels::get_channel_by_id(&state.db, channel_id).await {
-                Ok(Some(c)) => c,
+            // Try server channel first, then DM channel
+            let server_id = match channels::get_channel_by_id(&state.db, channel_id).await {
+                Ok(Some(channel)) => {
+                    // Server channel — must be voice or video
+                    if channel.channel_type != "voice" && channel.channel_type != "video" {
+                        send_error_json(ws_sink, "BAD_REQUEST", "channel is not a voice/video channel").await;
+                        return;
+                    }
+                    // Check server membership
+                    let is_member = servers::is_member(&state.db, user_id, channel.server_id)
+                        .await
+                        .unwrap_or(false);
+                    if !is_member {
+                        send_error_json(ws_sink, "FORBIDDEN", "not a member of this server").await;
+                        return;
+                    }
+                    Some(channel.server_id)
+                }
                 _ => {
-                    send_error_json(ws_sink, "NOT_FOUND", "channel not found").await;
-                    return;
+                    // Try as DM channel
+                    let dm_channel_id = DmChannelId(channel_uuid);
+                    match mercury_db::dm_channels::get_dm_channel_by_id(&state.db, dm_channel_id).await {
+                        Ok(Some(_)) => {
+                            // DM channel — check DM membership
+                            let is_dm_member = mercury_db::dm_channels::is_dm_member(
+                                &state.db, user_id, dm_channel_id,
+                            )
+                            .await
+                            .unwrap_or(false);
+                            if !is_dm_member {
+                                send_error_json(ws_sink, "FORBIDDEN", "not a member of this DM channel").await;
+                                return;
+                            }
+                            None // DM calls have no server_id
+                        }
+                        _ => {
+                            send_error_json(ws_sink, "NOT_FOUND", "channel not found").await;
+                            return;
+                        }
+                    }
                 }
             };
-
-            // Must be a voice or video channel
-            if channel.channel_type != "voice" && channel.channel_type != "video" {
-                send_error_json(ws_sink, "BAD_REQUEST", "channel is not a voice/video channel").await;
-                return;
-            }
-
-            // Check server membership
-            let is_member = servers::is_member(&state.db, user_id, channel.server_id)
-                .await
-                .unwrap_or(false);
-            if !is_member {
-                send_error_json(ws_sink, "FORBIDDEN", "not a member of this server").await;
-                return;
-            }
 
             // Join via SFU
             match state
                 .sfu_handle
-                .join_room(user_id, device_id.to_string(), channel_id, Some(channel.server_id))
+                .join_room(user_id, device_id.to_string(), channel_id, server_id)
                 .await
             {
                 Ok(join_result) => {
@@ -1286,6 +1306,8 @@ async fn handle_voice_state_update(
                             max_bitrate_kbps: state.media_config.video.max_bitrate_kbps,
                             max_resolution: state.media_config.video.max_resolution.clone(),
                             max_framerate: state.media_config.video.max_framerate,
+                            simulcast_enabled: state.media_config.video.simulcast_enabled,
+                            simulcast_layers: state.media_config.video.simulcast_layers.clone(),
                         },
                     };
 
@@ -1442,6 +1464,11 @@ async fn cleanup_connection(
 ) {
     // Remove the connection handle (but keep session state for resume)
     state.ws_manager.remove_connection(session_id);
+
+    // Leave all voice rooms on disconnect
+    if let Err(e) = state.sfu_handle.leave_all(user_id).await {
+        tracing::warn!("failed to leave_all on disconnect: {e}");
+    }
 
     // Start offline debounce (only broadcasts offline after 15s if no reconnect)
     if let Err(e) =

@@ -5,7 +5,7 @@ use axum::{
 };
 use mercury_core::{
     error::MercuryError,
-    ids::ChannelId,
+    ids::{ChannelId, DmChannelId},
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,7 @@ pub struct ParticipantResponse {
 // ── Handlers ───────────────────────────────────────────────
 
 /// POST /calls — initiate a call (creates room if not exists, joins user).
+/// Supports both server voice channels and DM channels.
 pub async fn create_call(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -50,36 +51,59 @@ pub async fn create_call(
         .map_err(|_| MercuryError::BadRequest("invalid channel_id".into()))?;
     let channel_id = ChannelId(channel_uuid);
 
-    // Look up channel
-    let channel = mercury_db::channels::get_channel_by_id(&state.db, channel_id)
-        .await?
-        .ok_or_else(|| MercuryError::NotFound("channel not found".into()))?;
+    // Try server channel first, then fall back to DM channel
+    let server_id = if let Some(channel) =
+        mercury_db::channels::get_channel_by_id(&state.db, channel_id).await?
+    {
+        // Server channel — must be voice or video type
+        if channel.channel_type != "voice" && channel.channel_type != "video" {
+            return Err(MercuryError::BadRequest(
+                "channel is not a voice/video channel".into(),
+            ));
+        }
 
-    // Must be voice or video
-    if channel.channel_type != "voice" && channel.channel_type != "video" {
-        return Err(MercuryError::BadRequest(
-            "channel is not a voice/video channel".into(),
-        ));
-    }
+        // Check server membership
+        let is_member =
+            mercury_db::servers::is_member(&state.db, auth_user.user_id, channel.server_id)
+                .await
+                .map_err(|e| MercuryError::Database(e))?;
+        if !is_member {
+            return Err(MercuryError::Forbidden(
+                "not a member of this server".into(),
+            ));
+        }
 
-    // Check server membership
-    let is_member = mercury_db::servers::is_member(&state.db, auth_user.user_id, channel.server_id)
-        .await
-        .map_err(|e| MercuryError::Database(e))?;
-    if !is_member {
-        return Err(MercuryError::Forbidden(
-            "not a member of this server".into(),
-        ));
-    }
+        Some(channel.server_id)
+    } else {
+        // Try as DM channel
+        let dm_channel_id = DmChannelId(channel_uuid);
+        let _dm_channel = mercury_db::dm_channels::get_dm_channel_by_id(&state.db, dm_channel_id)
+            .await
+            .map_err(|e| MercuryError::Database(e))?
+            .ok_or_else(|| MercuryError::NotFound("channel not found".into()))?;
+
+        // Check DM membership
+        let is_dm_member =
+            mercury_db::dm_channels::is_dm_member(&state.db, auth_user.user_id, dm_channel_id)
+                .await
+                .map_err(|e| MercuryError::Database(e))?;
+        if !is_dm_member {
+            return Err(MercuryError::Forbidden(
+                "not a member of this DM channel".into(),
+            ));
+        }
+
+        None // DM calls have no server_id
+    };
 
     // Join via SFU (creates room if needed)
     let join_result = state
         .sfu_handle
         .join_room(
             auth_user.user_id,
-            "rest-api".to_string(), // device_id not available from REST
+            "rest-api".to_string(),
             channel_id,
-            Some(channel.server_id),
+            server_id,
         )
         .await
         .map_err(|e| match e {
@@ -119,6 +143,8 @@ pub async fn create_call(
             max_bitrate_kbps: state.media_config.video.max_bitrate_kbps,
             max_resolution: state.media_config.video.max_resolution.clone(),
             max_framerate: state.media_config.video.max_framerate,
+            simulcast_enabled: state.media_config.video.simulcast_enabled,
+            simulcast_layers: state.media_config.video.simulcast_layers.clone(),
         },
     };
 
@@ -156,22 +182,29 @@ pub async fn get_call(
         .await
         .ok_or_else(|| MercuryError::NotFound("call not found".into()))?;
 
-    // Verify the caller has access — check server membership via channel
+    // Verify the caller has access — check server or DM membership via channel
     let channel_uuid = uuid::Uuid::parse_str(&room_info.channel_id)
         .map_err(|_| MercuryError::Internal(anyhow::anyhow!("invalid channel_id in room")))?;
     let channel_id = ChannelId(channel_uuid);
 
-    let channel = mercury_db::channels::get_channel_by_id(&state.db, channel_id)
-        .await?
-        .ok_or_else(|| MercuryError::NotFound("channel not found".into()))?;
-
-    let is_member =
+    let has_access = if let Some(channel) =
+        mercury_db::channels::get_channel_by_id(&state.db, channel_id).await?
+    {
+        // Server channel — check server membership
         mercury_db::servers::is_member(&state.db, auth_user.user_id, channel.server_id)
             .await
-            .map_err(|e| MercuryError::Database(e))?;
-    if !is_member {
+            .map_err(|e| MercuryError::Database(e))?
+    } else {
+        // Try as DM channel
+        let dm_channel_id = DmChannelId(channel_uuid);
+        mercury_db::dm_channels::is_dm_member(&state.db, auth_user.user_id, dm_channel_id)
+            .await
+            .map_err(|e| MercuryError::Database(e))?
+    };
+
+    if !has_access {
         return Err(MercuryError::Forbidden(
-            "not a member of this server".into(),
+            "not a member of this channel".into(),
         ));
     }
 

@@ -251,6 +251,10 @@ pub struct VideoConfig {
     pub max_resolution: String,
     #[serde(default = "default_video_max_framerate")]
     pub max_framerate: u32,
+    #[serde(default = "default_simulcast_enabled")]
+    pub simulcast_enabled: bool,
+    #[serde(default = "default_simulcast_layers")]
+    pub simulcast_layers: Vec<SimulcastLayer>,
 }
 
 impl Default for VideoConfig {
@@ -259,8 +263,17 @@ impl Default for VideoConfig {
             max_bitrate_kbps: default_video_max_bitrate(),
             max_resolution: default_video_max_resolution(),
             max_framerate: default_video_max_framerate(),
+            simulcast_enabled: default_simulcast_enabled(),
+            simulcast_layers: default_simulcast_layers(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct SimulcastLayer {
+    pub rid: String,
+    pub max_bitrate_kbps: u32,
+    pub scale_resolution_down_by: f32,
 }
 
 fn default_video_max_bitrate() -> u32 {
@@ -271,6 +284,28 @@ fn default_video_max_resolution() -> String {
 }
 fn default_video_max_framerate() -> u32 {
     30
+}
+fn default_simulcast_enabled() -> bool {
+    true
+}
+fn default_simulcast_layers() -> Vec<SimulcastLayer> {
+    vec![
+        SimulcastLayer {
+            rid: "h".to_string(),
+            max_bitrate_kbps: 2500,
+            scale_resolution_down_by: 1.0,
+        },
+        SimulcastLayer {
+            rid: "m".to_string(),
+            max_bitrate_kbps: 500,
+            scale_resolution_down_by: 2.0,
+        },
+        SimulcastLayer {
+            rid: "l".to_string(),
+            max_bitrate_kbps: 150,
+            scale_resolution_down_by: 4.0,
+        },
+    ]
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -110,6 +110,29 @@ async fn drain_events(ws: &mut common::TestWsClient, event_type: &str) -> Vec<Va
     ws.collect_events(event_type, Duration::from_millis(500)).await
 }
 
+/// Minimal valid SDP offer that str0m can parse for testing.
+fn test_sdp_offer() -> String {
+    [
+        "v=0",
+        "o=- 0 0 IN IP4 127.0.0.1",
+        "s=-",
+        "t=0 0",
+        "a=group:BUNDLE 0",
+        "a=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00",
+        "a=setup:actpass",
+        "a=ice-lite",
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+        "c=IN IP4 0.0.0.0",
+        "a=mid:0",
+        "a=sendrecv",
+        "a=rtpmap:111 opus/48000/2",
+        "a=ice-ufrag:testufrag",
+        "a=ice-pwd:testpassword1234567890123456",
+    ]
+    .join("\r\n")
+        + "\r\n"
+}
+
 // ────────────────────────────────────────────────────────────
 //  Test 1: voice_state_update join → VOICE_STATE_UPDATE broadcast + CALL_STARTED
 // ────────────────────────────────────────────────────────────
@@ -147,19 +170,26 @@ fn test_voice_state_update_join() {
         }))
         .await;
 
-        // Alice should receive CALL_CONFIG
-        let config_msg = ws_a
-            .receive_json_timeout(Duration::from_secs(3))
-            .await
-            .expect("alice should receive CALL_CONFIG");
-        assert_eq!(config_msg["t"], "CALL_CONFIG");
-        assert!(!config_msg["d"]["room_id"].as_str().unwrap().is_empty());
+        // Alice should receive CALL_CONFIG (skip unrelated events like PRESENCE_UPDATE)
+        let mut got_call_config = false;
+        for _ in 0..5 {
+            if let Some(msg) = ws_a.receive_json_timeout(Duration::from_secs(3)).await {
+                if msg["t"] == "CALL_CONFIG" {
+                    assert!(!msg["d"]["room_id"].as_str().unwrap().is_empty());
+                    got_call_config = true;
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        assert!(got_call_config, "alice should receive CALL_CONFIG");
 
         // Bob should receive CALL_STARTED and VOICE_STATE_UPDATE
         sleep(Duration::from_millis(300)).await;
         let mut got_call_started = false;
         let mut got_voice_state = false;
-        for _ in 0..5 {
+        for _ in 0..10 {
             if let Some(msg) = ws_b.receive_json_timeout(Duration::from_secs(2)).await {
                 match msg["t"].as_str() {
                     Some("CALL_STARTED") => {
@@ -265,7 +295,7 @@ fn test_voice_state_update_leave() {
 }
 
 // ────────────────────────────────────────────────────────────
-//  Test 3: webrtc_signal relay — SDP offer → SDP answer
+//  Test 3: webrtc_signal relay — SDP offer → str0m SDP answer
 // ────────────────────────────────────────────────────────────
 
 #[test]
@@ -299,26 +329,33 @@ fn test_webrtc_signal_sdp_relay() {
         sleep(Duration::from_millis(300)).await;
         let _ = drain_events(&mut ws_a, "").await;
 
-        // Send SDP offer
+        // Send a valid SDP offer that str0m can parse
         ws_a.send_json(&json!({
             "op": "webrtc_signal",
             "d": {
                 "room_id": room_id,
                 "signal": {
                     "type": "offer",
-                    "sdp": "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n"
+                    "sdp": test_sdp_offer()
                 }
             }
         })).await;
 
-        // Should receive WEBRTC_SIGNAL with answer
+        // Should receive WEBRTC_SIGNAL with a real str0m-generated SDP answer
         let answer_msg = ws_a
-            .receive_json_timeout(Duration::from_secs(2))
+            .receive_json_timeout(Duration::from_secs(3))
             .await
             .expect("should receive WEBRTC_SIGNAL with answer");
         assert_eq!(answer_msg["t"], "WEBRTC_SIGNAL");
         assert_eq!(answer_msg["d"]["signal"]["type"], "answer");
-        assert!(answer_msg["d"]["signal"]["sdp"].as_str().is_some());
+
+        // Validate the SDP answer is a proper WebRTC SDP (not a placeholder)
+        let answer_sdp = answer_msg["d"]["signal"]["sdp"].as_str().unwrap();
+        assert!(answer_sdp.contains("v=0"), "answer should contain SDP version");
+        assert!(answer_sdp.contains("m=audio"), "answer should contain audio media line");
+        assert!(answer_sdp.contains("a=ice-ufrag"), "answer should contain ICE credentials");
+        assert!(answer_sdp.contains("a=ice-pwd"), "answer should contain ICE password");
+        assert!(answer_sdp.contains("a=fingerprint"), "answer should contain DTLS fingerprint");
 
         ws_a.close().await;
     });
@@ -367,7 +404,8 @@ fn test_ice_candidate_relay() {
         let _ = drain_events(&mut ws_a, "").await;
         let _ = drain_events(&mut ws_b, "").await;
 
-        // Alice sends ICE candidate
+        // Alice sends ICE candidate — str0m will process it (no relay to other peers
+        // since ICE goes through the SFU, not peer-to-peer). The signal should not error.
         ws_a.send_json(&json!({
             "op": "webrtc_signal",
             "d": {
@@ -379,23 +417,10 @@ fn test_ice_candidate_relay() {
             }
         })).await;
 
-        // Bob should receive the relayed ICE candidate
-        let mut got_ice = false;
-        for _ in 0..5 {
-            if let Some(msg) = ws_b.receive_json_timeout(Duration::from_secs(2)).await {
-                if msg["t"] == "WEBRTC_SIGNAL" && msg["d"]["signal"]["type"] == "ice_candidate" {
-                    assert_eq!(
-                        msg["d"]["signal"]["candidate"],
-                        "candidate:1 1 UDP 2130706431 192.168.1.1 5000 typ host"
-                    );
-                    got_ice = true;
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-        assert!(got_ice, "bob should receive relayed ICE candidate");
+        // No error should be received (ICE candidates are processed by str0m, not relayed)
+        sleep(Duration::from_millis(300)).await;
+        let events = drain_events(&mut ws_a, "ERROR").await;
+        assert!(events.is_empty(), "should not receive errors for ICE candidate");
 
         ws_a.close().await;
         ws_b.close().await;
@@ -403,7 +428,7 @@ fn test_ice_candidate_relay() {
 }
 
 // ────────────────────────────────────────────────────────────
-//  Test 5: CALL_CONFIG includes TURN credentials
+//  Test 5: CALL_CONFIG includes TURN credentials and simulcast
 // ────────────────────────────────────────────────────────────
 
 #[test]
@@ -472,6 +497,14 @@ fn test_call_config_turn_credentials() {
         assert_eq!(d["video"]["max_resolution"], "1280x720");
         assert_eq!(d["video"]["max_framerate"], 30);
 
+        // Simulcast config
+        assert_eq!(d["video"]["simulcast_enabled"], true);
+        let layers = d["video"]["simulcast_layers"].as_array().unwrap();
+        assert_eq!(layers.len(), 3);
+        assert_eq!(layers[0]["rid"], "h");
+        assert_eq!(layers[1]["rid"], "m");
+        assert_eq!(layers[2]["rid"], "l");
+
         ws_a.close().await;
     });
 }
@@ -505,11 +538,12 @@ fn test_post_calls() {
         assert!(body["participants"].as_array().unwrap().len() >= 1);
         assert!(body["call_config"].is_object());
 
-        // Verify call_config has TURN credentials
+        // Verify call_config has TURN credentials and simulcast
         let cc = &body["call_config"];
         assert!(!cc["username"].as_str().unwrap().is_empty());
         assert!(!cc["credential"].as_str().unwrap().is_empty());
         assert_eq!(cc["ttl"], 86400);
+        assert_eq!(cc["video"]["simulcast_enabled"], true);
     });
 }
 
@@ -800,5 +834,160 @@ fn test_multiple_rooms() {
         let participants_2 = body["participants"].as_array().unwrap();
         assert_eq!(participants_2.len(), 1);
         assert_eq!(participants_2[0]["user_id"], user_b);
+    });
+}
+
+// ────────────────────────────────────────────────────────────
+//  Test 12: DM call — voice_state_update with DM channel
+// ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_dm_call() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        // Register two users
+        let (token_a, user_a) = register_user(srv, "alice", "alice@test.com").await;
+        let (token_b, _user_b) = register_user(srv, "bob", "bob@test.com").await;
+
+        // Create a DM channel between them
+        let resp = reqwest::Client::new()
+            .post(format!("{}/dm", srv.base_url()))
+            .header("Authorization", format!("Bearer {token_a}"))
+            .json(&json!({ "recipient_id": _user_b }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "DM channel creation should succeed");
+        let body: Value = resp.json().await.unwrap();
+        let dm_channel_id = body["id"].as_str().unwrap().to_string();
+
+        // Alice joins DM call via WebSocket voice_state_update
+        let mut ws_a = ws_identify(srv, &token_a, "device-a").await;
+        let mut ws_b = ws_identify(srv, &token_b, "device-b").await;
+        sleep(Duration::from_millis(200)).await;
+        let _ = drain_events(&mut ws_a, "").await;
+        let _ = drain_events(&mut ws_b, "").await;
+
+        ws_a.send_json(&json!({
+            "op": "voice_state_update",
+            "d": {
+                "channel_id": dm_channel_id,
+                "self_mute": false,
+                "self_deaf": false
+            }
+        })).await;
+
+        // Alice should receive CALL_CONFIG
+        let config_msg = ws_a
+            .receive_json_timeout(Duration::from_secs(3))
+            .await
+            .expect("alice should receive CALL_CONFIG for DM call");
+        assert_eq!(config_msg["t"], "CALL_CONFIG");
+        assert!(!config_msg["d"]["room_id"].as_str().unwrap().is_empty());
+
+        // Bob should receive CALL_STARTED for the DM call
+        sleep(Duration::from_millis(500)).await;
+        let mut got_call_started = false;
+        for _ in 0..5 {
+            if let Some(msg) = ws_b.receive_json_timeout(Duration::from_secs(2)).await {
+                if msg["t"] == "CALL_STARTED" {
+                    assert_eq!(msg["d"]["channel_id"], dm_channel_id);
+                    assert_eq!(msg["d"]["initiator_id"], user_a);
+                    got_call_started = true;
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        assert!(got_call_started, "bob should receive CALL_STARTED for DM call");
+
+        // Also test DM call via REST POST /calls
+        let resp = reqwest::Client::new()
+            .post(format!("{}/calls", srv.base_url()))
+            .header("Authorization", format!("Bearer {token_b}"))
+            .json(&json!({ "channel_id": dm_channel_id }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "DM call via REST should succeed");
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["channel_id"], dm_channel_id);
+
+        ws_a.close().await;
+        ws_b.close().await;
+    });
+}
+
+// ────────────────────────────────────────────────────────────
+//  Test 13: Disconnect triggers leave_all and room cleanup
+// ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_disconnect_triggers_leave() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let (token_a, user_a) = register_user(srv, "alice", "alice@test.com").await;
+        let (token_b, _user_b) = register_user(srv, "bob", "bob@test.com").await;
+        let (server_id, invite_code) = create_server_helper(srv, &token_a, "DisconnectServer").await;
+        join_server_helper(srv, &token_b, &invite_code).await;
+        let channel_id = create_voice_channel(srv, &token_a, &server_id, "Voice").await;
+
+        let mut ws_a = ws_identify(srv, &token_a, "device-a").await;
+        let mut ws_b = ws_identify(srv, &token_b, "device-b").await;
+
+        sleep(Duration::from_millis(200)).await;
+        let _ = drain_events(&mut ws_a, "").await;
+        let _ = drain_events(&mut ws_b, "").await;
+
+        // Alice joins voice channel
+        ws_a.send_json(&json!({
+            "op": "voice_state_update",
+            "d": { "channel_id": channel_id, "self_mute": false, "self_deaf": false }
+        })).await;
+        let config = ws_a.receive_json_timeout(Duration::from_secs(2)).await.unwrap();
+        let room_id = config["d"]["room_id"].as_str().unwrap().to_string();
+
+        sleep(Duration::from_millis(300)).await;
+        let _ = drain_events(&mut ws_b, "").await;
+
+        // Alice disconnects abruptly (simulated by closing WS)
+        ws_a.close().await;
+
+        // Wait for cleanup
+        sleep(Duration::from_millis(1000)).await;
+
+        // Bob should receive VOICE_STATE_UPDATE with null channel_id (leave)
+        let mut got_leave = false;
+        for _ in 0..5 {
+            if let Some(msg) = ws_b.receive_json_timeout(Duration::from_secs(2)).await {
+                if msg["t"] == "VOICE_STATE_UPDATE"
+                    && msg["d"]["user_id"] == user_a
+                    && msg["d"]["channel_id"].is_null()
+                {
+                    got_leave = true;
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        assert!(got_leave, "bob should receive leave event after alice disconnects");
+
+        // Room should be destroyed since alice was the only participant
+        sleep(Duration::from_millis(500)).await;
+        let resp = reqwest::Client::new()
+            .get(format!("{}/calls/{}", srv.base_url(), room_id))
+            .header("Authorization", format!("Bearer {token_b}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404, "room should be destroyed after disconnect");
+
+        ws_b.close().await;
     });
 }
