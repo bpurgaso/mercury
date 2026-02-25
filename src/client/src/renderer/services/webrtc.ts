@@ -1,9 +1,10 @@
 import type { CallConfig, SimulcastLayer } from '../types/call'
-import type { CallConfigEvent } from '../types/ws'
+import type { CallConfigEvent, WebRTCSignalEvent } from '../types/ws'
 
 type RemoteTrackCallback = (userId: string, track: MediaStreamTrack, stream: MediaStream) => void
 type RemoteTrackRemovedCallback = (userId: string, trackId: string) => void
 type ConnectionStateCallback = (state: RTCPeerConnectionState) => void
+type DiagnosticCallback = () => void
 
 const CALL_CONFIG_TIMEOUT_MS = 10_000
 const CONNECTION_FAILURE_DELAY_MS = 10_000
@@ -15,13 +16,18 @@ export class WebRTCManager {
   private callConfig: CallConfig | null = null
   private connectionFailedTimer: ReturnType<typeof setTimeout> | null = null
   private roomId: string | null = null
+  private sendSignalFn: ((signal: { type: string; sdp?: string; candidate?: string }) => void) | null = null
 
   private remoteTrackCallbacks = new Set<RemoteTrackCallback>()
   private remoteTrackRemovedCallbacks = new Set<RemoteTrackRemovedCallback>()
   private connectionStateCallbacks = new Set<ConnectionStateCallback>()
+  private diagnosticCallbacks = new Set<DiagnosticCallback>()
 
   // Track userId associations from signaling metadata
   private pendingTrackUserMap = new Map<string, string>() // mid → userId
+
+  // Negotiation queue to serialize offer/answer exchanges
+  private negotiationQueue: Promise<void> = Promise.resolve()
 
   onRemoteTrack(cb: RemoteTrackCallback): () => void {
     this.remoteTrackCallbacks.add(cb)
@@ -36,6 +42,11 @@ export class WebRTCManager {
   onConnectionStateChange(cb: ConnectionStateCallback): () => void {
     this.connectionStateCallbacks.add(cb)
     return () => { this.connectionStateCallbacks.delete(cb) }
+  }
+
+  onDiagnosticTimeout(cb: DiagnosticCallback): () => void {
+    this.diagnosticCallbacks.add(cb)
+    return () => { this.diagnosticCallbacks.delete(cb) }
   }
 
   handleCallConfig(event: CallConfigEvent): CallConfig {
@@ -66,6 +77,39 @@ export class WebRTCManager {
     return config
   }
 
+  /**
+   * Extract mid→userId mappings from WEBRTC_SIGNAL events.
+   * The SFU embeds the source userId in each signal. When we receive an
+   * answer or offer, we parse the SDP to discover which mids map to which
+   * remote user. For ICE candidates, we associate the sdpMid with the user.
+   */
+  updateTrackMappingFromSignal(signal: WebRTCSignalEvent): void {
+    const fromUser = signal.from_user
+    if (!fromUser) return
+
+    if ((signal.signal.type === 'answer' || signal.signal.type === 'offer') && signal.signal.sdp) {
+      // Parse SDP for m= lines to extract mid values.
+      // Each m= section has an a=mid:<value> line.
+      const sdp = signal.signal.sdp
+      const midMatches = sdp.matchAll(/^a=mid:(.+)$/gm)
+      for (const match of midMatches) {
+        const mid = match[1].trim()
+        // Map this mid to the from_user (the SFU relays on behalf of this user)
+        this.pendingTrackUserMap.set(mid, fromUser)
+      }
+    } else if (signal.signal.type === 'ice_candidate' && signal.signal.candidate) {
+      // For ICE candidates, associate via sdpMid if present
+      try {
+        const parsed = JSON.parse(signal.signal.candidate) as { sdpMid?: string }
+        if (parsed.sdpMid) {
+          this.pendingTrackUserMap.set(parsed.sdpMid, fromUser)
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+  }
+
   async createPeerConnection(
     config: CallConfig,
     sendSignal: (signal: { type: string; sdp?: string; candidate?: string }) => void
@@ -86,6 +130,7 @@ export class WebRTCManager {
     const pc = new RTCPeerConnection({ iceServers })
     this.pc = pc
     this.roomId = config.roomId
+    this.sendSignalFn = sendSignal
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -200,9 +245,9 @@ export class WebRTCManager {
       this.pc.addTrack(track, stream)
       await this.configureSimulcast()
 
-      // Video add requires renegotiation
+      // Video add requires renegotiation — serialized through queue
       if (sendSignal) {
-        await this.renegotiate(sendSignal)
+        await this.enqueueNegotiation(() => this.renegotiate(sendSignal))
       }
     }
 
@@ -220,9 +265,9 @@ export class WebRTCManager {
           this.pc.removeTrack(sender)
         }
 
-        // Video remove requires renegotiation
+        // Video remove requires renegotiation — serialized through queue
         if (sendSignal) {
-          await this.renegotiate(sendSignal)
+          await this.enqueueNegotiation(() => this.renegotiate(sendSignal))
         }
       }
       this.localVideoTrack = null
@@ -251,6 +296,10 @@ export class WebRTCManager {
     return offer
   }
 
+  /**
+   * Handle an incoming signal from the SFU. Supports answer, offer
+   * (SFU-initiated renegotiation), and ICE candidates.
+   */
   async handleSignal(signal: { type: string; sdp?: string; candidate?: string }): Promise<void> {
     if (!this.pc) return
 
@@ -259,6 +308,20 @@ export class WebRTCManager {
         type: 'answer',
         sdp: signal.sdp,
       }))
+    } else if (signal.type === 'offer' && signal.sdp) {
+      // SFU-initiated renegotiation: new participant tracks available
+      await this.enqueueNegotiation(async () => {
+        if (!this.pc) return
+        await this.pc.setRemoteDescription(new RTCSessionDescription({
+          type: 'offer',
+          sdp: signal.sdp!,
+        }))
+        const answer = await this.pc.createAnswer()
+        await this.pc.setLocalDescription(answer)
+        if (this.sendSignalFn) {
+          this.sendSignalFn({ type: 'answer', sdp: answer.sdp })
+        }
+      })
     } else if (signal.type === 'ice_candidate' && signal.candidate) {
       const candidateInit = JSON.parse(signal.candidate) as RTCIceCandidateInit
       await this.pc.addIceCandidate(new RTCIceCandidate(candidateInit))
@@ -348,7 +411,9 @@ export class WebRTCManager {
 
     this.roomId = null
     this.callConfig = null
+    this.sendSignalFn = null
     this.pendingTrackUserMap.clear()
+    this.negotiationQueue = Promise.resolve()
   }
 
   private handleConnectionStateChange(state: RTCPeerConnectionState, pc: RTCPeerConnection): void {
@@ -362,9 +427,17 @@ export class WebRTCManager {
         }
       }, 3000)
     } else if (state === 'failed') {
-      // Set a timer; if still failed after 10s, the call UI should show diagnostics
+      // Wait 10 seconds; if still failed, fire diagnostic callbacks
       this.connectionFailedTimer = setTimeout(() => {
-        // Timer fires — diagnostics state is handled by callStore via the callback
+        if (pc.connectionState === 'failed') {
+          for (const cb of this.diagnosticCallbacks) {
+            try {
+              cb()
+            } catch {
+              // ignore
+            }
+          }
+        }
       }, CONNECTION_FAILURE_DELAY_MS)
     }
   }
@@ -420,6 +493,15 @@ export class WebRTCManager {
     const offer = await this.pc.createOffer()
     await this.pc.setLocalDescription(offer)
     sendSignal({ type: 'offer', sdp: offer.sdp })
+  }
+
+  /**
+   * Enqueue an async negotiation operation to prevent overlapping
+   * SDP offer/answer exchanges that would corrupt PeerConnection state.
+   */
+  private enqueueNegotiation(fn: () => Promise<void>): Promise<void> {
+    this.negotiationQueue = this.negotiationQueue.then(fn, fn)
+    return this.negotiationQueue
   }
 }
 

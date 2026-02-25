@@ -27,6 +27,8 @@ interface CallState {
   connectionState: RTCPeerConnectionState | null
   diagnosticState: DiagnosticState | null
   error: string | null
+  // Track which channels have active calls (channelId → roomId)
+  activeChannelCalls: Map<string, string>
 
   joinCall(channelId: string): Promise<void>
   leaveCall(): Promise<void>
@@ -36,9 +38,39 @@ interface CallState {
 }
 
 export const useCallStore = create<CallState>((set, get) => {
+  // Internal state: was the user manually muted before deafening?
+  let wasMutedBeforeDeafen = false
+
   // Send a webrtc_signal through the WebSocket
   function sendSignal(roomId: string, signal: { type: string; sdp?: string; candidate?: string }): void {
     wsManager.send('webrtc_signal', { room_id: roomId, signal })
+  }
+
+  // Helper to fully clean up call state (used by leaveCall and disconnect handler)
+  function cleanUpCall(): void {
+    const { activeCall } = get()
+
+    webRTCManager.leaveCall()
+
+    if (activeCall) {
+      wsManager.send('voice_state_update', { channel_id: null })
+    }
+
+    wasMutedBeforeDeafen = false
+
+    set({
+      activeCall: null,
+      localStream: null,
+      remoteStreams: new Map(),
+      isMuted: false,
+      isDeafened: false,
+      isCameraOn: false,
+      participants: new Map(),
+      callConfig: null,
+      connectionState: null,
+      diagnosticState: null,
+      error: null,
+    })
   }
 
   // Subscribe to WebSocket events for voice/call
@@ -73,10 +105,33 @@ export const useCallStore = create<CallState>((set, get) => {
       }
     })
 
+    wsManager.on('CALL_STARTED', (data: CallStartedEvent) => {
+      set((state) => {
+        const activeChannelCalls = new Map(state.activeChannelCalls)
+        activeChannelCalls.set(data.channel_id, data.room_id)
+        return { activeChannelCalls }
+      })
+    })
+
     wsManager.on('CALL_ENDED', (data: CallEndedEvent) => {
       const { activeCall } = get()
+
+      // Remove from activeChannelCalls
+      set((state) => {
+        const activeChannelCalls = new Map(state.activeChannelCalls)
+        // Find and remove the channel with this room_id
+        for (const [channelId, roomId] of activeChannelCalls) {
+          if (roomId === data.room_id) {
+            activeChannelCalls.delete(channelId)
+            break
+          }
+        }
+        return { activeChannelCalls }
+      })
+
       if (activeCall && activeCall.roomId === data.room_id) {
         webRTCManager.leaveCall()
+        wasMutedBeforeDeafen = false
         set({
           activeCall: null,
           localStream: null,
@@ -94,7 +149,33 @@ export const useCallStore = create<CallState>((set, get) => {
     })
 
     wsManager.on('WEBRTC_SIGNAL', (data: WebRTCSignalEvent) => {
+      // Update track mapping from signaling metadata before handling the signal
+      webRTCManager.updateTrackMappingFromSignal(data)
       webRTCManager.handleSignal(data.signal)
+    })
+
+    // Terminate call when WebSocket disconnects
+    wsManager.onStateChange((state) => {
+      if (state === 'DISCONNECTED') {
+        const { activeCall } = get()
+        if (activeCall) {
+          webRTCManager.leaveCall()
+          wasMutedBeforeDeafen = false
+          set({
+            activeCall: null,
+            localStream: null,
+            remoteStreams: new Map(),
+            isMuted: false,
+            isDeafened: false,
+            isCameraOn: false,
+            participants: new Map(),
+            callConfig: null,
+            connectionState: null,
+            diagnosticState: null,
+            error: 'WebSocket disconnected',
+          })
+        }
+      }
     })
   }
 
@@ -147,13 +228,20 @@ export const useCallStore = create<CallState>((set, get) => {
 
       set({ connectionState: state })
 
-      if (state === 'failed') {
-        set({
-          diagnosticState: { failed: true, timestamp: Date.now() },
-        })
-      } else if (state === 'connected') {
+      // Clear diagnosticState when connection recovers
+      if (state === 'connected') {
         set({ diagnosticState: null })
       }
+    })
+
+    // Fire diagnosticState after the 10-second delay inside webRTCManager
+    webRTCManager.onDiagnosticTimeout(() => {
+      const currentCall = get().activeCall
+      if (!currentCall) return
+
+      set({
+        diagnosticState: { failed: true, timestamp: Date.now() },
+      })
     })
   }
 
@@ -173,6 +261,7 @@ export const useCallStore = create<CallState>((set, get) => {
     connectionState: null,
     diagnosticState: null,
     error: null,
+    activeChannelCalls: new Map(),
 
     async joinCall(channelId: string) {
       const { activeCall } = get()
@@ -247,9 +336,17 @@ export const useCallStore = create<CallState>((set, get) => {
 
       const localStream = new MediaStream([audioTrack])
 
-      // Step 5: Create and send SDP offer
-      const offer = await webRTCManager.createOffer()
-      sendSignal(roomId, { type: 'offer', sdp: offer.sdp! })
+      // Step 5: Create and send SDP offer (wrapped in try/catch to prevent resource leak)
+      try {
+        const offer = await webRTCManager.createOffer()
+        sendSignal(roomId, { type: 'offer', sdp: offer.sdp! })
+      } catch (err) {
+        webRTCManager.leaveCall()
+        wsManager.send('voice_state_update', { channel_id: null })
+        const message = err instanceof Error ? err.message : 'SDP offer creation failed'
+        set({ error: message })
+        throw err
+      }
 
       // Step 6: Update store state
       set({
@@ -260,30 +357,7 @@ export const useCallStore = create<CallState>((set, get) => {
     },
 
     async leaveCall() {
-      const { activeCall } = get()
-
-      // Clean up WebRTC resources
-      webRTCManager.leaveCall()
-
-      // Notify server
-      if (activeCall) {
-        wsManager.send('voice_state_update', { channel_id: null })
-      }
-
-      // Clear store state
-      set({
-        activeCall: null,
-        localStream: null,
-        remoteStreams: new Map(),
-        isMuted: false,
-        isDeafened: false,
-        isCameraOn: false,
-        participants: new Map(),
-        callConfig: null,
-        connectionState: null,
-        diagnosticState: null,
-        error: null,
-      })
+      cleanUpCall()
     },
 
     toggleMute() {
@@ -302,32 +376,37 @@ export const useCallStore = create<CallState>((set, get) => {
     },
 
     toggleDeafen() {
-      const { isDeafened, activeCall } = get()
+      const { isDeafened, isMuted, activeCall } = get()
       if (!activeCall) return
 
       const newDeafened = !isDeafened
 
-      // When deafening: also mute self. When undeafening: unmute self.
-      webRTCManager.setRemoteAudioEnabled(!newDeafened)
-      webRTCManager.setMuted(newDeafened)
+      if (newDeafened) {
+        // Deafening: save current mute state, then mute self + disable remote audio
+        wasMutedBeforeDeafen = isMuted
+        webRTCManager.setRemoteAudioEnabled(false)
+        webRTCManager.setMuted(true)
+        set({ isDeafened: true, isMuted: true })
 
-      set({
-        isDeafened: newDeafened,
-        isMuted: newDeafened ? true : get().isMuted,
-      })
+        wsManager.send('voice_state_update', {
+          channel_id: activeCall.channelId,
+          self_mute: true,
+          self_deaf: true,
+        })
+      } else {
+        // Undeafening: restore remote audio and previous mute state
+        webRTCManager.setRemoteAudioEnabled(true)
+        const restoreMuted = wasMutedBeforeDeafen
+        webRTCManager.setMuted(restoreMuted)
+        set({ isDeafened: false, isMuted: restoreMuted })
+        wasMutedBeforeDeafen = false
 
-      // If undeafening, restore isMuted to false (spec: deafen also mutes,
-      // undeafen restores unmuted)
-      if (!newDeafened) {
-        set({ isMuted: false })
-        webRTCManager.setMuted(false)
+        wsManager.send('voice_state_update', {
+          channel_id: activeCall.channelId,
+          self_mute: restoreMuted,
+          self_deaf: false,
+        })
       }
-
-      wsManager.send('voice_state_update', {
-        channel_id: activeCall.channelId,
-        self_mute: newDeafened ? true : false,
-        self_deaf: newDeafened,
-      })
     },
 
     async toggleCamera() {

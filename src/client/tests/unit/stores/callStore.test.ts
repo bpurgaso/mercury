@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 
 // --- Hoisted shared state (available to vi.mock factories) ---
 
-const { wsListeners, wsSendMock, wsOnMock } = vi.hoisted(() => {
+const { wsListeners, wsSendMock, wsOnMock, wsStateChangeCallbacks, wsOnStateChangeMock } = vi.hoisted(() => {
   type WsCallback = (data: unknown) => void
   const wsListeners = new Map<string, Set<WsCallback>>()
+  const wsStateChangeCallbacks = new Set<WsCallback>()
   const wsSendMock = vi.fn()
   const wsOnMock = vi.fn((event: string, cb: WsCallback) => {
     if (!wsListeners.has(event)) {
@@ -13,7 +14,11 @@ const { wsListeners, wsSendMock, wsOnMock } = vi.hoisted(() => {
     wsListeners.get(event)!.add(cb)
     return () => { wsListeners.get(event)?.delete(cb) }
   })
-  return { wsListeners, wsSendMock, wsOnMock }
+  const wsOnStateChangeMock = vi.fn((cb: WsCallback) => {
+    wsStateChangeCallbacks.add(cb)
+    return () => { wsStateChangeCallbacks.delete(cb) }
+  })
+  return { wsListeners, wsSendMock, wsOnMock, wsStateChangeCallbacks, wsOnStateChangeMock }
 })
 
 // --- Mock WebSocket manager (uses hoisted state) ---
@@ -23,7 +28,7 @@ vi.mock('../../../src/renderer/services/websocket', () => ({
     send: wsSendMock,
     on: wsOnMock,
     getState: vi.fn(() => 'CONNECTED'),
-    onStateChange: vi.fn(),
+    onStateChange: wsOnStateChangeMock,
   },
 }))
 
@@ -107,6 +112,10 @@ class MockRTCPeerConnection {
 
   async createOffer(_options?: RTCOfferOptions) {
     return { type: 'offer' as const, sdp: 'mock-offer-sdp' }
+  }
+
+  async createAnswer() {
+    return { type: 'answer' as const, sdp: 'mock-answer-sdp' }
   }
 
   async setLocalDescription(_desc: RTCSessionDescriptionInit) {
@@ -198,6 +207,13 @@ function emitWsEvent(event: string, data: unknown): void {
   }
 }
 
+// Helper to emit WS state change
+function emitWsStateChange(state: string): void {
+  for (const cb of wsStateChangeCallbacks) {
+    cb(state)
+  }
+}
+
 // Now import the modules under test (after mocks are set up)
 import { useCallStore } from '../../../src/renderer/stores/callStore'
 import { wsManager } from '../../../src/renderer/services/websocket'
@@ -239,11 +255,13 @@ describe('callStore', () => {
       connectionState: null,
       diagnosticState: null,
       error: null,
+      activeChannelCalls: new Map(),
     })
     // Only clear call history — do NOT use vi.clearAllMocks() as it strips
     // mock implementations from hoisted vi.fn() instances.
     wsSendMock.mockClear()
     wsOnMock.mockClear()
+    wsOnStateChangeMock.mockClear()
     pcInstances = []
     pcOnIceCandidate = null
     pcOnTrack = null
@@ -360,6 +378,29 @@ describe('callStore', () => {
       const state = useCallStore.getState()
       expect(state.error).toBe('Permission denied')
       expect(state.activeCall).toBeNull()
+    })
+
+    it('cleans up on createOffer failure', async () => {
+      // Override createOffer to throw before starting joinCall
+      const origCreateOffer = MockRTCPeerConnection.prototype.createOffer
+      MockRTCPeerConnection.prototype.createOffer = async () => {
+        throw new Error('SDP offer creation failed')
+      }
+
+      try {
+        const joinPromise = useCallStore.getState().joinCall('channel-1')
+        emitWsEvent('CALL_CONFIG', mockCallConfigEvent)
+
+        await expect(joinPromise).rejects.toThrow('SDP offer creation failed')
+
+        const state = useCallStore.getState()
+        expect(state.error).toBe('SDP offer creation failed')
+        expect(state.activeCall).toBeNull()
+        expect(wsManager.send).toHaveBeenCalledWith('voice_state_update', { channel_id: null })
+      } finally {
+        // Always restore, even if assertions fail
+        MockRTCPeerConnection.prototype.createOffer = origCreateOffer
+      }
     })
 
     it('leaves current call before joining a new one', async () => {
@@ -524,6 +565,40 @@ describe('callStore', () => {
         self_deaf: false,
       })
     })
+
+    it('preserves manual mute state when undeafening', async () => {
+      await setupActiveCall()
+
+      const pc = pcInstances[0]
+      pc._receivers.push({ track: { kind: 'audio', enabled: true } })
+
+      // Manually mute first
+      useCallStore.getState().toggleMute()
+      expect(useCallStore.getState().isMuted).toBe(true)
+
+      const audioTrack = webRTCManager.getLocalAudioTrack()
+      expect(audioTrack!.enabled).toBe(false)
+
+      // Deafen (was already muted)
+      useCallStore.getState().toggleDeafen()
+      expect(useCallStore.getState().isDeafened).toBe(true)
+      expect(useCallStore.getState().isMuted).toBe(true)
+
+      vi.mocked(wsManager.send).mockClear()
+
+      // Undeafen — should remain muted since user was muted before deafening
+      useCallStore.getState().toggleDeafen()
+      expect(useCallStore.getState().isDeafened).toBe(false)
+      expect(useCallStore.getState().isMuted).toBe(true)
+      expect(audioTrack!.enabled).toBe(false)
+
+      // voice_state_update should reflect the restored mute state
+      expect(wsManager.send).toHaveBeenCalledWith('voice_state_update', {
+        channel_id: 'channel-1',
+        self_mute: true,
+        self_deaf: false,
+      })
+    })
   })
 
   describe('toggleCamera', () => {
@@ -576,17 +651,25 @@ describe('callStore', () => {
       await joinPromise
     }
 
-    it('updates remoteStreams when ontrack fires', async () => {
+    it('updates remoteStreams using signaling-based mid mapping', async () => {
       await setupActiveCall()
 
-      // Set up user mapping
-      webRTCManager.setTrackUserMapping('0', 'user-2')
+      // Simulate receiving a WEBRTC_SIGNAL answer with SDP containing mid values
+      // This populates the pendingTrackUserMap via updateTrackMappingFromSignal
+      emitWsEvent('WEBRTC_SIGNAL', {
+        from_user: 'user-2',
+        signal: {
+          type: 'answer',
+          sdp: 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n',
+        },
+      })
 
-      // Simulate remote track
+      await new Promise((r) => setTimeout(r, 10))
+
+      // Simulate remote track arriving with mid '0'
       const remoteTrack = new MockMediaStreamTrack('audio', 'remote-audio-1')
       const remoteStream = new MockMediaStream([remoteTrack])
 
-      // Fire ontrack event
       pcOnTrack!({
         track: remoteTrack as unknown as MediaStreamTrack & { onended: (() => void) | null },
         streams: [remoteStream as unknown as MediaStream],
@@ -596,6 +679,23 @@ describe('callStore', () => {
       const state = useCallStore.getState()
       expect(state.remoteStreams.size).toBe(1)
       expect(state.remoteStreams.has('user-2')).toBe(true)
+    })
+
+    it('falls back to "unknown" when no signaling mapping exists', async () => {
+      await setupActiveCall()
+
+      const remoteTrack = new MockMediaStreamTrack('audio', 'remote-audio-1')
+      const remoteStream = new MockMediaStream([remoteTrack])
+
+      pcOnTrack!({
+        track: remoteTrack as unknown as MediaStreamTrack & { onended: (() => void) | null },
+        streams: [remoteStream as unknown as MediaStream],
+        transceiver: { mid: '99' },
+      })
+
+      const state = useCallStore.getState()
+      expect(state.remoteStreams.size).toBe(1)
+      expect(state.remoteStreams.has('unknown')).toBe(true)
     })
   })
 
@@ -722,20 +822,30 @@ describe('callStore', () => {
       await joinPromise
     }
 
-    it('sets diagnosticState when connection state is "failed"', async () => {
+    it('sets connectionState immediately on "failed" but delays diagnosticState by 10s', async () => {
+      vi.useFakeTimers()
       await setupActiveCall()
 
       const pc = pcInstances[0]
       pc.connectionState = 'failed'
       pcOnConnectionStateChange!()
 
-      const state = useCallStore.getState()
-      expect(state.connectionState).toBe('failed')
-      expect(state.diagnosticState).not.toBeNull()
-      expect(state.diagnosticState!.failed).toBe(true)
+      // connectionState should be set immediately
+      expect(useCallStore.getState().connectionState).toBe('failed')
+      // diagnosticState should NOT be set immediately (10-second delay in webRTCManager)
+      expect(useCallStore.getState().diagnosticState).toBeNull()
+
+      // Advance 10 seconds for the diagnostic callback to fire
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      expect(useCallStore.getState().diagnosticState).not.toBeNull()
+      expect(useCallStore.getState().diagnosticState!.failed).toBe(true)
+
+      vi.useRealTimers()
     })
 
     it('clears diagnosticState when connection recovers to "connected"', async () => {
+      vi.useFakeTimers()
       await setupActiveCall()
 
       const pc = pcInstances[0]
@@ -743,6 +853,9 @@ describe('callStore', () => {
       // First fail
       pc.connectionState = 'failed'
       pcOnConnectionStateChange!()
+
+      // Advance past the diagnostic delay
+      await vi.advanceTimersByTimeAsync(10_000)
       expect(useCallStore.getState().diagnosticState).not.toBeNull()
 
       // Then recover
@@ -750,6 +863,32 @@ describe('callStore', () => {
       pcOnConnectionStateChange!()
       expect(useCallStore.getState().diagnosticState).toBeNull()
       expect(useCallStore.getState().connectionState).toBe('connected')
+
+      vi.useRealTimers()
+    })
+
+    it('does not fire diagnosticState if connection recovers before 10s', async () => {
+      vi.useFakeTimers()
+      await setupActiveCall()
+
+      const pc = pcInstances[0]
+
+      // Fail
+      pc.connectionState = 'failed'
+      pcOnConnectionStateChange!()
+
+      // Recover after 5 seconds (before 10s delay fires)
+      await vi.advanceTimersByTimeAsync(5_000)
+      pc.connectionState = 'connected'
+      pcOnConnectionStateChange!()
+
+      // Advance past 10s total
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      // diagnosticState should still be null since connection recovered
+      expect(useCallStore.getState().diagnosticState).toBeNull()
+
+      vi.useRealTimers()
     })
   })
 
@@ -798,6 +937,32 @@ describe('callStore', () => {
     })
   })
 
+  describe('CALL_STARTED event', () => {
+    it('tracks active channel calls', () => {
+      emitWsEvent('CALL_STARTED', {
+        room_id: 'room-abc',
+        channel_id: 'channel-5',
+        initiator_id: 'user-1',
+      })
+
+      const state = useCallStore.getState()
+      expect(state.activeChannelCalls.has('channel-5')).toBe(true)
+      expect(state.activeChannelCalls.get('channel-5')).toBe('room-abc')
+    })
+
+    it('removes from activeChannelCalls on CALL_ENDED', () => {
+      emitWsEvent('CALL_STARTED', {
+        room_id: 'room-abc',
+        channel_id: 'channel-5',
+        initiator_id: 'user-1',
+      })
+      expect(useCallStore.getState().activeChannelCalls.has('channel-5')).toBe(true)
+
+      emitWsEvent('CALL_ENDED', { room_id: 'room-abc' })
+      expect(useCallStore.getState().activeChannelCalls.has('channel-5')).toBe(false)
+    })
+  })
+
   describe('CALL_ENDED event', () => {
     it('cleans up callStore when call ends', async () => {
       const joinPromise = useCallStore.getState().joinCall('channel-1')
@@ -837,6 +1002,73 @@ describe('callStore', () => {
       expect(setRemoteSpy).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'answer', sdp: 'mock-answer-sdp' })
       )
+    })
+  })
+
+  describe('SFU-initiated renegotiation', () => {
+    it('handles offer from SFU by creating and sending an answer', async () => {
+      const joinPromise = useCallStore.getState().joinCall('channel-1')
+      emitWsEvent('CALL_CONFIG', mockCallConfigEvent)
+      await joinPromise
+
+      const pc = pcInstances[0]
+      const setRemoteSpy = vi.spyOn(pc, 'setRemoteDescription')
+      const createAnswerSpy = vi.spyOn(pc, 'createAnswer')
+      vi.mocked(wsManager.send).mockClear()
+
+      // SFU sends an offer (new participant joined)
+      emitWsEvent('WEBRTC_SIGNAL', {
+        from_user: 'sfu',
+        signal: {
+          type: 'offer',
+          sdp: 'sfu-renegotiation-offer-sdp',
+        },
+      })
+
+      // Wait for async negotiation queue to process
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(setRemoteSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'offer', sdp: 'sfu-renegotiation-offer-sdp' })
+      )
+      expect(createAnswerSpy).toHaveBeenCalled()
+      expect(wsManager.send).toHaveBeenCalledWith('webrtc_signal', {
+        room_id: 'room-123',
+        signal: { type: 'answer', sdp: 'mock-answer-sdp' },
+      })
+    })
+  })
+
+  describe('WebSocket disconnect', () => {
+    async function setupActiveCall(): Promise<void> {
+      const joinPromise = useCallStore.getState().joinCall('channel-1')
+      emitWsEvent('CALL_CONFIG', mockCallConfigEvent)
+      await joinPromise
+    }
+
+    it('terminates active call when WebSocket disconnects', async () => {
+      await setupActiveCall()
+      expect(useCallStore.getState().activeCall).not.toBeNull()
+
+      const pc = pcInstances[0]
+
+      // Simulate WS disconnect
+      emitWsStateChange('DISCONNECTED')
+
+      // Call should be terminated
+      const state = useCallStore.getState()
+      expect(state.activeCall).toBeNull()
+      expect(state.error).toBe('WebSocket disconnected')
+      expect(pc.closed).toBe(true)
+    })
+
+    it('does nothing when no active call on disconnect', () => {
+      expect(useCallStore.getState().activeCall).toBeNull()
+
+      emitWsStateChange('DISCONNECTED')
+
+      // Should not set error
+      expect(useCallStore.getState().error).toBeNull()
     })
   })
 })
