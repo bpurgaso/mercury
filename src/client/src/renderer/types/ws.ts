@@ -21,6 +21,7 @@ export type ServerEventType =
   | 'MEMBER_ADD'
   | 'MEMBER_REMOVE'
   | 'SENDER_KEY_DISTRIBUTION'
+  | 'MEDIA_KEY'
   | 'ERROR'
   | 'USER_BANNED'
   | 'USER_KICKED'
@@ -183,6 +184,13 @@ export interface WebRTCSignalEvent {
   }
 }
 
+export interface MediaKeyEvent {
+  room_id: string
+  key: Uint8Array   // 32 bytes raw AES-256 key
+  epoch: number
+  from_user: string
+}
+
 export interface CallConfigEvent {
   room_id: string
   turn_urls: string[]
@@ -225,6 +233,7 @@ export interface WSEventMap {
   MEMBER_ADD: MemberAddEvent
   MEMBER_REMOVE: MemberRemoveEvent
   SENDER_KEY_DISTRIBUTION: SenderKeyDistributionEvent
+  MEDIA_KEY: MediaKeyEvent
   HEARTBEAT_ACK: HeartbeatAckEvent
   ERROR: ServerErrorEvent
 }

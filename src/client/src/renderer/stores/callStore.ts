@@ -6,9 +6,13 @@ import type {
   CallEndedEvent,
   WebRTCSignalEvent,
   CallConfigEvent,
+  MediaKeyEvent,
 } from '../types/ws'
 import { wsManager } from '../services/websocket'
 import { webRTCManager, CALL_CONFIG_TIMEOUT_MS } from '../services/webrtc'
+import { MediaKeyRing } from '../services/media-key-ring'
+import { generateMediaKey, exportMediaKey, importMediaKey } from '../services/frame-crypto'
+import { cryptoService } from '../services/crypto'
 
 interface DiagnosticState {
   failed: boolean
@@ -152,6 +156,25 @@ export const useCallStore = create<CallState>((set, get) => {
       // Update track mapping from signaling metadata before handling the signal
       webRTCManager.updateTrackMappingFromSignal(data)
       webRTCManager.handleSignal(data.signal)
+    })
+
+    // Handle incoming media key distribution
+    wsManager.on('MEDIA_KEY', (data: MediaKeyEvent) => {
+      const { activeCall } = get()
+      if (!activeCall || activeCall.roomId !== data.room_id) return
+
+      const keyRing = webRTCManager.getMediaKeyRing()
+      if (!keyRing) return
+
+      importMediaKey(data.key).then((cryptoKey) => {
+        if (data.epoch === 0 && keyRing.currentKey === null) {
+          keyRing.setInitialKey(cryptoKey, data.epoch)
+        } else {
+          keyRing.rotateKey(cryptoKey)
+        }
+      }).catch(() => {
+        // Failed to import media key — ignore
+      })
     })
 
     // Terminate call when WebSocket disconnects
@@ -320,6 +343,30 @@ export const useCallStore = create<CallState>((set, get) => {
         const message = err instanceof Error ? err.message : 'PeerConnection creation failed'
         set({ error: message })
         throw err
+      }
+
+      // Step 3b: Set up media E2E encryption
+      const keyRing = new MediaKeyRing()
+      webRTCManager.setMediaKeyRing(keyRing)
+
+      try {
+        const mediaKey = await generateMediaKey()
+        keyRing.setInitialKey(mediaKey, 0)
+
+        // Distribute initial key to all current participants
+        const participantIds = Array.from(get().participants.keys())
+        if (participantIds.length > 0) {
+          const rawKey = await exportMediaKey(mediaKey)
+          await cryptoService.distributeMediaKey({
+            roomId,
+            recipientIds: participantIds,
+            key: Array.from(rawKey),
+            epoch: 0,
+          })
+        }
+      } catch {
+        // Key generation/distribution failure is non-fatal for call setup.
+        // Frames will be dropped until a key is established.
       }
 
       // Step 4: Get local audio

@@ -32,6 +32,34 @@ vi.mock('../../../src/renderer/services/websocket', () => ({
   },
 }))
 
+// --- Mock frame-crypto module (to avoid real Web Crypto in callStore tests) ---
+
+vi.mock('../../../src/renderer/services/frame-crypto', () => ({
+  createSenderTransform: vi.fn(() => new TransformStream()),
+  createReceiverTransform: vi.fn(() => new TransformStream()),
+  generateMediaKey: vi.fn(async () => ({
+    algorithm: { name: 'AES-GCM', length: 256 },
+    extractable: true,
+    usages: ['encrypt', 'decrypt'],
+    type: 'secret',
+  })),
+  exportMediaKey: vi.fn(async () => new Uint8Array(32)),
+  importMediaKey: vi.fn(async (raw: Uint8Array) => ({
+    algorithm: { name: 'AES-GCM', length: 256 },
+    extractable: false,
+    usages: ['encrypt', 'decrypt'],
+    type: 'secret',
+  })),
+}))
+
+// --- Mock crypto service (to avoid real IPC in callStore tests) ---
+
+vi.mock('../../../src/renderer/services/crypto', () => ({
+  cryptoService: {
+    distributeMediaKey: vi.fn(async () => ({ distributed: true })),
+  },
+}))
+
 // --- Mock RTCPeerConnection and related WebRTC APIs ---
 
 class MockRTCSessionDescription {
@@ -60,6 +88,7 @@ let pcOnTrack: ((event: {
   track: { id: string; kind: string; enabled: boolean; onended: (() => void) | null }
   streams: MediaStream[]
   transceiver: { mid: string | null }
+  receiver: { createEncodedStreams: () => { readable: ReadableStream; writable: WritableStream } }
 }) => void) | null = null
 let pcOnConnectionStateChange: (() => void) | null = null
 
@@ -97,6 +126,10 @@ class MockRTCPeerConnection {
       track,
       getParameters: vi.fn().mockReturnValue({ encodings: [{}] }),
       setParameters: vi.fn().mockResolvedValue(undefined),
+      createEncodedStreams: vi.fn().mockReturnValue({
+        readable: new ReadableStream(),
+        writable: new WritableStream(),
+      }),
     }
     this._senders.push(sender)
     return sender
@@ -196,6 +229,16 @@ Object.defineProperty(globalThis, 'navigator', {
   },
   writable: true,
 })
+
+// Helper: create a mock receiver with createEncodedStreams for Insertable Streams
+function mockReceiver() {
+  return {
+    createEncodedStreams: vi.fn().mockReturnValue({
+      readable: new ReadableStream(),
+      writable: new WritableStream(),
+    }),
+  }
+}
 
 // Helper to emit mock WS events
 function emitWsEvent(event: string, data: unknown): void {
@@ -674,6 +717,7 @@ describe('callStore', () => {
         track: remoteTrack as unknown as MediaStreamTrack & { onended: (() => void) | null },
         streams: [remoteStream as unknown as MediaStream],
         transceiver: { mid: '0' },
+        receiver: mockReceiver(),
       })
 
       const state = useCallStore.getState()
@@ -691,6 +735,7 @@ describe('callStore', () => {
         track: remoteTrack as unknown as MediaStreamTrack & { onended: (() => void) | null },
         streams: [remoteStream as unknown as MediaStream],
         transceiver: { mid: '99' },
+        receiver: mockReceiver(),
       })
 
       const state = useCallStore.getState()

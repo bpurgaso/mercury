@@ -311,6 +311,15 @@ export const cryptoService = {
     return postCryptoOp<DistributeSenderKeyResult>('crypto:establishAndDistributeSenderKey', params)
   },
 
+  distributeMediaKey(params: {
+    roomId: string
+    recipientIds: string[]
+    key: number[]
+    epoch: number
+  }): Promise<{ distributed: boolean }> {
+    return postCryptoOp('crypto:distributeMediaKey', params)
+  },
+
   markSenderKeyStale(channelId: string): Promise<{ marked: boolean }> {
     return postCryptoOp('crypto:markSenderKeyStale', { channelId })
   },

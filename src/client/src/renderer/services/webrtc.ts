@@ -1,5 +1,7 @@
 import type { CallConfig, SimulcastLayer } from '../types/call'
 import type { CallConfigEvent, WebRTCSignalEvent } from '../types/ws'
+import type { MediaKeyRing } from './media-key-ring'
+import { createSenderTransform, createReceiverTransform } from './frame-crypto'
 
 type RemoteTrackCallback = (userId: string, track: MediaStreamTrack, stream: MediaStream) => void
 type RemoteTrackRemovedCallback = (userId: string, trackId: string) => void
@@ -17,6 +19,7 @@ export class WebRTCManager {
   private connectionFailedTimer: ReturnType<typeof setTimeout> | null = null
   private roomId: string | null = null
   private sendSignalFn: ((signal: { type: string; sdp?: string; candidate?: string }) => void) | null = null
+  private keyRing: MediaKeyRing | null = null
 
   private remoteTrackCallbacks = new Set<RemoteTrackCallback>()
   private remoteTrackRemovedCallbacks = new Set<RemoteTrackRemovedCallback>()
@@ -47,6 +50,42 @@ export class WebRTCManager {
   onDiagnosticTimeout(cb: DiagnosticCallback): () => void {
     this.diagnosticCallbacks.add(cb)
     return () => { this.diagnosticCallbacks.delete(cb) }
+  }
+
+  setMediaKeyRing(keyRing: MediaKeyRing): void {
+    this.keyRing = keyRing
+  }
+
+  getMediaKeyRing(): MediaKeyRing | null {
+    return this.keyRing
+  }
+
+  /**
+   * Apply an encryption transform to an outgoing sender using Insertable Streams.
+   * Must be called after addTrack() and before negotiation completes.
+   */
+  applySenderTransform(sender: RTCRtpSender): void {
+    if (!this.keyRing) return
+    // createEncodedStreams() returns { readable, writable } for encoded frames
+    const senderStreams = (sender as RTCRtpSender & {
+      createEncodedStreams: () => { readable: ReadableStream; writable: WritableStream }
+    }).createEncodedStreams()
+
+    const transform = createSenderTransform(this.keyRing)
+    senderStreams.readable.pipeThrough(transform).pipeTo(senderStreams.writable)
+  }
+
+  /**
+   * Apply a decryption transform to an incoming receiver using Insertable Streams.
+   */
+  applyReceiverTransform(receiver: RTCRtpReceiver): void {
+    if (!this.keyRing) return
+    const receiverStreams = (receiver as RTCRtpReceiver & {
+      createEncodedStreams: () => { readable: ReadableStream; writable: WritableStream }
+    }).createEncodedStreams()
+
+    const transform = createReceiverTransform(this.keyRing)
+    receiverStreams.readable.pipeThrough(transform).pipeTo(receiverStreams.writable)
   }
 
   handleCallConfig(event: CallConfigEvent): CallConfig {
@@ -142,6 +181,9 @@ export class WebRTCManager {
     }
 
     pc.ontrack = (event) => {
+      // Apply decryption transform to incoming receiver
+      this.applyReceiverTransform(event.receiver)
+
       const stream = event.streams[0] || new MediaStream([event.track])
       // Derive userId from signaling metadata (mid → userId mapping)
       const mid = event.transceiver.mid
@@ -193,7 +235,8 @@ export class WebRTCManager {
     this.localAudioTrack = track
 
     if (this.pc) {
-      this.pc.addTrack(track, stream)
+      const sender = this.pc.addTrack(track, stream)
+      this.applySenderTransform(sender as unknown as RTCRtpSender)
       await this.applyAudioBitrate()
     }
 
@@ -242,7 +285,8 @@ export class WebRTCManager {
     this.localVideoTrack = track
 
     if (this.pc) {
-      this.pc.addTrack(track, stream)
+      const sender = this.pc.addTrack(track, stream)
+      this.applySenderTransform(sender as unknown as RTCRtpSender)
       await this.configureSimulcast()
 
       // Video add requires renegotiation — serialized through queue
@@ -407,6 +451,10 @@ export class WebRTCManager {
       this.pc.onconnectionstatechange = null
       this.pc.close()
       this.pc = null
+    }
+    if (this.keyRing) {
+      this.keyRing.destroy()
+      this.keyRing = null
     }
 
     this.roomId = null
