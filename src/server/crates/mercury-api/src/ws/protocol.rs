@@ -346,6 +346,82 @@ pub struct MemberRemovePayload {
     pub user_id: String,
 }
 
+// ── Voice / Call Payloads ───────────────────────────────────
+
+/// Payload for the `voice_state_update` client op.
+#[derive(Debug, Deserialize)]
+pub struct VoiceStateUpdatePayload {
+    /// Channel to join, or null/absent to leave.
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub self_mute: bool,
+    #[serde(default)]
+    pub self_deaf: bool,
+}
+
+/// Payload for the `webrtc_signal` client op.
+#[derive(Debug, Deserialize)]
+pub struct WebrtcSignalPayload {
+    pub room_id: String,
+    pub signal: mercury_media::WebRtcSignalData,
+}
+
+/// Payload for VOICE_STATE_UPDATE server event.
+#[derive(Debug, Serialize)]
+pub struct VoiceStateUpdateEvent {
+    pub user_id: String,
+    pub channel_id: Option<String>,
+    pub self_mute: bool,
+    pub self_deaf: bool,
+}
+
+/// Payload for CALL_STARTED server event.
+#[derive(Debug, Serialize)]
+pub struct CallStartedEvent {
+    pub room_id: String,
+    pub channel_id: String,
+    pub initiator_id: String,
+}
+
+/// Payload for CALL_ENDED server event.
+#[derive(Debug, Serialize)]
+pub struct CallEndedEvent {
+    pub room_id: String,
+}
+
+/// Payload for WEBRTC_SIGNAL server event.
+#[derive(Debug, Serialize)]
+pub struct WebrtcSignalEvent {
+    pub from_user: String,
+    pub signal: mercury_media::WebRtcSignalData,
+}
+
+/// Payload for CALL_CONFIG server event.
+#[derive(Debug, Serialize)]
+pub struct CallConfigEvent {
+    pub room_id: String,
+    pub turn_urls: Vec<String>,
+    pub stun_urls: Vec<String>,
+    pub username: String,
+    pub credential: String,
+    pub ttl: u64,
+    pub audio: AudioLimitsPayload,
+    pub video: VideoLimitsPayload,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AudioLimitsPayload {
+    pub max_bitrate_kbps: u32,
+    pub preferred_bitrate_kbps: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VideoLimitsPayload {
+    pub max_bitrate_kbps: u32,
+    pub max_resolution: String,
+    pub max_framerate: u32,
+}
+
 /// WebSocket close codes used by Mercury.
 pub mod close_codes {
     /// Invalid or expired authentication token.

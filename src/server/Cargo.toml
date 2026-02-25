@@ -77,6 +77,9 @@ rustls-pemfile = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls"] }
 
+# CPU affinity
+core_affinity = "0.8"
+
 # Workspace crates
 mercury-core = { path = "crates/mercury-core" }
 mercury-db = { path = "crates/mercury-db" }

@@ -1,1 +1,6 @@
-// SFU / media handling — expanded in Phase 8
+pub mod room;
+pub mod runtime;
+pub mod types;
+
+pub use runtime::{start_sfu, SfuHandle};
+pub use types::*;

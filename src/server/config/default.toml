@@ -26,3 +26,28 @@ enabled = false
 secret = ""
 urls = []
 credential_ttl_seconds = 86400
+
+[media]
+dedicated_cores = 2
+max_participants_per_room = 25
+empty_room_timeout_secs = 300
+udp_port_range_start = 10000
+udp_port_range_end = 10100
+
+[media.ice]
+turn_secret = ""
+turn_urls = []
+stun_urls = []
+
+[media.audio]
+max_bitrate_kbps = 128
+preferred_bitrate_kbps = 64
+
+[media.video]
+max_bitrate_kbps = 2500
+max_resolution = "1280x720"
+max_framerate = 30
+
+[media.bandwidth]
+total_mbps = 100
+per_user_kbps = 4000

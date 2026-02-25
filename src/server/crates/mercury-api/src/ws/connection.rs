@@ -5,7 +5,7 @@ use fred::prelude::*;
 use futures_util::{SinkExt, StreamExt};
 use mercury_auth::jwt;
 use mercury_core::ids::{ChannelId, DeviceId, DmChannelId, MessageId, UserId};
-use mercury_db::{channels, users};
+use mercury_db::{channels, servers, users};
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Instant};
 
@@ -640,6 +640,20 @@ async fn handle_client_op(
                 handle_standard_message_send(state, ws_sink, user_id, payload).await;
             }
         }
+        ClientOp::VoiceStateUpdate => {
+            if let Ok(payload) =
+                serde_json::from_value::<VoiceStateUpdatePayload>(client_msg.d)
+            {
+                handle_voice_state_update(state, ws_sink, user_id, _device_id, payload).await;
+            }
+        }
+        ClientOp::WebrtcSignal => {
+            if let Ok(payload) =
+                serde_json::from_value::<WebrtcSignalPayload>(client_msg.d)
+            {
+                handle_webrtc_signal(state, ws_sink, user_id, payload).await;
+            }
+        }
         _ => {}
     }
 }
@@ -1186,6 +1200,165 @@ async fn handle_sender_key_distribute(
         }
 
         let _ = tx.commit().await;
+    }
+}
+
+// ── Voice / Call Handlers ───────────────────────────────────
+
+/// Handle voice_state_update: join/leave voice channel, update mute/deaf.
+async fn handle_voice_state_update(
+    state: &AppState,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    user_id: UserId,
+    device_id: &str,
+    payload: VoiceStateUpdatePayload,
+) {
+    match payload.channel_id {
+        Some(channel_id_str) => {
+            // Join a voice channel
+            let channel_uuid = match uuid::Uuid::parse_str(&channel_id_str) {
+                Ok(u) => u,
+                Err(_) => {
+                    send_error_json(ws_sink, "BAD_REQUEST", "invalid channel_id").await;
+                    return;
+                }
+            };
+            let channel_id = ChannelId(channel_uuid);
+
+            // Look up the channel
+            let channel = match channels::get_channel_by_id(&state.db, channel_id).await {
+                Ok(Some(c)) => c,
+                _ => {
+                    send_error_json(ws_sink, "NOT_FOUND", "channel not found").await;
+                    return;
+                }
+            };
+
+            // Must be a voice or video channel
+            if channel.channel_type != "voice" && channel.channel_type != "video" {
+                send_error_json(ws_sink, "BAD_REQUEST", "channel is not a voice/video channel").await;
+                return;
+            }
+
+            // Check server membership
+            let is_member = servers::is_member(&state.db, user_id, channel.server_id)
+                .await
+                .unwrap_or(false);
+            if !is_member {
+                send_error_json(ws_sink, "FORBIDDEN", "not a member of this server").await;
+                return;
+            }
+
+            // Join via SFU
+            match state
+                .sfu_handle
+                .join_room(user_id, device_id.to_string(), channel_id, Some(channel.server_id))
+                .await
+            {
+                Ok(join_result) => {
+                    // Generate CALL_CONFIG with TURN credentials
+                    let turn_creds = mercury_auth::turn::generate_turn_credentials(
+                        &user_id.to_string(),
+                        &mercury_core::config::TurnConfig {
+                            enabled: true,
+                            secret: if state.media_config.ice.turn_secret.is_empty() {
+                                state.turn_config.secret.clone()
+                            } else {
+                                state.media_config.ice.turn_secret.clone()
+                            },
+                            urls: state.media_config.ice.turn_urls.clone(),
+                            credential_ttl_seconds: state.turn_config.credential_ttl_seconds,
+                        },
+                    );
+
+                    let call_config = CallConfigEvent {
+                        room_id: join_result.room_id.clone(),
+                        turn_urls: turn_creds.urls,
+                        stun_urls: state.media_config.ice.stun_urls.clone(),
+                        username: turn_creds.username,
+                        credential: turn_creds.credential,
+                        ttl: turn_creds.ttl,
+                        audio: AudioLimitsPayload {
+                            max_bitrate_kbps: state.media_config.audio.max_bitrate_kbps,
+                            preferred_bitrate_kbps: state.media_config.audio.preferred_bitrate_kbps,
+                        },
+                        video: VideoLimitsPayload {
+                            max_bitrate_kbps: state.media_config.video.max_bitrate_kbps,
+                            max_resolution: state.media_config.video.max_resolution.clone(),
+                            max_framerate: state.media_config.video.max_framerate,
+                        },
+                    };
+
+                    // Send CALL_CONFIG to the joining user
+                    let config_msg = ServerMessage {
+                        t: ServerEvent::CALL_CONFIG,
+                        d: serde_json::to_value(&call_config).unwrap_or_default(),
+                        seq: None,
+                    };
+                    let config_json = serde_json::to_string(&config_msg).unwrap_or_default();
+                    let _ = ws_sink.send(Message::Text(config_json.into())).await;
+
+                    // If user is already in room and just updating mute/deaf state
+                    if payload.self_mute || payload.self_deaf {
+                        let _ = state
+                            .sfu_handle
+                            .update_voice_state(user_id, channel_id, payload.self_mute, payload.self_deaf)
+                            .await;
+                    }
+                }
+                Err(mercury_media::SfuError::RoomFull) => {
+                    send_error_json(ws_sink, "ROOM_FULL", "room has reached maximum participants").await;
+                }
+                Err(e) => {
+                    send_error_json(ws_sink, "INTERNAL_ERROR", &e.to_string()).await;
+                }
+            }
+        }
+        None => {
+            // Leave: channel_id is null
+            let _ = state.sfu_handle.leave_all(user_id).await;
+        }
+    }
+}
+
+/// Handle webrtc_signal: relay SDP offer/answer and ICE candidates.
+async fn handle_webrtc_signal(
+    state: &AppState,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    user_id: UserId,
+    payload: WebrtcSignalPayload,
+) {
+    match state
+        .sfu_handle
+        .webrtc_signal(user_id, payload.room_id, payload.signal)
+        .await
+    {
+        Ok(Some(answer)) => {
+            // Send the SDP answer back to the client
+            let event = ServerMessage {
+                t: ServerEvent::WEBRTC_SIGNAL,
+                d: serde_json::to_value(WebrtcSignalEvent {
+                    from_user: "sfu".to_string(),
+                    signal: answer,
+                })
+                .unwrap_or_default(),
+                seq: None,
+            };
+            let json = serde_json::to_string(&event).unwrap_or_default();
+            let _ = ws_sink.send(Message::Text(json.into())).await;
+        }
+        Ok(None) => {
+            // No response needed (e.g., ICE candidate was relayed)
+        }
+        Err(mercury_media::SfuError::RoomNotFound) => {
+            send_error_json(ws_sink, "NOT_FOUND", "room not found").await;
+        }
+        Err(mercury_media::SfuError::NotInRoom) => {
+            send_error_json(ws_sink, "FORBIDDEN", "not in this room").await;
+        }
+        Err(e) => {
+            send_error_json(ws_sink, "INTERNAL_ERROR", &e.to_string()).await;
+        }
     }
 }
 

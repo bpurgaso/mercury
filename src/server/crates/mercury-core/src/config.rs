@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub tls: TlsConfig,
     #[serde(default)]
     pub turn: TurnConfig,
+    #[serde(default)]
+    pub media: MediaConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,4 +141,158 @@ fn default_turn_credential_ttl_seconds() -> u64 {
 pub struct TlsConfig {
     pub cert_path: String,
     pub key_path: String,
+}
+
+// ── Media / SFU Configuration ───────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MediaConfig {
+    #[serde(default = "default_dedicated_cores")]
+    pub dedicated_cores: usize,
+    #[serde(default = "default_max_participants_per_room")]
+    pub max_participants_per_room: usize,
+    #[serde(default = "default_empty_room_timeout_secs")]
+    pub empty_room_timeout_secs: u64,
+    #[serde(default = "default_udp_port_range_start")]
+    pub udp_port_range_start: u16,
+    #[serde(default = "default_udp_port_range_end")]
+    pub udp_port_range_end: u16,
+    #[serde(default)]
+    pub ice: IceConfig,
+    #[serde(default)]
+    pub audio: AudioConfig,
+    #[serde(default)]
+    pub video: VideoConfig,
+    #[serde(default)]
+    pub bandwidth: BandwidthConfig,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            dedicated_cores: default_dedicated_cores(),
+            max_participants_per_room: default_max_participants_per_room(),
+            empty_room_timeout_secs: default_empty_room_timeout_secs(),
+            udp_port_range_start: default_udp_port_range_start(),
+            udp_port_range_end: default_udp_port_range_end(),
+            ice: IceConfig::default(),
+            audio: AudioConfig::default(),
+            video: VideoConfig::default(),
+            bandwidth: BandwidthConfig::default(),
+        }
+    }
+}
+
+fn default_dedicated_cores() -> usize {
+    2
+}
+fn default_max_participants_per_room() -> usize {
+    25
+}
+fn default_empty_room_timeout_secs() -> u64 {
+    300
+}
+fn default_udp_port_range_start() -> u16 {
+    10000
+}
+fn default_udp_port_range_end() -> u16 {
+    10100
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IceConfig {
+    #[serde(default)]
+    pub turn_secret: String,
+    #[serde(default)]
+    pub turn_urls: Vec<String>,
+    #[serde(default)]
+    pub stun_urls: Vec<String>,
+}
+
+impl Default for IceConfig {
+    fn default() -> Self {
+        Self {
+            turn_secret: String::new(),
+            turn_urls: vec![],
+            stun_urls: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AudioConfig {
+    #[serde(default = "default_audio_max_bitrate")]
+    pub max_bitrate_kbps: u32,
+    #[serde(default = "default_audio_preferred_bitrate")]
+    pub preferred_bitrate_kbps: u32,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            max_bitrate_kbps: default_audio_max_bitrate(),
+            preferred_bitrate_kbps: default_audio_preferred_bitrate(),
+        }
+    }
+}
+
+fn default_audio_max_bitrate() -> u32 {
+    128
+}
+fn default_audio_preferred_bitrate() -> u32 {
+    64
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VideoConfig {
+    #[serde(default = "default_video_max_bitrate")]
+    pub max_bitrate_kbps: u32,
+    #[serde(default = "default_video_max_resolution")]
+    pub max_resolution: String,
+    #[serde(default = "default_video_max_framerate")]
+    pub max_framerate: u32,
+}
+
+impl Default for VideoConfig {
+    fn default() -> Self {
+        Self {
+            max_bitrate_kbps: default_video_max_bitrate(),
+            max_resolution: default_video_max_resolution(),
+            max_framerate: default_video_max_framerate(),
+        }
+    }
+}
+
+fn default_video_max_bitrate() -> u32 {
+    2500
+}
+fn default_video_max_resolution() -> String {
+    "1280x720".to_string()
+}
+fn default_video_max_framerate() -> u32 {
+    30
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BandwidthConfig {
+    #[serde(default = "default_total_mbps")]
+    pub total_mbps: u32,
+    #[serde(default = "default_per_user_kbps")]
+    pub per_user_kbps: u32,
+}
+
+impl Default for BandwidthConfig {
+    fn default() -> Self {
+        Self {
+            total_mbps: default_total_mbps(),
+            per_user_kbps: default_per_user_kbps(),
+        }
+    }
+}
+
+fn default_total_mbps() -> u32 {
+    100
+}
+fn default_per_user_kbps() -> u32 {
+    4000
 }

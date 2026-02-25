@@ -6,8 +6,8 @@ use std::time::Duration;
 use fred::prelude::{Builder, ClientLike, RedisConfig, ReconnectPolicy};
 use futures_util::{SinkExt, StreamExt};
 use mercury_core::config::{
-    AppConfig, AuthConfig, DatabaseConfig, RedisConfig as MercuryRedisConfig, ServerConfig,
-    TlsConfig, TurnConfig,
+    AppConfig, AudioConfig, AuthConfig, BandwidthConfig, DatabaseConfig, IceConfig, MediaConfig,
+    RedisConfig as MercuryRedisConfig, ServerConfig, TlsConfig, TurnConfig, VideoConfig,
 };
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -73,7 +73,37 @@ impl TestServer {
                 cert_path: String::new(),
                 key_path: String::new(),
             },
-            turn: TurnConfig::default(),
+            turn: TurnConfig {
+                enabled: true,
+                secret: "test-turn-secret".to_string(),
+                urls: vec!["turn:localhost:3478".to_string()],
+                credential_ttl_seconds: 86400,
+            },
+            media: MediaConfig {
+                dedicated_cores: 1,
+                max_participants_per_room: 25,
+                empty_room_timeout_secs: 0, // immediate cleanup for tests
+                udp_port_range_start: 10000,
+                udp_port_range_end: 10100,
+                ice: IceConfig {
+                    turn_secret: "test-turn-secret".to_string(),
+                    turn_urls: vec!["turn:localhost:3478".to_string()],
+                    stun_urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                },
+                audio: AudioConfig {
+                    max_bitrate_kbps: 128,
+                    preferred_bitrate_kbps: 64,
+                },
+                video: VideoConfig {
+                    max_bitrate_kbps: 2500,
+                    max_resolution: "1280x720".to_string(),
+                    max_framerate: 30,
+                },
+                bandwidth: BandwidthConfig {
+                    total_mbps: 100,
+                    per_user_kbps: 4000,
+                },
+            },
         };
 
         // Create a separate pool for test cleanup

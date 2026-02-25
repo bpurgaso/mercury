@@ -5,9 +5,10 @@ use anyhow::{Context, Result};
 use fred::prelude::{Builder, ClientLike, RedisConfig, ReconnectPolicy};
 use tokio::net::TcpListener;
 
-use mercury_api::{create_router, AppState, ConnectionManager, GlobalWsRateLimiter};
+use mercury_api::{create_router, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
 use mercury_core::config::AppConfig;
 use mercury_db::pool::create_pool;
+use mercury_media::start_sfu;
 
 /// Start the Mercury server without TLS on the given address.
 ///
@@ -40,16 +41,24 @@ pub async fn start_server(config: AppConfig) -> Result<SocketAddr> {
     let ws_manager = Arc::new(ConnectionManager::new());
     let ws_rate_limiter = Arc::new(GlobalWsRateLimiter::new(config.server.ws_rate_limit_per_sec));
 
+    // Start the SFU on a dedicated runtime
+    let (sfu_handle, sfu_event_rx) = start_sfu(&config.media);
+
     let state = AppState {
         db: db_pool,
         redis,
         auth_config: Arc::new(config.auth),
         turn_config: Arc::new(config.turn),
+        media_config: Arc::new(config.media),
         ws_manager,
         ws_rate_limiter,
+        sfu_handle,
         heartbeat_interval_secs: config.server.heartbeat_interval_secs,
         auth_rate_limit_per_min: config.server.auth_rate_limit_per_min,
     };
+
+    // Spawn the SFU event consumer (dispatches SFU events to WebSocket clients)
+    spawn_sfu_event_consumer(state.clone(), sfu_event_rx);
 
     let app = create_router(state);
 
