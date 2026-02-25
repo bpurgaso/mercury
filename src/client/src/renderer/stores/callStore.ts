@@ -395,10 +395,28 @@ export const useCallStore = create<CallState>((set, get) => {
       set((state) => {
         const remoteStreams = new Map(state.remoteStreams)
         const stream = remoteStreams.get(userId)
+
+        // Recompute hasAudio/hasVideo from remaining tracks
+        const participants = new Map(state.participants)
+        const participant = participants.get(userId)
+        if (participant && stream) {
+          participants.set(userId, {
+            ...participant,
+            hasAudio: stream.getAudioTracks().some((t) => t.readyState === 'live'),
+            hasVideo: stream.getVideoTracks().some((t) => t.readyState === 'live'),
+          })
+        } else if (participant && !stream) {
+          participants.set(userId, {
+            ...participant,
+            hasAudio: false,
+            hasVideo: false,
+          })
+        }
+
         if (stream && stream.getTracks().length === 0) {
           remoteStreams.delete(userId)
         }
-        return { remoteStreams }
+        return { remoteStreams, participants }
       })
     })
 

@@ -3,7 +3,6 @@ import { useServerStore } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'
 import { CreateChannelModal } from '../channel/CreateChannelModal'
 import { ChannelLockIcon } from '../dm/EncryptionBadge'
-import { VoicePanel } from '../voice/VoicePanel'
 import { VoiceChannelEntry } from '../voice/VoiceChannelEntry'
 
 export function ChannelList(): React.ReactElement {
@@ -17,7 +16,7 @@ export function ChannelList(): React.ReactElement {
 
   if (!activeServerId) {
     return (
-      <div className="flex h-full w-60 flex-col bg-bg-secondary">
+      <div className="flex h-full flex-col bg-bg-secondary">
         <div className="flex h-12 items-center border-b border-border-subtle px-4">
           <span className="text-text-muted">Select a server</span>
         </div>
@@ -33,7 +32,7 @@ export function ChannelList(): React.ReactElement {
 
   return (
     <>
-      <div className="flex h-full w-60 flex-col bg-bg-secondary">
+      <div className="flex h-full flex-col bg-bg-secondary">
         {/* Server header */}
         <div className="flex h-12 items-center border-b border-border-subtle px-4">
           <span className="truncate font-semibold text-text-primary">{server?.name}</span>
@@ -84,9 +83,6 @@ export function ChannelList(): React.ReactElement {
             </>
           )}
         </div>
-
-        {/* Voice panel (persistent when in a call) */}
-        <VoicePanel />
 
         {/* User area */}
         <div className="flex items-center gap-2 border-t border-border-subtle bg-bg-primary/50 px-2 py-2">

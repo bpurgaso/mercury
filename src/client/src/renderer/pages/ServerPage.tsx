@@ -13,6 +13,7 @@ import { MessageList } from '../components/chat/MessageList'
 import { MessageInput } from '../components/chat/MessageInput'
 import { VideoGrid } from '../components/voice/VideoGrid'
 import { DiagnosticPanel } from '../components/voice/DiagnosticPanel'
+import { VoicePanel } from '../components/voice/VoicePanel'
 import { wsManager } from '../services/websocket'
 
 export function ServerPage(): React.ReactElement {
@@ -106,8 +107,13 @@ export function ServerPage(): React.ReactElement {
       {/* Server sidebar (left icons) */}
       <Sidebar />
 
-      {/* Channel/DM list (middle) */}
-      {isDmView ? <DmList /> : <ChannelList />}
+      {/* Channel/DM list (middle) + persistent VoicePanel */}
+      <div className="flex h-full w-60 flex-col">
+        <div className="flex-1 overflow-hidden">
+          {isDmView ? <DmList /> : <ChannelList />}
+        </div>
+        <VoicePanel />
+      </div>
 
       {/* Chat area (right) */}
       <div className="flex flex-1 flex-col bg-bg-tertiary">

@@ -9,7 +9,7 @@ export function DmList(): React.ReactElement {
   const channels = Array.from(dmChannels.values())
 
   return (
-    <div className="flex h-full w-60 flex-col bg-bg-secondary">
+    <div className="flex h-full flex-col bg-bg-secondary">
       <div className="flex h-12 items-center border-b border-border-subtle px-4">
         <span className="font-semibold text-text-primary">Direct Messages</span>
       </div>
