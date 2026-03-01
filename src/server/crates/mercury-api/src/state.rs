@@ -1,5 +1,5 @@
 use fred::prelude::RedisClient;
-use mercury_core::config::{AuthConfig, MediaConfig, TurnConfig};
+use mercury_core::config::{AuthConfig, MediaConfig, ModerationConfig, TurnConfig};
 use mercury_media::SfuHandle;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -14,6 +14,7 @@ pub struct AppState {
     pub auth_config: Arc<AuthConfig>,
     pub turn_config: Arc<TurnConfig>,
     pub media_config: Arc<MediaConfig>,
+    pub moderation_config: Arc<ModerationConfig>,
     pub ws_manager: Arc<ConnectionManager>,
     pub ws_rate_limiter: Arc<GlobalWsRateLimiter>,
     pub sfu_handle: SfuHandle,

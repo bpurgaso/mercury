@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub turn: TurnConfig,
     #[serde(default)]
     pub media: MediaConfig,
+    #[serde(default)]
+    pub moderation: ModerationConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -330,4 +332,85 @@ fn default_total_mbps() -> u32 {
 }
 fn default_per_user_kbps() -> u32 {
     4000
+}
+
+// ── Moderation Configuration ────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModerationConfig {
+    #[serde(default)]
+    pub auto_actions: AutoActionsConfig,
+    #[serde(default)]
+    pub reporting: ReportingConfig,
+}
+
+impl Default for ModerationConfig {
+    fn default() -> Self {
+        Self {
+            auto_actions: AutoActionsConfig::default(),
+            reporting: ReportingConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutoActionsConfig {
+    #[serde(default = "default_auto_actions_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_rapid_messaging_threshold")]
+    pub rapid_messaging_threshold: u64,
+    #[serde(default = "default_rapid_messaging_cooldown_seconds")]
+    pub rapid_messaging_cooldown_seconds: u64,
+    #[serde(default = "default_mass_dm_threshold")]
+    pub mass_dm_threshold: u64,
+    #[serde(default = "default_mass_dm_cooldown_seconds")]
+    pub mass_dm_cooldown_seconds: u64,
+    #[serde(default = "default_join_spam_threshold")]
+    pub join_spam_threshold: u64,
+    #[serde(default = "default_join_spam_cooldown_seconds")]
+    pub join_spam_cooldown_seconds: u64,
+    #[serde(default = "default_report_alert_threshold")]
+    pub report_alert_threshold: u64,
+    #[serde(default = "default_report_rate_limit_per_day")]
+    pub report_rate_limit_per_day: u64,
+}
+
+impl Default for AutoActionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_auto_actions_enabled(),
+            rapid_messaging_threshold: default_rapid_messaging_threshold(),
+            rapid_messaging_cooldown_seconds: default_rapid_messaging_cooldown_seconds(),
+            mass_dm_threshold: default_mass_dm_threshold(),
+            mass_dm_cooldown_seconds: default_mass_dm_cooldown_seconds(),
+            join_spam_threshold: default_join_spam_threshold(),
+            join_spam_cooldown_seconds: default_join_spam_cooldown_seconds(),
+            report_alert_threshold: default_report_alert_threshold(),
+            report_rate_limit_per_day: default_report_rate_limit_per_day(),
+        }
+    }
+}
+
+fn default_auto_actions_enabled() -> bool { true }
+fn default_rapid_messaging_threshold() -> u64 { 30 }
+fn default_rapid_messaging_cooldown_seconds() -> u64 { 600 }
+fn default_mass_dm_threshold() -> u64 { 20 }
+fn default_mass_dm_cooldown_seconds() -> u64 { 3600 }
+fn default_join_spam_threshold() -> u64 { 10 }
+fn default_join_spam_cooldown_seconds() -> u64 { 3600 }
+fn default_report_alert_threshold() -> u64 { 5 }
+fn default_report_rate_limit_per_day() -> u64 { 20 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReportingConfig {
+    #[serde(default)]
+    pub operator_moderation_pubkey: String,
+}
+
+impl Default for ReportingConfig {
+    fn default() -> Self {
+        Self {
+            operator_moderation_pubkey: String::new(),
+        }
+    }
 }

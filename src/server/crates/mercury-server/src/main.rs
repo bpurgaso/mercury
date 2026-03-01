@@ -12,7 +12,7 @@ use tower::Service;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use mercury_api::{create_router, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
+use mercury_api::{create_router, spawn_abuse_detector, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
 use mercury_core::config::AppConfig;
 use mercury_db::pool::create_pool;
 use mercury_media::start_sfu;
@@ -134,6 +134,7 @@ async fn main() -> Result<()> {
         auth_config: Arc::new(config.auth),
         turn_config: Arc::new(config.turn),
         media_config: Arc::new(config.media),
+        moderation_config: Arc::new(config.moderation),
         ws_manager: ws_manager.clone(),
         ws_rate_limiter,
         sfu_handle,
@@ -143,6 +144,9 @@ async fn main() -> Result<()> {
 
     // Spawn the SFU event consumer (dispatches SFU events to WebSocket clients)
     spawn_sfu_event_consumer(state.clone(), sfu_event_rx);
+
+    // Spawn the abuse detector background task
+    spawn_abuse_detector(state.clone());
 
     let tls_config = load_tls_config(&config.tls.cert_path, &config.tls.key_path)?;
     let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));

@@ -152,6 +152,24 @@ pub async fn get_member_user_ids(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// Get the owner and all moderator user IDs for a server.
+pub async fn get_owner_and_mod_ids(
+    pool: &PgPool,
+    server_id: ServerId,
+) -> Result<Vec<UserId>, sqlx::Error> {
+    let rows: Vec<(UserId,)> = sqlx::query_as(
+        r#"
+        SELECT user_id FROM server_members WHERE server_id = $1 AND is_moderator = true
+        UNION
+        SELECT owner_id FROM servers WHERE id = $1
+        "#,
+    )
+    .bind(server_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// Get the server_id for a channel (used for ownership/membership checks on channel routes).
 pub async fn get_server_id_for_channel(
     pool: &PgPool,

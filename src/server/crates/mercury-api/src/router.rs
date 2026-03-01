@@ -72,6 +72,14 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/{id}/audit-log",
             get(handlers::moderation::get_audit_log),
+        )
+        .route(
+            "/{id}/reports",
+            get(handlers::moderation::list_reports),
+        )
+        .route(
+            "/{id}/moderation-key",
+            get(handlers::moderation::get_moderation_key),
         );
 
     // Device routes — require authentication
@@ -114,6 +122,27 @@ pub fn create_router(state: AppState) -> Router {
         .route("/", get(handlers::dm::list_dm_channels))
         .route("/{id}/messages", get(handlers::dm::get_dm_messages));
 
+    // Report routes — require authentication
+    let report_routes = Router::new()
+        .route("/", post(handlers::moderation::submit_report))
+        .route("/{id}", get(handlers::moderation::get_report))
+        .route("/{id}", patch(handlers::moderation::review_report));
+
+    // Admin routes — require authentication (owner/mod of at least one server)
+    let admin_routes = Router::new()
+        .route(
+            "/abuse-signals",
+            get(handlers::moderation::list_abuse_signals),
+        )
+        .route(
+            "/abuse-signals/{id}",
+            patch(handlers::moderation::mark_signal_reviewed),
+        )
+        .route(
+            "/abuse-stats",
+            get(handlers::moderation::get_abuse_stats),
+        );
+
     let cors = CorsLayer::new()
         .allow_methods([
             Method::GET,
@@ -137,6 +166,8 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/channels", channel_routes)
         .nest("/dm", dm_routes)
         .nest("/calls", call_routes)
+        .nest("/reports", report_routes)
+        .nest("/admin", admin_routes)
         .nest("/sender-keys", sender_key_routes)
         // Key bundle fetch routes nested under /users (any authenticated user can fetch)
         .route(

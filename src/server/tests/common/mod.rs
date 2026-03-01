@@ -7,7 +7,8 @@ use fred::prelude::{Builder, ClientLike, RedisConfig, ReconnectPolicy};
 use futures_util::{SinkExt, StreamExt};
 use mercury_core::config::{
     AppConfig, AudioConfig, AuthConfig, BandwidthConfig, DatabaseConfig, IceConfig, MediaConfig,
-    RedisConfig as MercuryRedisConfig, ServerConfig, TlsConfig, TurnConfig, VideoConfig,
+    ModerationConfig, RedisConfig as MercuryRedisConfig, ServerConfig, TlsConfig, TurnConfig,
+    VideoConfig,
 };
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -100,6 +101,7 @@ impl TestServer {
                     per_user_kbps: 4000,
                 },
             },
+            moderation: ModerationConfig::default(),
         };
 
         // Create a separate pool for test cleanup

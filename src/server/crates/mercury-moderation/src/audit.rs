@@ -167,6 +167,25 @@ pub async fn is_owner(
     Ok(row.is_some())
 }
 
+/// Check if a user is an owner or moderator of ANY server (for admin endpoint access).
+pub async fn is_any_server_mod_or_owner(
+    pool: &PgPool,
+    user_id: UserId,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        r#"
+        SELECT 1 as n FROM servers WHERE owner_id = $1
+        UNION ALL
+        SELECT 1 as n FROM server_members WHERE user_id = $1 AND is_moderator = true
+        LIMIT 1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 /// Promote a user to moderator.
 pub async fn promote_moderator(
     pool: &PgPool,

@@ -696,11 +696,20 @@ async fn handle_standard_message_send(
     sender_id: UserId,
     payload: MessageSendPayload,
 ) {
+    // Check auto-action rate limit (abuse detector cooldown)
+    if mercury_moderation::abuse::is_globally_rate_limited(&state.redis, sender_id).await {
+        send_error_json(ws_sink, "RATE_LIMITED", "you are temporarily rate limited").await;
+        return;
+    }
+
     // Per-user rate limit
     if !check_message_rate_limit(state, sender_id).await {
         send_error_json(ws_sink, "RATE_LIMITED", "message send rate limit exceeded").await;
         return;
     }
+
+    // Increment abuse counter for rapid messaging detection
+    mercury_moderation::abuse::increment_msg_rate(&state.redis, sender_id).await;
 
     // Parse channel_id
     let channel_uuid = match uuid::Uuid::parse_str(&payload.channel_id) {
@@ -857,11 +866,20 @@ async fn handle_dm_message_send(
     _sender_device_id: &str,
     payload: DmMessageSendPayload,
 ) {
+    // Check auto-action rate limit
+    if mercury_moderation::abuse::is_globally_rate_limited(&state.redis, sender_id).await {
+        send_error_json(ws_sink, "RATE_LIMITED", "you are temporarily rate limited").await;
+        return;
+    }
+
     // Per-user rate limit
     if !check_message_rate_limit(state, sender_id).await {
         send_error_json(ws_sink, "RATE_LIMITED", "message send rate limit exceeded").await;
         return;
     }
+
+    // Increment abuse counter for rapid messaging detection
+    mercury_moderation::abuse::increment_msg_rate(&state.redis, sender_id).await;
 
     // Parse dm_channel_id
     let dm_channel_uuid = match uuid::Uuid::parse_str(&payload.dm_channel_id) {
@@ -999,11 +1017,20 @@ async fn handle_private_message_send(
     sender_id: UserId,
     payload: PrivateMessageSendPayload,
 ) {
+    // Check auto-action rate limit
+    if mercury_moderation::abuse::is_globally_rate_limited(&state.redis, sender_id).await {
+        send_error_json(ws_sink, "RATE_LIMITED", "you are temporarily rate limited").await;
+        return;
+    }
+
     // Per-user rate limit
     if !check_message_rate_limit(state, sender_id).await {
         send_error_json(ws_sink, "RATE_LIMITED", "message send rate limit exceeded").await;
         return;
     }
+
+    // Increment abuse counter for rapid messaging detection
+    mercury_moderation::abuse::increment_msg_rate(&state.redis, sender_id).await;
 
     // Parse channel_id
     let channel_uuid = match uuid::Uuid::parse_str(&payload.channel_id) {

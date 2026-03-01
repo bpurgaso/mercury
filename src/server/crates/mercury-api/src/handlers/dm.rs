@@ -71,6 +71,11 @@ pub async fn create_or_get_dm(
         return Err(MercuryError::BadRequest("cannot create a DM with yourself".into()));
     }
 
+    // Check if DM creation is blocked by abuse detection
+    if mercury_moderation::abuse::is_dm_blocked(&state.redis, auth_user.user_id).await {
+        return Err(MercuryError::Forbidden("DM creation temporarily blocked".into()));
+    }
+
     // Verify recipient exists
     let recipient = mercury_db::users::get_user_by_id(&state.db, recipient_id)
         .await?
@@ -105,6 +110,9 @@ pub async fn create_or_get_dm(
         recipient_id,
     )
     .await?;
+
+    // Increment DM creation rate counter for abuse detection
+    mercury_moderation::abuse::increment_dm_rate(&state.redis, auth_user.user_id).await;
 
     Ok(Json(DmChannelResponse {
         id: dm_channel.id.to_string(),

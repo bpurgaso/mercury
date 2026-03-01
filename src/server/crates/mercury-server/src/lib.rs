@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use fred::prelude::{Builder, ClientLike, RedisConfig, ReconnectPolicy};
 use tokio::net::TcpListener;
 
-use mercury_api::{create_router, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
+use mercury_api::{create_router, spawn_abuse_detector, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
 use mercury_core::config::AppConfig;
 use mercury_db::pool::create_pool;
 use mercury_media::start_sfu;
@@ -50,6 +50,7 @@ pub async fn start_server(config: AppConfig) -> Result<SocketAddr> {
         auth_config: Arc::new(config.auth),
         turn_config: Arc::new(config.turn),
         media_config: Arc::new(config.media),
+        moderation_config: Arc::new(config.moderation),
         ws_manager,
         ws_rate_limiter,
         sfu_handle,
@@ -59,6 +60,9 @@ pub async fn start_server(config: AppConfig) -> Result<SocketAddr> {
 
     // Spawn the SFU event consumer (dispatches SFU events to WebSocket clients)
     spawn_sfu_event_consumer(state.clone(), sfu_event_rx);
+
+    // Spawn the abuse detector background task
+    spawn_abuse_detector(state.clone());
 
     let app = create_router(state);
 

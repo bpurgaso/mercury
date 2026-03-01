@@ -179,6 +179,11 @@ pub async fn join_server(
         .await?
         .ok_or_else(|| MercuryError::NotFound("invalid invite code".into()))?;
 
+    // Check if server joins are blocked by abuse detection
+    if mercury_moderation::abuse::is_join_blocked(&state.redis, auth_user.user_id).await {
+        return Err(MercuryError::Forbidden("server joins temporarily blocked".into()));
+    }
+
     // Check if user is banned from this server
     if mercury_moderation::bans::is_banned(&state.db, &state.redis, server.id, auth_user.user_id)
         .await
@@ -194,6 +199,9 @@ pub async fn join_server(
     }
 
     mercury_db::servers::add_member(&state.db, auth_user.user_id, server.id).await?;
+
+    // Increment join rate counter for abuse detection
+    mercury_moderation::abuse::increment_join_rate(&state.redis, auth_user.user_id).await;
 
     // Add new member to all existing private channels in this server
     mercury_db::channels::add_member_to_server_private_channels(

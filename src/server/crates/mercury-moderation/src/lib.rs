@@ -1,7 +1,9 @@
+pub mod abuse;
 pub mod audit;
 pub mod bans;
 pub mod blocks;
 pub mod mutes;
+pub mod reports;
 
 use uuid::Uuid;
 
