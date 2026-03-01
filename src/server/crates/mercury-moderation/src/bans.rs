@@ -81,6 +81,12 @@ pub async fn list_bans(
     .await
 }
 
+/// Short TTL for negative cache entries (not banned / not muted).
+const NEGATIVE_CACHE_TTL_SECS: i64 = 30;
+
+/// Sentinel value stored in Redis to indicate "checked DB, user is NOT banned".
+const NOT_BANNED_SENTINEL: &str = "__not_banned__";
+
 /// Check if a user is banned from a server (Redis fast path, DB fallback).
 pub async fn is_banned(
     pool: &PgPool,
@@ -91,9 +97,14 @@ pub async fn is_banned(
     let key = format!("banned:{}:{}", server_id, user_id);
 
     // Check Redis first
-    match redis.exists::<bool, _>(&key).await {
-        Ok(true) => return true,
-        Ok(false) => {}
+    match redis.get::<Option<String>, _>(&key).await {
+        Ok(Some(val)) => {
+            if val == NOT_BANNED_SENTINEL {
+                return false; // Negative cache hit
+            }
+            return true; // Positive cache hit
+        }
+        Ok(None) => {} // Cache miss — fall through to DB
         Err(_) => {}
     }
 
@@ -112,7 +123,7 @@ pub async fn is_banned(
     .unwrap_or(None);
 
     if row.is_some() {
-        // Re-cache in Redis
+        // Re-cache positive result in Redis
         let ban: Option<ServerBan> = sqlx::query_as::<_, ServerBan>(
             "SELECT * FROM server_bans WHERE server_id = $1 AND user_id = $2",
         )
@@ -126,6 +137,17 @@ pub async fn is_banned(
         }
         true
     } else {
+        // Cache negative result with short TTL
+        let _: () = redis
+            .set(
+                &key,
+                NOT_BANNED_SENTINEL,
+                Some(Expiration::EX(NEGATIVE_CACHE_TTL_SECS)),
+                None,
+                false,
+            )
+            .await
+            .unwrap_or(());
         false
     }
 }

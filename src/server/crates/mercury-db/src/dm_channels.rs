@@ -144,6 +144,22 @@ pub async fn get_dm_channel_by_id(
         .await
 }
 
+/// Get the other user in a DM channel (i.e., not the given user).
+pub async fn get_dm_recipient(
+    pool: &PgPool,
+    dm_channel_id: DmChannelId,
+    user_id: UserId,
+) -> Result<Option<UserId>, sqlx::Error> {
+    let row: Option<(UserId,)> = sqlx::query_as(
+        "SELECT user_id FROM dm_members WHERE dm_channel_id = $1 AND user_id != $2 LIMIT 1",
+    )
+    .bind(dm_channel_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id,)| id))
+}
+
 /// Get the members of a DM channel.
 pub async fn get_dm_members(
     pool: &PgPool,

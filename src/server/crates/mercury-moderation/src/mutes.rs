@@ -57,6 +57,12 @@ pub async fn unmute_user(
     Ok(result.rows_affected() > 0)
 }
 
+/// Short TTL for negative cache entries.
+const NEGATIVE_CACHE_TTL_SECS: i64 = 30;
+
+/// Sentinel value stored in Redis to indicate "checked DB, user is NOT muted".
+const NOT_MUTED_SENTINEL: &str = "__not_muted__";
+
 /// Check if a user is muted in a channel (Redis fast path).
 pub async fn is_muted(
     pool: &PgPool,
@@ -67,9 +73,14 @@ pub async fn is_muted(
     let key = format!("muted:{}:{}", channel_id, user_id);
 
     // Check Redis first
-    match redis.exists::<bool, _>(&key).await {
-        Ok(true) => return true,
-        Ok(false) => {}
+    match redis.get::<Option<String>, _>(&key).await {
+        Ok(Some(val)) => {
+            if val == NOT_MUTED_SENTINEL {
+                return false; // Negative cache hit
+            }
+            return true; // Positive cache hit
+        }
+        Ok(None) => {} // Cache miss — fall through to DB
         Err(_) => {}
     }
 
@@ -88,7 +99,7 @@ pub async fn is_muted(
     .unwrap_or(None);
 
     if row.is_some() {
-        // Re-cache
+        // Re-cache positive result
         let mute: Option<ChannelMute> = sqlx::query_as::<_, ChannelMute>(
             "SELECT * FROM channel_mutes WHERE channel_id = $1 AND user_id = $2",
         )
@@ -102,6 +113,17 @@ pub async fn is_muted(
         }
         true
     } else {
+        // Cache negative result with short TTL
+        let _: () = redis
+            .set(
+                &key,
+                NOT_MUTED_SENTINEL,
+                Some(Expiration::EX(NEGATIVE_CACHE_TTL_SECS)),
+                None,
+                false,
+            )
+            .await
+            .unwrap_or(());
         false
     }
 }

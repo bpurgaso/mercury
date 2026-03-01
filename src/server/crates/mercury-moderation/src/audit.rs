@@ -40,6 +40,7 @@ pub async fn get_audit_log(
     limit: i64,
     action_filter: Option<&str>,
     target_user_filter: Option<UserId>,
+    moderator_filter: Option<UserId>,
 ) -> Result<Vec<AuditLogEntryWithNames>, sqlx::Error> {
     // Build dynamic query
     let mut query = String::from(
@@ -72,6 +73,10 @@ pub async fn get_audit_log(
         conditions.push(format!("mal.target_user_id = ${param_idx}"));
         param_idx += 1;
     }
+    if moderator_filter.is_some() {
+        conditions.push(format!("mal.moderator_id = ${param_idx}"));
+        param_idx += 1;
+    }
 
     for cond in &conditions {
         query.push_str(" AND ");
@@ -92,6 +97,9 @@ pub async fn get_audit_log(
     }
     if let Some(t) = target_user_filter {
         q = q.bind(t);
+    }
+    if let Some(m) = moderator_filter {
+        q = q.bind(m);
     }
 
     q = q.bind(limit);

@@ -660,6 +660,7 @@ pub struct AuditLogParams {
     pub limit: Option<i64>,
     pub action: Option<String>,
     pub target_user_id: Option<uuid::Uuid>,
+    pub moderator_id: Option<uuid::Uuid>,
 }
 
 /// GET /servers/:id/audit-log
@@ -681,6 +682,7 @@ pub async fn get_audit_log(
         limit,
         params.action.as_deref(),
         params.target_user_id.map(UserId),
+        params.moderator_id.map(UserId),
     )
     .await
     .map_err(|e| MercuryError::Database(e))?;

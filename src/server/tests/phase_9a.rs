@@ -980,3 +980,201 @@ fn test_mute_unmute_websocket_events() {
         ws.close().await;
     });
 }
+
+// ────────────────────────────────────────────────────────────
+//  Block enforcement on DM creation
+// ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_blocked_user_cannot_create_dm() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+        let (token_a, user_a) = register_user(srv, "alice", "alice@test.com").await;
+        let (token_b, user_b) = register_user(srv, "bob", "bob@test.com").await;
+        let client = srv.client();
+
+        // Alice blocks Bob
+        let status = client
+            .put_authed_with_token(&token_a, &format!("/users/me/blocks/{user_b}"), &json!({}))
+            .await
+            .0;
+        assert_eq!(status, 204);
+
+        // Bob tries to create a DM with Alice — should be rejected
+        let (status, _) = client
+            .post_authed_with_token(
+                &token_b,
+                "/dm",
+                &json!({ "recipient_id": user_a }),
+            )
+            .await;
+        assert_eq!(status, 403, "blocked user should not be able to create DM");
+
+        // Alice tries to create a DM with Bob (blocker initiating) — should also be rejected
+        let (status, _) = client
+            .post_authed_with_token(
+                &token_a,
+                "/dm",
+                &json!({ "recipient_id": user_b }),
+            )
+            .await;
+        assert_eq!(status, 403, "blocker should not be able to create DM with blocked user");
+    });
+}
+
+#[test]
+fn test_dm_policy_nobody_rejects_dm() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+        let (token_a, user_a) = register_user(srv, "alice", "alice@test.com").await;
+        let (token_b, _user_b) = register_user(srv, "bob", "bob@test.com").await;
+        let client = srv.client();
+
+        // Alice sets DM policy to "nobody"
+        let (status, _) = client
+            .put_authed_with_token(
+                &token_a,
+                "/users/me/dm-policy",
+                &json!({ "policy": "nobody" }),
+            )
+            .await;
+        assert_eq!(status, 200);
+
+        // Bob tries to create a DM with Alice — should be rejected
+        let (status, _) = client
+            .post_authed_with_token(
+                &token_b,
+                "/dm",
+                &json!({ "recipient_id": user_a }),
+            )
+            .await;
+        assert_eq!(status, 403, "DM policy 'nobody' should reject DM creation");
+    });
+}
+
+#[test]
+fn test_dm_policy_mutual_servers_enforced() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+        let (token_a, user_a) = register_user(srv, "alice", "alice@test.com").await;
+        let (token_b, _user_b) = register_user(srv, "bob", "bob@test.com").await;
+        let client = srv.client();
+
+        // Alice sets DM policy to "mutual_servers"
+        let (status, _) = client
+            .put_authed_with_token(
+                &token_a,
+                "/users/me/dm-policy",
+                &json!({ "policy": "mutual_servers" }),
+            )
+            .await;
+        assert_eq!(status, 200);
+
+        // Bob tries to create a DM with Alice — should fail (no shared servers)
+        let (status, _) = client
+            .post_authed_with_token(
+                &token_b,
+                "/dm",
+                &json!({ "recipient_id": user_a }),
+            )
+            .await;
+        assert_eq!(status, 403, "mutual_servers policy should reject with no shared servers");
+
+        // Create a shared server
+        let (_, invite_code) = create_server(srv, &token_a, "SharedServer").await;
+        join_server(srv, &token_b, &invite_code).await;
+
+        // Now Bob should be able to create DM with Alice
+        let (status, _) = client
+            .post_authed_with_token(
+                &token_b,
+                "/dm",
+                &json!({ "recipient_id": user_a }),
+            )
+            .await;
+        assert_eq!(status, 200, "mutual_servers policy should allow DM when sharing a server");
+    });
+}
+
+// ────────────────────────────────────────────────────────────
+//  Audit log moderator_id filter
+// ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_audit_log_moderator_id_filter() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+        let (token_owner, owner_id) = register_user(srv, "owner", "owner@test.com").await;
+        let (token_mod, mod_id) = register_user(srv, "mod", "mod@test.com").await;
+        let (token_user, user_id) = register_user(srv, "user", "user@test.com").await;
+        let client = srv.client();
+
+        let (server_id, invite_code) = create_server(srv, &token_owner, "AuditFilterServer").await;
+        join_server(srv, &token_mod, &invite_code).await;
+        join_server(srv, &token_user, &invite_code).await;
+
+        // Promote mod
+        let (status, _) = client
+            .put_authed_with_token(
+                &token_owner,
+                &format!("/servers/{server_id}/moderators/{mod_id}"),
+                &json!({}),
+            )
+            .await;
+        assert_eq!(status, 204);
+
+        // Owner kicks user
+        let (status, _) = client
+            .post_authed_with_token(
+                &token_owner,
+                &format!("/servers/{server_id}/kicks/{user_id}"),
+                &json!({}),
+            )
+            .await;
+        assert_eq!(status, 204);
+
+        // Rejoin user so mod can also act
+        join_server(srv, &token_user, &invite_code).await;
+
+        // Mod kicks user
+        let (status, _) = client
+            .post_authed_with_token(
+                &token_mod,
+                &format!("/servers/{server_id}/kicks/{user_id}"),
+                &json!({}),
+            )
+            .await;
+        assert_eq!(status, 204);
+
+        // Query audit log filtered by owner — should get only owner's actions
+        let (status, body) = client
+            .get_authed_with_token(
+                &token_owner,
+                &format!("/servers/{server_id}/audit-log?moderator_id={owner_id}"),
+            )
+            .await;
+        assert_eq!(status, 200);
+        let entries = body.as_array().unwrap();
+        // Owner performed: PROMOTE_MODERATOR and KICK (2 entries)
+        assert_eq!(entries.len(), 2, "should have 2 entries for owner");
+        for entry in entries {
+            assert_eq!(entry["moderator_id"].as_str().unwrap(), owner_id);
+        }
+
+        // Query audit log filtered by mod — should get only mod's action
+        let (status, body) = client
+            .get_authed_with_token(
+                &token_owner,
+                &format!("/servers/{server_id}/audit-log?moderator_id={mod_id}"),
+            )
+            .await;
+        assert_eq!(status, 200);
+        let entries = body.as_array().unwrap();
+        assert_eq!(entries.len(), 1, "should have 1 entry for mod");
+        assert_eq!(entries[0]["moderator_id"].as_str().unwrap(), mod_id);
+    });
+}

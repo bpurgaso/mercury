@@ -878,6 +878,19 @@ async fn handle_dm_message_send(
         return;
     }
 
+    // Block enforcement: silently drop if either user has blocked the other.
+    // No error is sent to prevent information leakage about block status.
+    if let Ok(Some(recipient_id)) =
+        mercury_db::dm_channels::get_dm_recipient(&state.db, dm_channel_id, sender_id).await
+    {
+        // Check if recipient blocked sender OR sender blocked recipient
+        if mercury_moderation::blocks::is_blocked(&state.redis, recipient_id, sender_id).await
+            || mercury_moderation::blocks::is_blocked(&state.redis, sender_id, recipient_id).await
+        {
+            return;
+        }
+    }
+
     // Validate non-empty recipients
     if payload.recipients.is_empty() {
         send_error_json(ws_sink, "BAD_REQUEST", "recipients array is empty").await;
