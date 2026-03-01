@@ -7,6 +7,25 @@ use serde::{Deserialize, Serialize};
 use super::manager::ConnectionManager;
 use super::protocol::{PresenceUpdateEvent, ServerEvent, ServerMessage};
 
+/// Filter a list of connected user IDs to exclude those who have blocked `target_user`.
+async fn filter_blocked(
+    redis: &RedisClient,
+    connected_users: &[UserId],
+    target_user: UserId,
+) -> Vec<UserId> {
+    let mut filtered = Vec::with_capacity(connected_users.len());
+    for uid in connected_users {
+        if *uid == target_user {
+            filtered.push(*uid);
+            continue;
+        }
+        if !mercury_moderation::blocks::is_blocked(redis, *uid, target_user).await {
+            filtered.push(*uid);
+        }
+    }
+    filtered
+}
+
 /// Presence data stored in Redis under `presence:{user_id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceData {
@@ -64,7 +83,7 @@ pub async fn set_online(
         )
         .await?;
 
-    // Broadcast online event immediately to all connected users
+    // Broadcast online event to connected users (excluding those who blocked this user)
     let event = ServerMessage {
         t: ServerEvent::PRESENCE_UPDATE,
         d: serde_json::to_value(PresenceUpdateEvent {
@@ -76,7 +95,8 @@ pub async fn set_online(
     };
 
     let connected_users = manager.connected_user_ids();
-    manager.send_to_users(&connected_users, &event);
+    let recipients = filter_blocked(redis, &connected_users, user_id).await;
+    manager.send_to_users(&recipients, &event);
 
     Ok(())
 }
@@ -183,7 +203,7 @@ pub async fn update_status(
             )
             .await?;
 
-        // Broadcast presence change
+        // Broadcast presence change (excluding users who blocked this user)
         let event = ServerMessage {
             t: ServerEvent::PRESENCE_UPDATE,
             d: serde_json::to_value(PresenceUpdateEvent {
@@ -195,7 +215,8 @@ pub async fn update_status(
         };
 
         let connected_users = manager.connected_user_ids();
-        manager.send_to_users(&connected_users, &event);
+        let recipients = filter_blocked(redis, &connected_users, user_id).await;
+        manager.send_to_users(&recipients, &event);
     }
 
     Ok(())
@@ -245,7 +266,7 @@ async fn finalize_offline(
             .await?;
     }
 
-    // Broadcast offline event
+    // Broadcast offline event (excluding users who blocked this user)
     let event = ServerMessage {
         t: ServerEvent::PRESENCE_UPDATE,
         d: serde_json::to_value(PresenceUpdateEvent {
@@ -257,7 +278,8 @@ async fn finalize_offline(
     };
 
     let connected_users = manager.connected_user_ids();
-    manager.send_to_users(&connected_users, &event);
+    let recipients = filter_blocked(redis, &connected_users, user_id).await;
+    manager.send_to_users(&recipients, &event);
 
     Ok(())
 }

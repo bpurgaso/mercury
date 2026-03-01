@@ -799,11 +799,20 @@ async fn handle_standard_message_send(
         None,
     );
 
-    // Broadcast to all connected members of this server
+    // Broadcast to server members, filtering out those who have blocked the sender
     let member_ids = mercury_db::servers::get_member_user_ids(&state.db, channel.server_id)
         .await
         .unwrap_or_default();
-    state.ws_manager.send_binary_to_users(&member_ids, &bytes);
+    let mut filtered_ids = Vec::with_capacity(member_ids.len());
+    for mid in &member_ids {
+        if *mid != sender_id
+            && mercury_moderation::blocks::is_blocked(&state.redis, *mid, sender_id).await
+        {
+            continue;
+        }
+        filtered_ids.push(*mid);
+    }
+    state.ws_manager.send_binary_to_users(&filtered_ids, &bytes);
 }
 
 /// Handle a binary message_send — determine if it's a DM or private channel message.
@@ -1148,11 +1157,20 @@ async fn handle_private_message_send(
         None,
     );
 
-    // Broadcast to channel members only (not all server members)
+    // Broadcast to channel members, filtering out those who have blocked the sender
     let member_ids = channels::get_channel_member_user_ids(&state.db, channel_id)
         .await
         .unwrap_or_default();
-    state.ws_manager.send_binary_to_users(&member_ids, &bytes);
+    let mut filtered_ids = Vec::with_capacity(member_ids.len());
+    for mid in &member_ids {
+        if *mid != sender_id
+            && mercury_moderation::blocks::is_blocked(&state.redis, *mid, sender_id).await
+        {
+            continue;
+        }
+        filtered_ids.push(*mid);
+    }
+    state.ws_manager.send_binary_to_users(&filtered_ids, &bytes);
 }
 
 /// Handle sender_key_distribute op.

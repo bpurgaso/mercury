@@ -52,6 +52,9 @@ export function MessageItem({ message, onReport, onBlock }: MessageItemProps): R
   const isOwnMessage = message.sender_id === currentUserId
   const isBlocked = blockedUserIds.has(message.sender_id)
 
+  // Immediately hide messages from blocked users
+  if (isBlocked) return <></>
+
   // Close context menu on outside click
   useEffect(() => {
     if (!contextMenu) return
@@ -81,7 +84,7 @@ export function MessageItem({ message, onReport, onBlock }: MessageItemProps): R
   return (
     <>
       <div
-        className={`group flex gap-4 px-4 py-1 hover:bg-bg-hover/30 ${isBlocked ? 'opacity-40' : ''}`}
+        className="group flex gap-4 px-4 py-1 hover:bg-bg-hover/30"
         onContextMenu={handleContextMenu}
       >
         {/* Avatar */}
@@ -96,9 +99,6 @@ export function MessageItem({ message, onReport, onBlock }: MessageItemProps): R
               {senderName}
             </span>
             <span className="text-xs text-text-muted">{formatTime(message.created_at)}</span>
-            {isBlocked && (
-              <span className="text-xs text-text-muted">(blocked)</span>
-            )}
           </div>
           {message.decrypt_error ? (
             message.decrypt_error === 'MISSING_SENDER_KEY' ? (
@@ -133,17 +133,15 @@ export function MessageItem({ message, onReport, onBlock }: MessageItemProps): R
           >
             Report Message
           </button>
-          {!isBlocked && (
-            <button
-              className="w-full px-3 py-1.5 text-left text-sm text-red-400 hover:bg-bg-hover"
-              onClick={() => {
-                setContextMenu(null)
-                onBlock?.(message.sender_id, senderName)
-              }}
-            >
-              Block User
-            </button>
-          )}
+          <button
+            className="w-full px-3 py-1.5 text-left text-sm text-red-400 hover:bg-bg-hover"
+            onClick={() => {
+              setContextMenu(null)
+              onBlock?.(message.sender_id, senderName)
+            }}
+          >
+            Block User
+          </button>
         </div>
       )}
     </>

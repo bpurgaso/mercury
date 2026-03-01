@@ -91,6 +91,13 @@ export class KeyStore implements IKeyStore {
         master_verify_key BLOB NOT NULL,
         first_seen_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS moderation_keys (
+        server_id TEXT PRIMARY KEY,
+        public_key BLOB NOT NULL,
+        private_key BLOB NOT NULL,
+        created_at INTEGER NOT NULL
+      );
     `)
   }
 
@@ -465,6 +472,35 @@ export class KeyStore implements IKeyStore {
         if (sk.key_data instanceof Uint8Array) sodium.memzero(sk.key_data)
       }
     }
+  }
+
+  // --- Moderation keys (Phase 9) ---
+
+  storeModerationKeyPair(serverId: string, publicKey: Uint8Array, privateKey: Uint8Array): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO moderation_keys (server_id, public_key, private_key, created_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(serverId, Buffer.from(publicKey), Buffer.from(privateKey), Date.now())
+  }
+
+  getModerationKeyPair(serverId: string): { publicKey: Uint8Array; privateKey: Uint8Array } | null {
+    const row = this.db
+      .prepare('SELECT public_key, private_key FROM moderation_keys WHERE server_id = ?')
+      .get(serverId) as { public_key: Buffer; private_key: Buffer } | undefined
+    if (!row) return null
+    return {
+      publicKey: new Uint8Array(row.public_key),
+      privateKey: new Uint8Array(row.private_key),
+    }
+  }
+
+  hasModerationKey(serverId: string): boolean {
+    const row = this.db
+      .prepare('SELECT 1 FROM moderation_keys WHERE server_id = ? LIMIT 1')
+      .get(serverId)
+    return row !== undefined
   }
 
   close(): void {

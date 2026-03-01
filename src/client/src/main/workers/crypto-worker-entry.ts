@@ -9,6 +9,7 @@
 import { parentPort } from 'worker_threads'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'fs'
 import { join } from 'path'
+import { createCipheriv, createDecipheriv } from 'crypto'
 import { ensureSodium, randomBytes, memzero, identityKeyToX25519, hkdfSha256 } from '../../worker/crypto/utils'
 import {
   generateMasterVerifyKeyPair,
@@ -1081,12 +1082,12 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
       }
 
       case 'crypto:encryptReportEvidence': {
-        // Sealed-box construction for report evidence:
+        // Sealed-box construction for report evidence (X25519-HKDF-AES-GCM):
         // 1. Generate ephemeral X25519 keypair
         // 2. DH with operator's moderation public key
-        // 3. HKDF derive symmetric key
-        // 4. crypto_secretbox encrypt evidence JSON
-        // Output: [ephemeral_pub (32B)] [nonce (24B)] [ciphertext+mac]
+        // 3. HKDF derive 32-byte AES key
+        // 4. AES-256-GCM encrypt evidence JSON
+        // Output: [ephemeral_pub (32B)] [iv (12B)] [ciphertext+tag]
         const na = await ensureSodium()
         const evidenceJson = msg.data?.evidence as string
         const moderationPubKeyArr = new Uint8Array(msg.data?.moderationPubKey as ArrayLike<number>)
@@ -1098,21 +1099,102 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         const salt = new Uint8Array(32)
         const derivedKey = hkdfSha256(sharedSecret, salt, info, 32)
 
-        const nonce = randomBytes(24)
+        const iv = randomBytes(12)
         const plaintext = new TextEncoder().encode(evidenceJson)
-        const sealed = na.crypto_secretbox_easy(plaintext, nonce, derivedKey)
+        const cipher = createCipheriv('aes-256-gcm', derivedKey, iv)
+        const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()])
+        const tag = cipher.getAuthTag()
 
         memzero(sharedSecret)
         memzero(derivedKey)
         memzero(ephemeral.privateKey)
 
-        // Output: [ephemeral_pub (32B)] [nonce (24B)] [ciphertext+mac]
-        const output = new Uint8Array(32 + 24 + sealed.length)
+        // Output: [ephemeral_pub (32B)] [iv (12B)] [ciphertext] [tag (16B)]
+        const output = new Uint8Array(32 + 12 + encrypted.length + 16)
         output.set(ephemeral.publicKey, 0)
-        output.set(nonce, 32)
-        output.set(sealed, 56)
+        output.set(iv, 32)
+        output.set(new Uint8Array(encrypted), 44)
+        output.set(new Uint8Array(tag), 44 + encrypted.length)
 
         result = { encryptedEvidence: Array.from(output) }
+        break
+      }
+
+      case 'crypto:generateModerationKeypair': {
+        const na = await ensureSodium()
+        const kp = na.crypto_box_keypair()
+        result = {
+          publicKey: Array.from(kp.publicKey),
+          privateKey: Array.from(kp.privateKey),
+        }
+        break
+      }
+
+      case 'crypto:storeModerationPrivateKey': {
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const serverId = msg.data?.serverId as string
+        const privateKey = new Uint8Array(msg.data?.privateKey as ArrayLike<number>)
+        // Derive public key from private key for storage
+        const na = await ensureSodium()
+        const publicKey = na.crypto_scalarmult_base(privateKey)
+        keyStore.storeModerationKeyPair(serverId, publicKey, privateKey)
+        memzero(privateKey)
+        memzero(publicKey)
+        result = {}
+        break
+      }
+
+      case 'crypto:hasModerationKey': {
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const serverId = msg.data?.serverId as string
+        const hasKey = keyStore.hasModerationKey(serverId)
+        result = { hasKey }
+        break
+      }
+
+      case 'crypto:decryptReportEvidence': {
+        // Reverse of encryptReportEvidence (X25519-HKDF-AES-GCM):
+        // 1. Read moderation private key from KeyStore
+        // 2. Extract ephemeral_pub (32B), iv (12B), ciphertext+tag from blob
+        // 3. DH: shared = our_private * ephemeral_pub
+        // 4. HKDF derive same AES key
+        // 5. AES-256-GCM decrypt
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const evidenceBlobB64 = msg.data?.evidenceBlob as string
+        const serverId = msg.data?.serverId as string
+
+        const kp = keyStore.getModerationKeyPair(serverId)
+        if (!kp) {
+          throw new Error('No moderation key found for this server')
+        }
+
+        const blob = new Uint8Array(Buffer.from(evidenceBlobB64, 'base64'))
+        if (blob.length < 32 + 12 + 16) {
+          throw new Error('Evidence blob too short')
+        }
+
+        const ephemeralPub = blob.slice(0, 32)
+        const iv = blob.slice(32, 44)
+        const ciphertextAndTag = blob.slice(44)
+        const ciphertext = ciphertextAndTag.slice(0, ciphertextAndTag.length - 16)
+        const tag = ciphertextAndTag.slice(ciphertextAndTag.length - 16)
+
+        const na = await ensureSodium()
+        const sharedSecret = na.crypto_scalarmult(kp.privateKey, ephemeralPub)
+
+        const info = new TextEncoder().encode('mercury-report-evidence')
+        const salt = new Uint8Array(32)
+        const derivedKey = hkdfSha256(sharedSecret, salt, info, 32)
+
+        const decipher = createDecipheriv('aes-256-gcm', derivedKey, iv)
+        decipher.setAuthTag(tag)
+        const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+
+        memzero(sharedSecret)
+        memzero(derivedKey)
+        memzero(kp.privateKey)
+
+        result = { evidence: new TextDecoder().decode(decrypted) }
         break
       }
 
