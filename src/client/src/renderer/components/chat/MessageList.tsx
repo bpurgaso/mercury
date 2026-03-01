@@ -6,9 +6,11 @@ import { MessageItem } from './MessageItem'
 interface MessageListProps {
   messages: Message[]
   onLoadMore?: () => void
+  onReport?: (message: Message) => void
+  onBlock?: (userId: string, username: string) => void
 }
 
-export function MessageList({ messages, onLoadMore }: MessageListProps): React.ReactElement {
+export function MessageList({ messages, onLoadMore, onReport, onBlock }: MessageListProps): React.ReactElement {
   const parentRef = useRef<HTMLDivElement>(null)
   const prevCountRef = useRef(0)
 
@@ -79,7 +81,11 @@ export function MessageList({ messages, onLoadMore }: MessageListProps): React.R
               transform: `translateY(${virtualItem.start}px)`,
             }}
           >
-            <MessageItem message={messages[virtualItem.index]} />
+            <MessageItem
+              message={messages[virtualItem.index]}
+              onReport={onReport}
+              onBlock={onBlock}
+            />
           </div>
         ))}
       </div>

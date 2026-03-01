@@ -1080,6 +1080,42 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         break
       }
 
+      case 'crypto:encryptReportEvidence': {
+        // Sealed-box construction for report evidence:
+        // 1. Generate ephemeral X25519 keypair
+        // 2. DH with operator's moderation public key
+        // 3. HKDF derive symmetric key
+        // 4. crypto_secretbox encrypt evidence JSON
+        // Output: [ephemeral_pub (32B)] [nonce (24B)] [ciphertext+mac]
+        const na = await ensureSodium()
+        const evidenceJson = msg.data?.evidence as string
+        const moderationPubKeyArr = new Uint8Array(msg.data?.moderationPubKey as ArrayLike<number>)
+
+        const ephemeral = na.crypto_box_keypair()
+        const sharedSecret = na.crypto_scalarmult(ephemeral.privateKey, moderationPubKeyArr)
+
+        const info = new TextEncoder().encode('mercury-report-evidence')
+        const salt = new Uint8Array(32)
+        const derivedKey = hkdfSha256(sharedSecret, salt, info, 32)
+
+        const nonce = randomBytes(24)
+        const plaintext = new TextEncoder().encode(evidenceJson)
+        const sealed = na.crypto_secretbox_easy(plaintext, nonce, derivedKey)
+
+        memzero(sharedSecret)
+        memzero(derivedKey)
+        memzero(ephemeral.privateKey)
+
+        // Output: [ephemeral_pub (32B)] [nonce (24B)] [ciphertext+mac]
+        const output = new Uint8Array(32 + 24 + sealed.length)
+        output.set(ephemeral.publicKey, 0)
+        output.set(nonce, 32)
+        output.set(sealed, 56)
+
+        result = { encryptedEvidence: Array.from(output) }
+        break
+      }
+
       default:
         throw new Error(`Unknown crypto op: ${msg.op}`)
     }

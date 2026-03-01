@@ -225,6 +225,46 @@ export interface IceDiagnosticPayload {
   time_to_connected_ms: number | null
 }
 
+// Moderation events
+
+export interface UserBannedEvent {
+  server_id: string
+  server_name: string
+  user_id: string
+  reason?: string
+}
+
+export interface UserKickedEvent {
+  server_id: string
+  server_name: string
+  user_id: string
+  reason?: string
+}
+
+export interface UserMutedEvent {
+  channel_id: string
+  user_id: string
+  expires_at?: string
+}
+
+export interface UserUnmutedEvent {
+  channel_id: string
+  user_id: string
+}
+
+export interface ReportCreatedEvent {
+  report_id: string
+  server_id: string
+  category: string
+}
+
+export interface AbuseSignalEvent {
+  signal_id: string
+  server_id: string
+  signal_type: string
+  severity: string
+}
+
 // Typed event map for the WebSocket manager
 export interface WSEventMap {
   READY: ReadyEvent
@@ -246,4 +286,10 @@ export interface WSEventMap {
   MEDIA_KEY: MediaKeyEvent
   HEARTBEAT_ACK: HeartbeatAckEvent
   ERROR: ServerErrorEvent
+  USER_BANNED: UserBannedEvent
+  USER_KICKED: UserKickedEvent
+  USER_MUTED: UserMutedEvent
+  USER_UNMUTED: UserUnmutedEvent
+  REPORT_CREATED: ReportCreatedEvent
+  ABUSE_SIGNAL: AbuseSignalEvent
 }

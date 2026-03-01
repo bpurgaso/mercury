@@ -1,4 +1,4 @@
-import type { User, Server, Channel, Message, DmChannel } from './models'
+import type { User, Server, Channel, Message, DmChannel, Report, AbuseSignal, Ban, AuditLogEntry } from './models'
 
 // Auth
 export interface RegisterRequest {
@@ -104,6 +104,30 @@ export interface DeviceListResponse {
   signed_list: string  // base64
   master_verify_key: string  // base64
   signature: string  // base64
+}
+
+// Moderation
+export interface BlockedUsersResponse {
+  blocked_user_ids: string[]
+}
+
+export interface ReportRequest {
+  reported_user_id: string
+  message_id?: string
+  channel_id?: string
+  category: string
+  description: string
+  evidence_blob?: string
+}
+
+export type ReportResponse = Report
+export type ReportsListResponse = Report[]
+export type AbuseSignalsResponse = AbuseSignal[]
+export type BansListResponse = Ban[]
+export type AuditLogResponse = AuditLogEntry[]
+
+export interface ModerationKeyResponse {
+  public_key: string  // base64
 }
 
 // API error shape

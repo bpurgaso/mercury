@@ -340,6 +340,13 @@ export const cryptoService = {
     return postCryptoOp<DecryptMediaKeyResult>('crypto:decryptMediaKey', params)
   },
 
+  encryptReportEvidence(evidence: string, moderationPubKey: number[]): Promise<{ encryptedEvidence: number[] }> {
+    return postCryptoOp<{ encryptedEvidence: number[] }>('crypto:encryptReportEvidence', {
+      evidence,
+      moderationPubKey,
+    })
+  },
+
   markSenderKeyStale(channelId: string): Promise<{ marked: boolean }> {
     return postCryptoOp('crypto:markSenderKeyStale', { channelId })
   },

@@ -78,3 +78,64 @@ export interface AuthTokens {
   access_token: string
   refresh_token: string
 }
+
+// Moderation types
+
+export type ReportCategory = 'spam' | 'harassment' | 'illegal' | 'csam' | 'other'
+
+export interface Report {
+  id: string
+  server_id: string
+  reporter_id: string
+  reported_user_id: string
+  message_id?: string
+  channel_id?: string
+  category: ReportCategory
+  description: string
+  evidence_blob?: string  // base64-encoded encrypted evidence
+  status: 'pending' | 'reviewed' | 'dismissed'
+  action_taken?: string
+  created_at: string
+  reviewed_at?: string
+}
+
+export interface AbuseSignal {
+  id: string
+  server_id: string
+  user_id: string
+  signal_type: string
+  severity: 'low' | 'medium' | 'high' | 'critical'
+  details: string
+  created_at: string
+}
+
+export interface Ban {
+  server_id: string
+  user_id: string
+  reason: string
+  banned_by: string
+  expires_at?: string
+  created_at: string
+}
+
+export interface AuditLogEntry {
+  id: string
+  server_id: string
+  actor_id: string
+  action: string
+  target_user_id?: string
+  reason?: string
+  metadata?: Record<string, unknown>
+  created_at: string
+}
+
+export interface ReportSubmission {
+  reportedUserId: string
+  messageId?: string
+  channelId?: string
+  serverId?: string
+  category: ReportCategory
+  description: string
+  includeEvidence: boolean
+  evidenceBlob?: string  // base64-encoded encrypted evidence
+}

@@ -1,8 +1,12 @@
-import React from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import type { Message } from '../../types/models'
+import { useAuthStore } from '../../stores/authStore'
+import { useModerationStore } from '../../stores/moderationStore'
 
 interface MessageItemProps {
   message: Message
+  onReport?: (message: Message) => void
+  onBlock?: (userId: string, username: string) => void
 }
 
 function formatTime(dateStr: string | null): string {
@@ -34,7 +38,34 @@ function LockIcon(): React.ReactElement {
   )
 }
 
-export function MessageItem({ message }: MessageItemProps): React.ReactElement {
+interface ContextMenuState {
+  x: number
+  y: number
+}
+
+export function MessageItem({ message, onReport, onBlock }: MessageItemProps): React.ReactElement {
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const currentUserId = useAuthStore((s) => s.user?.id)
+  const blockedUserIds = useModerationStore((s) => s.blockedUserIds)
+
+  const isOwnMessage = message.sender_id === currentUserId
+  const isBlocked = blockedUserIds.has(message.sender_id)
+
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!contextMenu) return
+    const handleClick = () => setContextMenu(null)
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [contextMenu])
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    if (message.message_type === 'system' || isOwnMessage) return
+    e.preventDefault()
+    setContextMenu({ x: e.clientX, y: e.clientY })
+  }
+
   // System messages render centered with muted styling
   if (message.message_type === 'system') {
     return (
@@ -45,37 +76,76 @@ export function MessageItem({ message }: MessageItemProps): React.ReactElement {
   }
 
   const initial = (message.sender_username || message.sender_id).charAt(0).toUpperCase()
+  const senderName = message.sender_username || message.sender_id.slice(0, 8)
 
   return (
-    <div className="group flex gap-4 px-4 py-1 hover:bg-bg-hover/30">
-      {/* Avatar */}
-      <div className="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-bg-accent text-sm font-semibold text-white">
-        {initial}
+    <>
+      <div
+        className={`group flex gap-4 px-4 py-1 hover:bg-bg-hover/30 ${isBlocked ? 'opacity-40' : ''}`}
+        onContextMenu={handleContextMenu}
+      >
+        {/* Avatar */}
+        <div className="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-bg-accent text-sm font-semibold text-white">
+          {initial}
+        </div>
+
+        {/* Content */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="font-medium text-text-primary">
+              {senderName}
+            </span>
+            <span className="text-xs text-text-muted">{formatTime(message.created_at)}</span>
+            {isBlocked && (
+              <span className="text-xs text-text-muted">(blocked)</span>
+            )}
+          </div>
+          {message.decrypt_error ? (
+            message.decrypt_error === 'MISSING_SENDER_KEY' ? (
+              <div className="italic text-text-muted">
+                Waiting for encryption key...
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 italic text-text-muted">
+                <LockIcon />
+                This message could not be decrypted.
+              </div>
+            )
+          ) : (
+            <div className="text-text-secondary">{message.content}</div>
+          )}
+        </div>
       </div>
 
-      {/* Content */}
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="font-medium text-text-primary">
-            {message.sender_username || message.sender_id.slice(0, 8)}
-          </span>
-          <span className="text-xs text-text-muted">{formatTime(message.created_at)}</span>
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 min-w-[160px] rounded bg-bg-primary py-1 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            className="w-full px-3 py-1.5 text-left text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+            onClick={() => {
+              setContextMenu(null)
+              onReport?.(message)
+            }}
+          >
+            Report Message
+          </button>
+          {!isBlocked && (
+            <button
+              className="w-full px-3 py-1.5 text-left text-sm text-red-400 hover:bg-bg-hover"
+              onClick={() => {
+                setContextMenu(null)
+                onBlock?.(message.sender_id, senderName)
+              }}
+            >
+              Block User
+            </button>
+          )}
         </div>
-        {message.decrypt_error ? (
-          message.decrypt_error === 'MISSING_SENDER_KEY' ? (
-            <div className="italic text-text-muted">
-              Waiting for encryption key...
-            </div>
-          ) : (
-            <div className="flex items-center gap-1 italic text-text-muted">
-              <LockIcon />
-              This message could not be decrypted.
-            </div>
-          )
-        ) : (
-          <div className="text-text-secondary">{message.content}</div>
-        )}
-      </div>
-    </div>
+      )}
+    </>
   )
 }

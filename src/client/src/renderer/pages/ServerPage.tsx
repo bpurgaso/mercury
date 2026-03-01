@@ -2,7 +2,8 @@ import React, { useEffect, useCallback, useState, useMemo } from 'react'
 import { useServerStore } from '../stores/serverStore'
 import { useMessageStore, setIdentityWarningCallback } from '../stores/messageStore'
 import { useCallStore } from '../stores/callStore'
-import type { Channel } from '../types/models'
+import { useModerationStore } from '../stores/moderationStore'
+import type { Message } from '../types/models'
 import { useDmChannelStore } from '../stores/dmChannelStore'
 import { Sidebar } from '../components/layout/Sidebar'
 import { ChannelList } from '../components/layout/ChannelList'
@@ -14,9 +15,12 @@ import { MessageInput } from '../components/chat/MessageInput'
 import { VideoGrid } from '../components/voice/VideoGrid'
 import { DiagnosticPanel } from '../components/voice/DiagnosticPanel'
 import { VoicePanel } from '../components/voice/VoicePanel'
+import { BlockConfirmDialog } from '../components/moderation/BlockConfirmDialog'
+import { ReportDialog } from '../components/moderation/ReportDialog'
 import { wsManager } from '../services/websocket'
 
 export function ServerPage(): React.ReactElement {
+  const activeServerId = useServerStore((s) => s.activeServerId)
   const activeChannelId = useServerStore((s) => s.activeChannelId)
   const channels = useServerStore((s) => s.channels)
   const messagesMap = useMessageStore((s) => s.messages)
@@ -30,18 +34,46 @@ export function ServerPage(): React.ReactElement {
   const activeDmChannelId = useDmChannelStore((s) => s.activeDmChannelId)
   const dmChannels = useDmChannelStore((s) => s.dmChannels)
 
+  const blockedUserIds = useModerationStore((s) => s.blockedUserIds)
+
   const activeDmChannel = activeDmChannelId ? dmChannels.get(activeDmChannelId) : null
   const activeChannel = activeChannelId ? channels.get(activeChannelId) : null
 
   const isDmView = viewMode === 'dm'
   const activeId = isDmView ? activeDmChannelId : activeChannelId
-  const messages = activeId ? messagesMap.get(activeId) ?? [] : []
+  const rawMessages = activeId ? messagesMap.get(activeId) ?? [] : []
+
+  // Filter out messages from blocked users (client-side hide)
+  const messages = useMemo(() => {
+    if (blockedUserIds.size === 0) return rawMessages
+    return rawMessages.filter((m) => !blockedUserIds.has(m.sender_id))
+  }, [rawMessages, blockedUserIds])
 
   // Identity warning state
   const [identityWarning, setIdentityWarning] = useState<{
     recipientName: string
     resolve: (approved: boolean) => void
   } | null>(null)
+
+  // Moderation dialog state
+  const [blockTarget, setBlockTarget] = useState<{ userId: string; username: string } | null>(null)
+  const [reportTarget, setReportTarget] = useState<Message | null>(null)
+
+  // Ban/kick notification state
+  const [moderationNotice, setModerationNotice] = useState<{
+    type: 'banned' | 'kicked'
+    serverName: string
+  } | null>(null)
+
+  // Listen for moderation events (ban/kick)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { type: 'banned' | 'kicked'; serverName: string }
+      setModerationNotice(detail)
+    }
+    window.addEventListener('mercury:moderation', handler)
+    return () => window.removeEventListener('mercury:moderation', handler)
+  }, [])
 
   // Set up identity warning callback
   useEffect(() => {
@@ -83,6 +115,14 @@ export function ServerPage(): React.ReactElement {
     },
     [activeId, sendMessage]
   )
+
+  const handleReport = useCallback((message: Message) => {
+    setReportTarget(message)
+  }, [])
+
+  const handleBlock = useCallback((userId: string, username: string) => {
+    setBlockTarget({ userId, username })
+  }, [])
 
   // Check if video grid should be shown
   const activeCall = useCallStore((s) => s.activeCall)
@@ -157,7 +197,12 @@ export function ServerPage(): React.ReactElement {
         {/* Message area */}
         {(isDmView ? activeDmChannel : activeChannel) ? (
           <>
-            <MessageList messages={messages} onLoadMore={handleLoadMore} />
+            <MessageList
+              messages={messages}
+              onLoadMore={handleLoadMore}
+              onReport={handleReport}
+              onBlock={handleBlock}
+            />
             <MessageInput
               channelName={headerName || ''}
               onSend={handleSend}
@@ -187,6 +232,46 @@ export function ServerPage(): React.ReactElement {
             setIdentityWarning(null)
           }}
         />
+      )}
+
+      {/* Block confirmation dialog */}
+      {blockTarget && (
+        <BlockConfirmDialog
+          userId={blockTarget.userId}
+          username={blockTarget.username}
+          onClose={() => setBlockTarget(null)}
+        />
+      )}
+
+      {/* Report dialog */}
+      {reportTarget && (
+        <ReportDialog
+          messageId={reportTarget.id}
+          senderId={reportTarget.sender_id}
+          senderUsername={reportTarget.sender_username || reportTarget.sender_id.slice(0, 8)}
+          channelId={reportTarget.channel_id || reportTarget.dm_channel_id || ''}
+          serverId={activeServerId || undefined}
+          messageContent={reportTarget.content}
+          onClose={() => setReportTarget(null)}
+        />
+      )}
+
+      {/* Ban/kick notification modal */}
+      {moderationNotice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="w-96 rounded-lg bg-bg-secondary p-6 text-center">
+            <p className="text-lg font-medium text-text-primary">
+              You have been {moderationNotice.type === 'banned' ? 'banned from' : 'kicked from'}{' '}
+              {moderationNotice.serverName}
+            </p>
+            <button
+              className="mt-4 rounded bg-bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+              onClick={() => setModerationNotice(null)}
+            >
+              OK
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )

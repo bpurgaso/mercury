@@ -18,6 +18,13 @@ import type {
   UserKeyBundlesResponse,
   ClaimOtpResponse,
   DeviceListResponse,
+  BlockedUsersResponse,
+  ReportRequest,
+  ReportResponse,
+  ReportsListResponse,
+  AuditLogResponse,
+  ModerationKeyResponse,
+  BansListResponse,
 } from '../types/api'
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://localhost:8443'
@@ -307,6 +314,80 @@ export const senderKeys = {
       method: 'POST',
       body: JSON.stringify({ message_ids: messageIds }),
     }),
+}
+
+// Moderation endpoints
+export const moderation = {
+  // User-level blocks
+  getBlocks: () =>
+    request<BlockedUsersResponse>('/users/me/blocks'),
+
+  blockUser: (userId: string) =>
+    request<void>(`/users/me/blocks/${userId}`, { method: 'PUT' }),
+
+  unblockUser: (userId: string) =>
+    request<void>(`/users/me/blocks/${userId}`, { method: 'DELETE' }),
+
+  // DM policy
+  setDmPolicy: (policy: string) =>
+    request<void>('/users/me/dm-policy', {
+      method: 'PUT',
+      body: JSON.stringify({ dm_policy: policy }),
+    }),
+
+  // Reports
+  submitReport: (data: ReportRequest) =>
+    request<ReportResponse>('/reports', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getReports: (serverId: string) =>
+    request<ReportsListResponse>(`/servers/${serverId}/reports`),
+
+  reviewReport: (reportId: string, action: string) =>
+    request<void>(`/reports/${reportId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ action }),
+    }),
+
+  // Bans
+  getBans: (serverId: string) =>
+    request<BansListResponse>(`/servers/${serverId}/bans`),
+
+  banUser: (serverId: string, userId: string, reason: string, expiresAt?: string) =>
+    request<void>(`/servers/${serverId}/bans/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ reason, expires_at: expiresAt }),
+    }),
+
+  unbanUser: (serverId: string, userId: string) =>
+    request<void>(`/servers/${serverId}/bans/${userId}`, { method: 'DELETE' }),
+
+  // Kick
+  kickUser: (serverId: string, userId: string, reason: string) =>
+    request<void>(`/servers/${serverId}/kicks/${userId}`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+
+  // Mute
+  muteInChannel: (channelId: string, userId: string, duration?: number) =>
+    request<void>(`/channels/${channelId}/mutes/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ duration }),
+    }),
+
+  unmuteInChannel: (channelId: string, userId: string) =>
+    request<void>(`/channels/${channelId}/mutes/${userId}`, { method: 'DELETE' }),
+
+  // Audit log
+  getAuditLog: (serverId: string) =>
+    request<AuditLogResponse>(`/servers/${serverId}/audit-log`),
+
+  // Moderation key
+  getModerationKey: (serverId: string) =>
+    request<ModerationKeyResponse>(`/servers/${serverId}/moderation-key`),
 }
 
 export function getServerUrl(): string {
