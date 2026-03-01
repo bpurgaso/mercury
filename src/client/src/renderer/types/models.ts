@@ -105,7 +105,9 @@ export interface AbuseSignal {
   user_id: string
   signal_type: string
   severity: 'low' | 'medium' | 'high' | 'critical'
-  details: string
+  details: string  // JSON string — parse for display
+  auto_action?: string
+  reviewed: boolean
   created_at: string
 }
 
@@ -138,4 +140,16 @@ export interface ReportSubmission {
   description: string
   includeEvidence: boolean
   evidenceBlob?: string  // base64-encoded encrypted evidence
+}
+
+export interface UserModerationMetadata {
+  user_id: string
+  username: string
+  account_created_at: string
+  server_joined_at: string
+  message_count_30d: number
+  report_count_total: number
+  report_count_recent: number
+  active_abuse_signals: number
+  previous_actions: AuditLogEntry[]
 }

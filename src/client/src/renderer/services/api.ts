@@ -25,6 +25,8 @@ import type {
   AuditLogResponse,
   ModerationKeyResponse,
   BansListResponse,
+  AbuseSignalsResponse,
+  UserModerationMetadataResponse,
 } from '../types/api'
 
 const SERVER_URL = (import.meta as unknown as { env: Record<string, string | undefined> }).env.VITE_SERVER_URL || 'https://localhost:8443'
@@ -385,9 +387,30 @@ export const moderation = {
   getAuditLog: (serverId: string) =>
     request<AuditLogResponse>(`/servers/${serverId}/audit-log`),
 
+  // Abuse signals
+  getAbuseSignals: (serverId: string) =>
+    request<AbuseSignalsResponse>(`/servers/${serverId}/abuse-signals`),
+
+  markAbuseSignalReviewed: (signalId: string) =>
+    request<void>(`/abuse-signals/${signalId}/reviewed`, { method: 'POST' }),
+
+  // Single report (for evidence blob)
+  getReport: (reportId: string) =>
+    request<ReportResponse>(`/reports/${reportId}`),
+
+  // User moderation metadata
+  getUserMetadata: (serverId: string, userId: string) =>
+    request<UserModerationMetadataResponse>(`/servers/${serverId}/users/${userId}/moderation-metadata`),
+
   // Moderation key
   getModerationKey: (serverId: string) =>
     request<ModerationKeyResponse>(`/servers/${serverId}/moderation-key`),
+
+  setModerationKey: (serverId: string, publicKey: string) =>
+    request<void>(`/servers/${serverId}/moderation-key`, {
+      method: 'PUT',
+      body: JSON.stringify({ public_key: publicKey }),
+    }),
 }
 
 export function getServerUrl(): string {

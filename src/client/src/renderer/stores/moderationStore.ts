@@ -3,6 +3,7 @@ import type { Report, AbuseSignal, Ban, AuditLogEntry, ReportSubmission } from '
 import { moderation as moderationApi } from '../services/api'
 
 type DmPolicy = 'anyone' | 'mutual_servers' | 'nobody'
+type DashboardTab = 'reports' | 'abuse_signals' | 'bans' | 'audit_log'
 
 interface ModerationState {
   // User-level
@@ -28,6 +29,15 @@ interface ModerationState {
   kickUser(serverId: string, userId: string, reason: string): Promise<void>
   muteInChannel(channelId: string, userId: string, duration?: number): Promise<void>
   fetchAuditLog(serverId: string): Promise<void>
+  fetchAbuseSignals(serverId: string): Promise<void>
+  fetchBans(serverId: string): Promise<void>
+  markAbuseSignalReviewed(signalId: string): Promise<void>
+
+  // Dashboard UI state
+  activeTab: DashboardTab
+  selectedReportId: string | null
+  setActiveTab(tab: DashboardTab): void
+  setSelectedReport(reportId: string | null): void
 
   // Mute tracking (current user)
   mutedChannels: Set<string>
@@ -51,6 +61,8 @@ export const useModerationStore = create<ModerationState>((set, get) => ({
   mutedChannels: new Set(),
   pendingReportCount: 0,
   pendingAbuseSignalCount: 0,
+  activeTab: 'reports' as DashboardTab,
+  selectedReportId: null,
 
   async loadBlockedUsers() {
     try {
@@ -110,7 +122,8 @@ export const useModerationStore = create<ModerationState>((set, get) => ({
       const reports = new Map(state.reports)
       const existing = reports.get(reportId)
       if (existing) {
-        reports.set(reportId, { ...existing, status: 'reviewed', action_taken: action })
+        const status = action === 'dismissed' ? 'dismissed' as const : 'reviewed' as const
+        reports.set(reportId, { ...existing, status, action_taken: action })
       }
       return { reports }
     })
@@ -152,6 +165,37 @@ export const useModerationStore = create<ModerationState>((set, get) => ({
   async fetchAuditLog(serverId: string) {
     const log = await moderationApi.getAuditLog(serverId)
     set({ auditLog: log })
+  },
+
+  async fetchAbuseSignals(serverId: string) {
+    const signals = await moderationApi.getAbuseSignals(serverId)
+    set({ abuseSignals: signals, pendingAbuseSignalCount: 0 })
+  },
+
+  async fetchBans(serverId: string) {
+    const bansList = await moderationApi.getBans(serverId)
+    const map = new Map<string, Ban>()
+    for (const b of bansList) {
+      map.set(`${b.server_id}:${b.user_id}`, b)
+    }
+    set({ bans: map })
+  },
+
+  async markAbuseSignalReviewed(signalId: string) {
+    await moderationApi.markAbuseSignalReviewed(signalId)
+    set((state) => ({
+      abuseSignals: state.abuseSignals.map((s) =>
+        s.id === signalId ? { ...s, reviewed: true } : s
+      ),
+    }))
+  },
+
+  setActiveTab(tab: DashboardTab) {
+    set({ activeTab: tab })
+  },
+
+  setSelectedReport(reportId: string | null) {
+    set({ selectedReportId: reportId })
   },
 
   incrementReportCount() {

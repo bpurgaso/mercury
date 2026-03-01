@@ -347,6 +347,25 @@ export const cryptoService = {
     })
   },
 
+  generateModerationKeypair(): Promise<{ publicKey: number[]; privateKey: number[] }> {
+    return postCryptoOp<{ publicKey: number[]; privateKey: number[] }>('crypto:generateModerationKeypair')
+  },
+
+  decryptReportEvidence(evidenceBlob: string, serverId: string): Promise<{ evidence: string }> {
+    return postCryptoOp<{ evidence: string }>('crypto:decryptReportEvidence', {
+      evidenceBlob,
+      serverId,
+    })
+  },
+
+  storeModerationPrivateKey(serverId: string, privateKey: number[]): Promise<void> {
+    return postCryptoOp<void>('crypto:storeModerationPrivateKey', { serverId, privateKey })
+  },
+
+  hasModerationKey(serverId: string): Promise<{ hasKey: boolean }> {
+    return postCryptoOp<{ hasKey: boolean }>('crypto:hasModerationKey', { serverId })
+  },
+
   markSenderKeyStale(channelId: string): Promise<{ marked: boolean }> {
     return postCryptoOp('crypto:markSenderKeyStale', { channelId })
   },

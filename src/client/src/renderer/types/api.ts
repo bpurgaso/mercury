@@ -1,4 +1,4 @@
-import type { User, Server, Channel, Message, DmChannel, Report, AbuseSignal, Ban, AuditLogEntry } from './models'
+import type { User, Server, Channel, Message, DmChannel, Report, AbuseSignal, Ban, AuditLogEntry, UserModerationMetadata } from './models'
 
 // Auth
 export interface RegisterRequest {
@@ -129,6 +129,8 @@ export type AuditLogResponse = AuditLogEntry[]
 export interface ModerationKeyResponse {
   public_key: string  // base64
 }
+
+export type UserModerationMetadataResponse = UserModerationMetadata
 
 // API error shape
 export interface ApiError {

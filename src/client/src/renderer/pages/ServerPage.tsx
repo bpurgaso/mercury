@@ -17,6 +17,7 @@ import { DiagnosticPanel } from '../components/voice/DiagnosticPanel'
 import { VoicePanel } from '../components/voice/VoicePanel'
 import { BlockConfirmDialog } from '../components/moderation/BlockConfirmDialog'
 import { ReportDialog } from '../components/moderation/ReportDialog'
+import { ModerationDashboard } from '../components/moderation/ModerationDashboard'
 import { wsManager } from '../services/websocket'
 
 export function ServerPage(): React.ReactElement {
@@ -65,6 +66,11 @@ export function ServerPage(): React.ReactElement {
     serverName: string
   } | null>(null)
 
+  // Moderation dashboard state
+  const [showModerationDashboard, setShowModerationDashboard] = useState(false)
+  const servers = useServerStore((s) => s.servers)
+  const activeServer = activeServerId ? servers.get(activeServerId) : null
+
   // Listen for moderation events (ban/kick)
   useEffect(() => {
     const handler = (e: Event) => {
@@ -85,6 +91,11 @@ export function ServerPage(): React.ReactElement {
       })
     })
   }, [dmChannels])
+
+  // Close dashboard when switching servers or entering DM view
+  useEffect(() => {
+    setShowModerationDashboard(false)
+  }, [activeServerId, isDmView])
 
   // Fetch message history when channel changes
   useEffect(() => {
@@ -150,12 +161,21 @@ export function ServerPage(): React.ReactElement {
       {/* Channel/DM list (middle) + persistent VoicePanel */}
       <div className="flex h-full w-60 flex-col">
         <div className="flex-1 overflow-hidden">
-          {isDmView ? <DmList /> : <ChannelList />}
+          {isDmView ? <DmList /> : <ChannelList onOpenDashboard={() => setShowModerationDashboard(true)} />}
         </div>
         <VoicePanel />
       </div>
 
-      {/* Chat area (right) */}
+      {/* Moderation dashboard or Chat area (right) */}
+      {showModerationDashboard && activeServerId && activeServer ? (
+        <div className="flex flex-1 flex-col">
+          <ModerationDashboard
+            serverId={activeServerId}
+            serverName={activeServer.name}
+            onClose={() => setShowModerationDashboard(false)}
+          />
+        </div>
+      ) : (
       <div className="flex flex-1 flex-col bg-bg-tertiary">
         {/* Channel header */}
         <div className="flex h-12 items-center border-b border-border-subtle px-4">
@@ -218,6 +238,7 @@ export function ServerPage(): React.ReactElement {
           </div>
         )}
       </div>
+      )}
 
       {/* Identity warning dialog */}
       {identityWarning && (

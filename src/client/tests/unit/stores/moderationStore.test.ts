@@ -12,10 +12,16 @@ vi.mock('../../../src/renderer/services/api', () => ({
     reviewReport: vi.fn(),
     banUser: vi.fn(),
     unbanUser: vi.fn(),
+    getBans: vi.fn(),
     kickUser: vi.fn(),
     muteInChannel: vi.fn(),
     getAuditLog: vi.fn(),
+    getAbuseSignals: vi.fn(),
+    markAbuseSignalReviewed: vi.fn(),
     getModerationKey: vi.fn(),
+    setModerationKey: vi.fn(),
+    getReport: vi.fn(),
+    getUserMetadata: vi.fn(),
   },
   setTokenProvider: vi.fn(),
 }))
@@ -35,6 +41,8 @@ describe('moderationStore', () => {
       mutedChannels: new Set(),
       pendingReportCount: 0,
       pendingAbuseSignalCount: 0,
+      activeTab: 'reports',
+      selectedReportId: null,
     })
     vi.clearAllMocks()
   })
@@ -264,6 +272,145 @@ describe('moderationStore', () => {
       useModerationStore.setState({ pendingReportCount: 5 })
       useModerationStore.getState().clearReportCount()
       expect(useModerationStore.getState().pendingReportCount).toBe(0)
+    })
+  })
+
+  describe('fetchAbuseSignals', () => {
+    it('loads abuse signals from API', async () => {
+      vi.mocked(moderationApi.getAbuseSignals).mockResolvedValue([
+        {
+          id: 's1',
+          server_id: 'srv-1',
+          user_id: 'u1',
+          signal_type: 'rapid_messages',
+          severity: 'medium',
+          details: '{}',
+          reviewed: false,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ])
+
+      await useModerationStore.getState().fetchAbuseSignals('srv-1')
+
+      expect(moderationApi.getAbuseSignals).toHaveBeenCalledWith('srv-1')
+      expect(useModerationStore.getState().abuseSignals).toHaveLength(1)
+      expect(useModerationStore.getState().abuseSignals[0].id).toBe('s1')
+      expect(useModerationStore.getState().pendingAbuseSignalCount).toBe(0)
+    })
+  })
+
+  describe('fetchBans', () => {
+    it('loads bans from API into map', async () => {
+      vi.mocked(moderationApi.getBans).mockResolvedValue([
+        {
+          server_id: 's1',
+          user_id: 'u1',
+          reason: 'spam',
+          banned_by: 'admin',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          server_id: 's1',
+          user_id: 'u2',
+          reason: 'harassment',
+          banned_by: 'admin',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ])
+
+      await useModerationStore.getState().fetchBans('s1')
+
+      expect(moderationApi.getBans).toHaveBeenCalledWith('s1')
+      expect(useModerationStore.getState().bans.size).toBe(2)
+      expect(useModerationStore.getState().bans.has('s1:u1')).toBe(true)
+      expect(useModerationStore.getState().bans.has('s1:u2')).toBe(true)
+    })
+  })
+
+  describe('markAbuseSignalReviewed', () => {
+    it('calls API and marks signal as reviewed', async () => {
+      useModerationStore.setState({
+        abuseSignals: [{
+          id: 's1',
+          server_id: 'srv-1',
+          user_id: 'u1',
+          signal_type: 'rapid_messages',
+          severity: 'medium' as const,
+          details: '{}',
+          reviewed: false,
+          created_at: '2026-01-01T00:00:00Z',
+        }],
+      })
+      vi.mocked(moderationApi.markAbuseSignalReviewed).mockResolvedValue(undefined)
+
+      await useModerationStore.getState().markAbuseSignalReviewed('s1')
+
+      expect(moderationApi.markAbuseSignalReviewed).toHaveBeenCalledWith('s1')
+      expect(useModerationStore.getState().abuseSignals[0].reviewed).toBe(true)
+    })
+  })
+
+  describe('reviewReport dismissed status', () => {
+    it('sets status to dismissed for dismiss action', async () => {
+      useModerationStore.setState({
+        reports: new Map([['r1', {
+          id: 'r1',
+          server_id: 's1',
+          reporter_id: 'u1',
+          reported_user_id: 'u2',
+          category: 'spam' as const,
+          description: 'spam',
+          status: 'pending' as const,
+          created_at: '2026-01-01T00:00:00Z',
+        }]]),
+      })
+      vi.mocked(moderationApi.reviewReport).mockResolvedValue(undefined)
+
+      await useModerationStore.getState().reviewReport('r1', 'dismissed')
+
+      const report = useModerationStore.getState().reports.get('r1')
+      expect(report?.status).toBe('dismissed')
+      expect(report?.action_taken).toBe('dismissed')
+    })
+
+    it('sets status to reviewed for non-dismiss actions', async () => {
+      useModerationStore.setState({
+        reports: new Map([['r1', {
+          id: 'r1',
+          server_id: 's1',
+          reporter_id: 'u1',
+          reported_user_id: 'u2',
+          category: 'spam' as const,
+          description: 'spam',
+          status: 'pending' as const,
+          created_at: '2026-01-01T00:00:00Z',
+        }]]),
+      })
+      vi.mocked(moderationApi.reviewReport).mockResolvedValue(undefined)
+
+      await useModerationStore.getState().reviewReport('r1', 'banned')
+
+      const report = useModerationStore.getState().reports.get('r1')
+      expect(report?.status).toBe('reviewed')
+      expect(report?.action_taken).toBe('banned')
+    })
+  })
+
+  describe('dashboard UI state', () => {
+    it('setActiveTab updates activeTab', () => {
+      useModerationStore.getState().setActiveTab('bans')
+      expect(useModerationStore.getState().activeTab).toBe('bans')
+
+      useModerationStore.getState().setActiveTab('audit_log')
+      expect(useModerationStore.getState().activeTab).toBe('audit_log')
+    })
+
+    it('setSelectedReport updates selectedReportId', () => {
+      useModerationStore.getState().setSelectedReport('r1')
+      expect(useModerationStore.getState().selectedReportId).toBe('r1')
+
+      useModerationStore.getState().setSelectedReport(null)
+      expect(useModerationStore.getState().selectedReportId).toBeNull()
     })
   })
 })

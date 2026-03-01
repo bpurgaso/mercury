@@ -1,17 +1,25 @@
 import React, { useState } from 'react'
 import { useServerStore } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'
+import { useModerationStore } from '../../stores/moderationStore'
 import { CreateChannelModal } from '../channel/CreateChannelModal'
 import { ChannelLockIcon } from '../dm/EncryptionBadge'
 import { VoiceChannelEntry } from '../voice/VoiceChannelEntry'
 
-export function ChannelList(): React.ReactElement {
+interface ChannelListProps {
+  onOpenDashboard?: () => void
+}
+
+export function ChannelList({ onOpenDashboard }: ChannelListProps): React.ReactElement {
   const activeServerId = useServerStore((s) => s.activeServerId)
   const activeChannelId = useServerStore((s) => s.activeChannelId)
   const setActiveChannel = useServerStore((s) => s.setActiveChannel)
   const servers = useServerStore((s) => s.servers)
+  const members = useServerStore((s) => s.members)
   const getServerChannels = useServerStore((s) => s.getServerChannels)
   const user = useAuthStore((s) => s.user)
+  const pendingReportCount = useModerationStore((s) => s.pendingReportCount)
+  const pendingAbuseSignalCount = useModerationStore((s) => s.pendingAbuseSignalCount)
   const [showCreateChannel, setShowCreateChannel] = useState(false)
 
   if (!activeServerId) {
@@ -27,6 +35,11 @@ export function ChannelList(): React.ReactElement {
   const server = servers.get(activeServerId)
   const channels = getServerChannels(activeServerId)
   const isOwner = server?.owner_id === user?.id
+  const memberList = members.get(activeServerId) || []
+  const currentMember = memberList.find((m) => m.user_id === user?.id)
+  const isModerator = currentMember?.is_moderator === true
+  const canModerate = isOwner || isModerator
+  const totalModBadge = pendingReportCount + pendingAbuseSignalCount
   const textChannels = channels.filter((c) => c.channel_type === 'text')
   const voiceChannels = channels.filter((c) => c.channel_type === 'voice' || c.channel_type === 'video')
 
@@ -34,8 +47,24 @@ export function ChannelList(): React.ReactElement {
     <>
       <div className="flex h-full flex-col bg-bg-secondary">
         {/* Server header */}
-        <div className="flex h-12 items-center border-b border-border-subtle px-4">
+        <div className="flex h-12 items-center justify-between border-b border-border-subtle px-4">
           <span className="truncate font-semibold text-text-primary">{server?.name}</span>
+          {canModerate && onOpenDashboard && (
+            <button
+              onClick={onOpenDashboard}
+              className="relative rounded p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+              title="Moderation Dashboard"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                <path fillRule="evenodd" d="M9.661 2.237a.531.531 0 0 1 .678 0 11.947 11.947 0 0 0 7.078 2.749.5.5 0 0 1 .479.425c.069.52.104 1.05.104 1.59 0 5.162-3.26 9.563-7.834 11.256a.48.48 0 0 1-.332 0C5.26 16.564 2 12.163 2 7c0-.54.035-1.07.104-1.59a.5.5 0 0 1 .48-.425 11.947 11.947 0 0 0 7.077-2.749Z" clipRule="evenodd" />
+              </svg>
+              {totalModBadge > 0 && (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-bg-danger px-1 text-[10px] font-medium text-white">
+                  {totalModBadge}
+                </span>
+              )}
+            </button>
+          )}
         </div>
 
         {/* Channel list */}
