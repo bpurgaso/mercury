@@ -675,6 +675,9 @@ async fn handle_binary_client_op(
         ClientOp::SenderKeyDistribute => {
             handle_sender_key_distribute(state, ws_sink, user_id, device_id, client_msg.d).await;
         }
+        ClientOp::MediaKeyDistribute => {
+            handle_media_key_distribute(state, user_id, device_id, client_msg.d).await;
+        }
         _ => {}
     }
 }
@@ -1200,6 +1203,63 @@ async fn handle_sender_key_distribute(
         }
 
         let _ = tx.commit().await;
+    }
+}
+
+/// Handle media_key_distribute: relay DR-encrypted media keys to call participants.
+///
+/// This is an ephemeral relay — media keys are not persisted to the database.
+/// Each recipient entry is delivered as a MEDIA_KEY event to the target device.
+async fn handle_media_key_distribute(
+    state: &AppState,
+    sender_id: UserId,
+    sender_device_id: &str,
+    data: rmpv::Value,
+) {
+    let payload: MediaKeyDistributePayload = match rmpv::ext::from_value(data) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("invalid media_key_distribute payload: {e}");
+            return;
+        }
+    };
+
+    // Verify sender is actually in the specified room
+    let room = state.sfu_handle.get_room(payload.room_id.clone()).await;
+    let is_in_room = room
+        .as_ref()
+        .map(|r| {
+            r.participants
+                .iter()
+                .any(|p| p.user_id == sender_id.to_string())
+        })
+        .unwrap_or(false);
+    if !is_in_room {
+        tracing::debug!(
+            "media_key_distribute rejected: user {} not in room {}",
+            sender_id,
+            payload.room_id
+        );
+        return;
+    }
+
+    // Relay each per-device ciphertext to the target device
+    for recipient in &payload.recipients {
+        let event_payload = MediaKeyEvent {
+            room_id: payload.room_id.clone(),
+            sender_id: sender_id.to_string(),
+            sender_device_id: sender_device_id.to_string(),
+            ciphertext: recipient.ciphertext.clone(),
+        };
+
+        let bytes = encode_msgpack_server_message(
+            ServerEvent::MEDIA_KEY,
+            &event_payload,
+            None,
+        );
+
+        // Deliver to target device — ephemeral (no offline storage for media keys)
+        state.ws_manager.send_binary_to_device(&recipient.device_id, &bytes);
     }
 }
 

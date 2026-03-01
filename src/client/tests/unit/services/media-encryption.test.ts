@@ -153,6 +153,76 @@ describe('MediaKeyRing', () => {
     })
   })
 
+  describe('setKeyForEpoch', () => {
+    it('sets key at an explicit epoch without auto-incrementing', async () => {
+      const key0 = await makeTestKey()
+      keyRing.setInitialKey(key0, 0)
+
+      const key5 = await makeTestKey()
+      keyRing.setKeyForEpoch(key5, 5)
+
+      // Should jump directly to epoch 5 (not 1)
+      expect(keyRing.currentEpoch).toBe(5)
+      expect(keyRing.currentKey).toBe(key5)
+      expect(keyRing.getKeyForEpoch(5)).toBe(key5)
+    })
+
+    it('expires old key after retention window', async () => {
+      vi.useFakeTimers()
+
+      const key0 = await makeTestKey()
+      keyRing.setInitialKey(key0, 0)
+
+      const key3 = await makeTestKey()
+      keyRing.setKeyForEpoch(key3, 3)
+
+      // Old key should still be available within window
+      expect(keyRing.getKeyForEpoch(0)).toBe(key0)
+
+      // Advance past retention
+      vi.advanceTimersByTime(KEY_RETENTION_MS + 100)
+
+      expect(keyRing.getKeyForEpoch(0)).toBeNull()
+      expect(keyRing.getKeyForEpoch(3)).toBe(key3)
+
+      vi.useRealTimers()
+    })
+
+    it('prevents epoch desync from concurrent key distributions', async () => {
+      const key0 = await makeTestKey()
+      keyRing.setInitialKey(key0, 0)
+
+      // Simulate receiving a stale epoch 0 key from a concurrent joiner
+      const staleKey = await makeTestKey()
+      keyRing.setKeyForEpoch(staleKey, 0)
+
+      // Epoch should still be 0 (not incremented)
+      expect(keyRing.currentEpoch).toBe(0)
+
+      // Now receive the coordinator's key at epoch 3
+      const coordKey = await makeTestKey()
+      keyRing.setKeyForEpoch(coordKey, 3)
+
+      // Should be exactly 3 — not 1 (rotateKey would give) or 4
+      expect(keyRing.currentEpoch).toBe(3)
+      expect(keyRing.currentKey).toBe(coordKey)
+    })
+
+    it('handles same epoch re-keying without expiring current key', async () => {
+      const key0 = await makeTestKey()
+      keyRing.setInitialKey(key0, 0)
+
+      // Re-key at same epoch (e.g. redundant distribution)
+      const key0b = await makeTestKey()
+      keyRing.setKeyForEpoch(key0b, 0)
+
+      expect(keyRing.currentEpoch).toBe(0)
+      expect(keyRing.currentKey).toBe(key0b)
+      // Should be the new key
+      expect(keyRing.getKeyForEpoch(0)).toBe(key0b)
+    })
+  })
+
   describe('getKeyForEpoch', () => {
     it('returns key for current epoch', async () => {
       const key = await makeTestKey()
@@ -603,7 +673,8 @@ describe('Key distribution', () => {
     const key1B = await importMediaKey(raw1)
 
     keyRingA.rotateKey(key1)
-    keyRingB.rotateKey(key1B)
+    // Receiver uses setKeyForEpoch with the sender's epoch (real code path)
+    keyRingB.setKeyForEpoch(key1B, keyRingA.currentEpoch)
 
     expect(keyRingA.currentEpoch).toBe(1)
     expect(keyRingB.currentEpoch).toBe(1)

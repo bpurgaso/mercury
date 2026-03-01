@@ -313,12 +313,13 @@ export const useCallStore = create<CallState>((set, get) => {
         ciphertext: data.ciphertext,
       }).then((res) => {
         if (res.error || !res.key) return
+        const epoch = res.epoch ?? 0
         return importMediaKey(new Uint8Array(res.key)).then((cryptoKey) => {
-          if (keyRing.currentKey === null) {
-            keyRing.setInitialKey(cryptoKey, res.epoch ?? 0)
-          } else {
-            keyRing.rotateKey(cryptoKey)
-          }
+          // Always use the sender's explicit epoch to avoid desynchronization.
+          // setKeyForEpoch does not auto-increment — it applies the exact epoch
+          // from the coordinator, preventing divergence when multiple key
+          // distributions arrive concurrently.
+          keyRing.setKeyForEpoch(cryptoKey, epoch)
         })
       }).catch(() => {
         // Failed to decrypt/import media key — ignore
@@ -542,14 +543,14 @@ export const useCallStore = create<CallState>((set, get) => {
         const mediaKey = await generateMediaKey()
         keyRing.setInitialKey(mediaKey, 0)
 
-        // Distribute initial key to all current participants via DR-encrypted WS
-        const participantIds = Array.from(get().participants.keys())
-        if (participantIds.length > 0) {
-          const rawKey = await exportMediaKey(mediaKey)
-          distributeMediaKeyViaWs(roomId, participantIds, Array.from(rawKey), 0)
-        }
+        // Do NOT distribute the initial key here. The coordinator (participant
+        // with the lowest user ID) will rotate and distribute a fresh key to
+        // ALL participants (including us) when it receives the VOICE_STATE_UPDATE
+        // for our join. This prevents the race condition where both the joiner's
+        // epoch 0 key and the coordinator's epoch N+1 key are distributed
+        // concurrently, causing epoch desynchronization across the session.
       } catch {
-        // Key generation/distribution failure is non-fatal for call setup.
+        // Key generation failure is non-fatal for call setup.
         // Frames will be dropped until a key is established.
       }
 

@@ -73,6 +73,7 @@ export class WebSocketManager {
       //   Standard channel messages (channel_id + content) remain JSON for server compat
       const useBinary =
         op === 'sender_key_distribute' ||
+        op === 'media_key_distribute' ||
         (op === 'message_send' &&
           data != null &&
           typeof data === 'object' &&

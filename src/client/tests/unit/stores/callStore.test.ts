@@ -416,6 +416,25 @@ describe('callStore', () => {
       })
     })
 
+    it('does NOT distribute initial media key to existing participants (coordinator handles it)', async () => {
+      // Pre-populate participants so the guard would pass if distribution still happened
+      useCallStore.setState({
+        participants: new Map([
+          ['user-2', { userId: 'user-2', selfMute: false, selfDeaf: false, hasAudio: false, hasVideo: false }],
+        ]),
+      })
+
+      vi.mocked(cryptoService.distributeMediaKey).mockClear()
+
+      const joinPromise = useCallStore.getState().joinCall('channel-1')
+      emitWsEvent('CALL_CONFIG', mockCallConfigEvent)
+      await joinPromise
+
+      // distributeMediaKey should NOT have been called during joinCall
+      // The coordinator handles key distribution via VOICE_STATE_UPDATE
+      expect(cryptoService.distributeMediaKey).not.toHaveBeenCalled()
+    })
+
     it('stores callConfig in store state', async () => {
       const joinPromise = useCallStore.getState().joinCall('channel-1')
       emitWsEvent('CALL_CONFIG', mockCallConfigEvent)
@@ -1177,6 +1196,77 @@ describe('callStore', () => {
 
       // Should have imported the decrypted key
       expect(importMediaKey).toHaveBeenCalled()
+    })
+
+    it('uses sender epoch via setKeyForEpoch (not auto-increment)', async () => {
+      await setupActiveCall()
+
+      const keyRing = webRTCManager.getMediaKeyRing()!
+      expect(keyRing.currentEpoch).toBe(0) // initial epoch
+
+      // Receive a key at epoch 5 (simulating coordinator at epoch 5)
+      vi.mocked(cryptoService.decryptMediaKey).mockResolvedValueOnce({
+        key: Array.from(new Uint8Array(32)),
+        epoch: 5,
+        roomId: 'room-123',
+      })
+
+      emitWsEvent('MEDIA_KEY', {
+        room_id: 'room-123',
+        sender_id: 'user-2',
+        sender_device_id: 'device-2',
+        ciphertext: [1, 2, 3],
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+
+      // Epoch should be 5 (sender's epoch), NOT 1 (auto-increment)
+      expect(keyRing.currentEpoch).toBe(5)
+    })
+
+    it('handles concurrent key distributions without epoch desync', async () => {
+      await setupActiveCall()
+
+      const keyRing = webRTCManager.getMediaKeyRing()!
+      expect(keyRing.currentEpoch).toBe(0)
+
+      // Simulate receiving a stale epoch 0 key from a concurrent joiner
+      vi.mocked(cryptoService.decryptMediaKey).mockResolvedValueOnce({
+        key: Array.from(new Uint8Array(32)),
+        epoch: 0,
+        roomId: 'room-123',
+      })
+
+      emitWsEvent('MEDIA_KEY', {
+        room_id: 'room-123',
+        sender_id: 'joiner-user',
+        sender_device_id: 'device-joiner',
+        ciphertext: [10, 20, 30],
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+
+      // Epoch should still be 0 (not incremented to 1)
+      expect(keyRing.currentEpoch).toBe(0)
+
+      // Now receive the coordinator's key at epoch 3
+      vi.mocked(cryptoService.decryptMediaKey).mockResolvedValueOnce({
+        key: Array.from(new Uint8Array(32)),
+        epoch: 3,
+        roomId: 'room-123',
+      })
+
+      emitWsEvent('MEDIA_KEY', {
+        room_id: 'room-123',
+        sender_id: 'coordinator-user',
+        sender_device_id: 'device-coord',
+        ciphertext: [40, 50, 60],
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+
+      // Epoch should be exactly 3 (coordinator's epoch), not 1 or 4
+      expect(keyRing.currentEpoch).toBe(3)
     })
 
     it('does not import key when decryption fails', async () => {

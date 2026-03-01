@@ -16,6 +16,7 @@ pub enum ClientOp {
     WebrtcSignal,
     PresenceUpdate,
     SenderKeyDistribute,
+    MediaKeyDistribute,
 }
 
 /// Envelope for client-to-server WebSocket messages (JSON text frames).
@@ -72,6 +73,7 @@ pub enum ServerEvent {
     ABUSE_SIGNAL,
     ICE_DIAGNOSTIC,
     SENDER_KEY_DISTRIBUTION,
+    MEDIA_KEY,
     ERROR,
 }
 
@@ -288,6 +290,33 @@ pub struct SenderKeyDistributionEvent {
     pub ciphertext: Vec<u8>,
 }
 
+// ── Media Key Distribution Payload Types ────────────────────
+
+/// Payload for `media_key_distribute` client op (MessagePack binary frame).
+/// Carries DR-encrypted media keys for E2E frame encryption in voice/video calls.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MediaKeyDistributePayload {
+    pub room_id: String,
+    pub recipients: Vec<MediaKeyRecipient>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MediaKeyRecipient {
+    pub device_id: String,
+    #[serde(with = "serde_bytes")]
+    pub ciphertext: Vec<u8>,
+}
+
+/// MEDIA_KEY server event payload — relayed per-device to call participants.
+#[derive(Debug, Serialize)]
+pub struct MediaKeyEvent {
+    pub room_id: String,
+    pub sender_id: String,
+    pub sender_device_id: String,
+    #[serde(with = "serde_bytes")]
+    pub ciphertext: Vec<u8>,
+}
+
 // ── Error Payload ───────────────────────────────────────────
 
 /// ERROR server event payload.
@@ -496,6 +525,7 @@ mod tests {
             (ClientOp::WebrtcSignal, "\"webrtc_signal\""),
             (ClientOp::PresenceUpdate, "\"presence_update\""),
             (ClientOp::SenderKeyDistribute, "\"sender_key_distribute\""),
+            (ClientOp::MediaKeyDistribute, "\"media_key_distribute\""),
         ];
 
         for (op, expected_json) in ops {
@@ -537,6 +567,7 @@ mod tests {
             (ServerEvent::ABUSE_SIGNAL, "\"ABUSE_SIGNAL\""),
             (ServerEvent::ICE_DIAGNOSTIC, "\"ICE_DIAGNOSTIC\""),
             (ServerEvent::SENDER_KEY_DISTRIBUTION, "\"SENDER_KEY_DISTRIBUTION\""),
+            (ServerEvent::MEDIA_KEY, "\"MEDIA_KEY\""),
             (ServerEvent::ERROR, "\"ERROR\""),
         ];
 

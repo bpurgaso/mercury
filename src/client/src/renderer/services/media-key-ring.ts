@@ -28,29 +28,51 @@ export class MediaKeyRing {
   /**
    * Rotate to a new key. Increments currentEpoch (wraps at 255 → 0),
    * retains the old key for 5 seconds, then deletes it.
+   *
+   * Used only by the local coordinator when generating a new key.
    */
   rotateKey(newKey: CryptoKey): void {
+    const newEpoch = (this.currentEpoch + 1) % 256
+    this.applyKey(newKey, newEpoch)
+  }
+
+  /**
+   * Set a received key at an explicit epoch from another participant.
+   * Does NOT auto-increment — uses the sender's epoch directly.
+   * This prevents epoch desynchronization when multiple key
+   * distributions arrive concurrently.
+   */
+  setKeyForEpoch(key: CryptoKey, epoch: number): void {
+    this.applyKey(key, epoch)
+  }
+
+  /**
+   * Internal: apply a key at a specific epoch, expiring the old key.
+   */
+  private applyKey(newKey: CryptoKey, newEpoch: number): void {
     const oldEpoch = this.currentEpoch
-    this.currentEpoch = (this.currentEpoch + 1) % 256
+    this.currentEpoch = newEpoch
     this.currentKey = newKey
 
     // Store new key
-    this.keys.set(this.currentEpoch, { key: newKey, expiresAt: Infinity })
+    this.keys.set(newEpoch, { key: newKey, expiresAt: Infinity })
 
-    // Expire old key after retention window
-    const oldEntry = this.keys.get(oldEpoch)
-    if (oldEntry) {
-      oldEntry.expiresAt = Date.now() + KEY_RETENTION_MS
+    // Expire old key after retention window (skip if same epoch, e.g. re-keying)
+    if (oldEpoch !== newEpoch) {
+      const oldEntry = this.keys.get(oldEpoch)
+      if (oldEntry) {
+        oldEntry.expiresAt = Date.now() + KEY_RETENTION_MS
 
-      // Clear any existing timer for this epoch (rapid rotation)
-      const existingTimer = this.cleanupTimers.get(oldEpoch)
-      if (existingTimer) clearTimeout(existingTimer)
+        // Clear any existing timer for this epoch (rapid rotation)
+        const existingTimer = this.cleanupTimers.get(oldEpoch)
+        if (existingTimer) clearTimeout(existingTimer)
 
-      const timer = setTimeout(() => {
-        this.keys.delete(oldEpoch)
-        this.cleanupTimers.delete(oldEpoch)
-      }, KEY_RETENTION_MS)
-      this.cleanupTimers.set(oldEpoch, timer)
+        const timer = setTimeout(() => {
+          this.keys.delete(oldEpoch)
+          this.cleanupTimers.delete(oldEpoch)
+        }, KEY_RETENTION_MS)
+        this.cleanupTimers.set(oldEpoch, timer)
+      }
     }
   }
 
