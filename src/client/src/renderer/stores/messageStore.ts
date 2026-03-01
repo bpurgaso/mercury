@@ -253,7 +253,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
         // Private channel REST responses have a base64-encoded `ciphertext` field
         // containing the MessagePack-serialized SenderKeyPayload blob.
-        const ciphertextB64 = (serverMsg as Record<string, unknown>).ciphertext as string | undefined
+        const ciphertextB64 = (serverMsg as unknown as Record<string, unknown>).ciphertext as string | undefined
         if (!ciphertextB64) continue
 
         try {
@@ -1245,7 +1245,7 @@ function maybeReplenishPreKeys(): void {
 
 // --- Test hooks (available in renderer context for E2E tests) ---
 if (typeof window !== 'undefined') {
-  ;(window as Record<string, unknown>).__mercury_test__ = {
+  ;(window as unknown as Record<string, unknown>).__mercury_test__ = {
     triggerIdentityWarning: async (userId: string) => {
       if (identityWarningCallback) {
         return identityWarningCallback(userId, [0], [1])

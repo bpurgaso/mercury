@@ -172,8 +172,8 @@ export class WebRTCManager {
     this.sendSignalFn = sendSignal
 
     // Expose PeerConnection for E2E test introspection via getStats()
-    if (typeof window !== 'undefined' && (window as Record<string, unknown>).__MERCURY_DEV__) {
-      (window as Record<string, unknown>).__mercury_pc = pc
+    if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>).__MERCURY_DEV__) {
+      (window as unknown as Record<string, unknown>).__mercury_pc = pc
     }
 
     pc.onicecandidate = (event) => {
@@ -457,8 +457,8 @@ export class WebRTCManager {
       this.pc.close()
       this.pc = null
       // Clean up dev exposure
-      if (typeof window !== 'undefined' && (window as Record<string, unknown>).__mercury_pc) {
-        delete (window as Record<string, unknown>).__mercury_pc
+      if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>).__mercury_pc) {
+        delete (window as unknown as Record<string, unknown>).__mercury_pc
       }
     }
     if (this.keyRing) {

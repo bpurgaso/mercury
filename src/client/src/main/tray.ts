@@ -6,7 +6,7 @@ let tray: Tray | null = null
 export function createTray(mainWindow: BrowserWindow): Tray {
   // Create a 16x16 transparent image as fallback if icon not found
   const iconPath = join(__dirname, '../../resources/icon.png')
-  let icon: nativeImage
+  let icon: Electron.NativeImage
   try {
     icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
   } catch {

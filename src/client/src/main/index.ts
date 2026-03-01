@@ -58,7 +58,7 @@ function createWindow(): BrowserWindow {
 
   // Hide to tray instead of closing on macOS/Linux
   win.on('close', (event) => {
-    if (!app.isQuitting) {
+    if (!isQuitting) {
       event.preventDefault()
       win.hide()
     }
@@ -173,14 +173,10 @@ function registerIpcHandlers(): void {
 }
 
 // Extend app with isQuitting flag for tray hide behavior
-declare module 'electron' {
-  interface App {
-    isQuitting?: boolean
-  }
-}
+let isQuitting = false
 
 app.on('before-quit', () => {
-  app.isQuitting = true
+  isQuitting = true
 })
 
 app.whenReady().then(() => {

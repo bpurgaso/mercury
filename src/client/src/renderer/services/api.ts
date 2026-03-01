@@ -27,7 +27,7 @@ import type {
   BansListResponse,
 } from '../types/api'
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://localhost:8443'
+const SERVER_URL = (import.meta as unknown as { env: Record<string, string | undefined> }).env.VITE_SERVER_URL || 'https://localhost:8443'
 
 type TokenProvider = {
   getAccessToken: () => string | null

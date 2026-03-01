@@ -114,7 +114,7 @@ export function hkdfSha256(
     input[prev.length + info.length] = i
 
     const oldPrev = prev
-    prev = hmacSha256(prk, input)
+    prev = hmacSha256(prk, input) as Uint8Array<ArrayBuffer>
     okm.set(prev, (i - 1) * 32)
 
     // Zero intermediate keying material

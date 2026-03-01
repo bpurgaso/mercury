@@ -148,7 +148,7 @@ export async function exportMediaKey(key: CryptoKey): Promise<Uint8Array> {
 export async function importMediaKey(raw: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     'raw',
-    raw,
+    new Uint8Array(raw).buffer as ArrayBuffer,
     { name: 'AES-GCM', length: 256 },
     false, // non-extractable once imported for use
     ['encrypt', 'decrypt'],

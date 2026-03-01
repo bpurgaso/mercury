@@ -9,7 +9,7 @@
 import { parentPort } from 'worker_threads'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'fs'
 import { join } from 'path'
-import { ensureSodium, randomBytes, memzero, identityKeyToX25519 } from '../../worker/crypto/utils'
+import { ensureSodium, randomBytes, memzero, identityKeyToX25519, hkdfSha256 } from '../../worker/crypto/utils'
 import {
   generateMasterVerifyKeyPair,
   generateDeviceIdentityKeyPair,
