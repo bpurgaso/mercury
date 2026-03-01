@@ -49,6 +49,29 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/{id}/channels",
             get(handlers::channels::list_channels),
+        )
+        // Moderation routes
+        .route("/{id}/bans", post(handlers::moderation::ban_user))
+        .route("/{id}/bans", get(handlers::moderation::list_bans))
+        .route(
+            "/{id}/bans/{user_id}",
+            delete(handlers::moderation::unban_user),
+        )
+        .route(
+            "/{id}/kicks/{user_id}",
+            post(handlers::moderation::kick_user),
+        )
+        .route(
+            "/{id}/moderators/{user_id}",
+            put(handlers::moderation::promote_moderator),
+        )
+        .route(
+            "/{id}/moderators/{user_id}",
+            delete(handlers::moderation::demote_moderator),
+        )
+        .route(
+            "/{id}/audit-log",
+            get(handlers::moderation::get_audit_log),
         );
 
     // Device routes — require authentication
@@ -65,6 +88,11 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/{id}/messages",
             get(handlers::messages::get_messages),
+        )
+        .route("/{id}/mutes", post(handlers::moderation::mute_user))
+        .route(
+            "/{id}/mutes/{user_id}",
+            delete(handlers::moderation::unmute_user),
         );
 
     // Sender key routes — require authentication
@@ -122,6 +150,24 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/users/{user_id}/devices/{device_id}/keys/one-time",
             post(handlers::devices::claim_otp),
+        )
+        // User block routes
+        .route(
+            "/users/me/blocks",
+            get(handlers::moderation::list_blocks),
+        )
+        .route(
+            "/users/me/blocks/{user_id}",
+            put(handlers::moderation::block_user),
+        )
+        .route(
+            "/users/me/blocks/{user_id}",
+            delete(handlers::moderation::unblock_user),
+        )
+        // DM policy route
+        .route(
+            "/users/me/dm-policy",
+            put(handlers::moderation::set_dm_policy),
         )
         // Identity management routes
         .route(

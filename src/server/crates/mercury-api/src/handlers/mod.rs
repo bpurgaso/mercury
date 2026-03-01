@@ -5,6 +5,7 @@ pub mod devices;
 pub mod dm;
 pub mod identity;
 pub mod messages;
+pub mod moderation;
 pub mod sender_keys;
 pub mod servers;
 pub mod users;

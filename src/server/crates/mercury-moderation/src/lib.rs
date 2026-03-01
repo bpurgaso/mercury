@@ -1,1 +1,9 @@
-// Moderation & trust/safety — expanded in Phase 9
+pub mod audit;
+pub mod bans;
+pub mod blocks;
+pub mod mutes;
+
+use uuid::Uuid;
+
+/// System sentinel UUID used as moderator_id for automated actions.
+pub const SYSTEM_MODERATOR_ID: Uuid = Uuid::nil();

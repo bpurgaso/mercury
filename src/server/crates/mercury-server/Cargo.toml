@@ -35,6 +35,10 @@ path = "../../tests/phase_7.rs"
 name = "phase_8"
 path = "../../tests/phase_8.rs"
 
+[[test]]
+name = "phase_9a"
+path = "../../tests/phase_9a.rs"
+
 [dependencies]
 mercury-core.workspace = true
 mercury-api.workspace = true
@@ -90,3 +94,4 @@ rmp-serde.workspace = true
 serde_bytes.workspace = true
 ring = "0.17"
 mercury-auth.workspace = true
+mercury-moderation.workspace = true

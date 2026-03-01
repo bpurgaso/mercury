@@ -15,6 +15,7 @@ pub struct User {
     pub password_hash: String,
     pub avatar_url: Option<String>,
     pub status: Option<String>,
+    pub dm_policy: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }

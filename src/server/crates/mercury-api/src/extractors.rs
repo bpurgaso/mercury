@@ -64,11 +64,17 @@ impl FromRequestParts<AppState> for AuthUser {
 }
 
 /// Check that a user is a member of the given server. Returns 403 if not.
+/// Also checks if the user is banned from the server.
 pub async fn require_membership(
     state: &AppState,
     user_id: UserId,
     server_id: mercury_core::ids::ServerId,
 ) -> Result<(), MercuryError> {
+    // Check ban status first (fast Redis check)
+    if mercury_moderation::bans::is_banned(&state.db, &state.redis, server_id, user_id).await {
+        return Err(MercuryError::Forbidden("SERVER_BANNED".into()));
+    }
+
     let is_member = mercury_db::servers::is_member(&state.db, user_id, server_id)
         .await
         .map_err(|e| MercuryError::Database(e))?;

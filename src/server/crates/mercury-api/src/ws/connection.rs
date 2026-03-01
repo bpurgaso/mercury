@@ -233,6 +233,13 @@ async fn handle_identify(
         tracing::warn!("failed to set presence online: {e}");
     }
 
+    // Cache the user's block list in Redis for fast enforcement
+    if let Err(e) =
+        mercury_moderation::blocks::cache_block_list(&state.db, &state.redis, user_id).await
+    {
+        tracing::warn!("failed to cache block list: {e}");
+    }
+
     tracing::debug!("handle_identify: session created, sending READY");
 
     // Query user's actual servers and channels for READY payload
@@ -740,6 +747,12 @@ async fn handle_standard_message_send(
         return;
     }
 
+    // Check if sender is muted in this channel
+    if mercury_moderation::mutes::is_muted(&state.db, &state.redis, channel_id, sender_id).await {
+        send_error_json(ws_sink, "CHANNEL_MUTED", "you are muted in this channel").await;
+        return;
+    }
+
     let content = payload.content.as_deref();
 
     let message_id = MessageId::new();
@@ -1004,6 +1017,12 @@ async fn handle_private_message_send(
             .await
             .unwrap_or(false);
     if !is_channel_member {
+        return;
+    }
+
+    // Check if sender is muted in this channel
+    if mercury_moderation::mutes::is_muted(&state.db, &state.redis, channel_id, sender_id).await {
+        send_error_json(ws_sink, "CHANNEL_MUTED", "you are muted in this channel").await;
         return;
     }
 

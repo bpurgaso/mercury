@@ -219,4 +219,10 @@ impl ConnectionManager {
             .map(|entry| *entry.key())
             .collect()
     }
+
+    /// Force-disconnect a user by dropping all their connection senders.
+    /// The event loop will detect the closed channel and clean up.
+    pub fn disconnect_user(&self, user_id: &UserId) {
+        self.connections.remove(user_id);
+    }
 }

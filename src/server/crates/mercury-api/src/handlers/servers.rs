@@ -179,6 +179,13 @@ pub async fn join_server(
         .await?
         .ok_or_else(|| MercuryError::NotFound("invalid invite code".into()))?;
 
+    // Check if user is banned from this server
+    if mercury_moderation::bans::is_banned(&state.db, &state.redis, server.id, auth_user.user_id)
+        .await
+    {
+        return Err(MercuryError::Forbidden("SERVER_BANNED".into()));
+    }
+
     // Check if already a member
     let already_member =
         mercury_db::servers::is_member(&state.db, auth_user.user_id, server.id).await?;

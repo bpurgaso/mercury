@@ -8,6 +8,7 @@ mercury-core.workspace = true
 mercury-db.workspace = true
 mercury-auth.workspace = true
 mercury-media.workspace = true
+mercury-moderation.workspace = true
 axum = { workspace = true, features = ["ws"] }
 axum-extra.workspace = true
 tower.workspace = true
