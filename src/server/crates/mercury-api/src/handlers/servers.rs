@@ -142,6 +142,14 @@ pub async fn update_server(
     let server_id = ServerId(server_id);
     require_ownership(&state, auth_user.user_id, server_id).await?;
 
+    if let Some(ref name) = req.name {
+        if name.is_empty() || name.len() > 100 {
+            return Err(MercuryError::BadRequest(
+                "server name must be 1-100 characters".into(),
+            ));
+        }
+    }
+
     let server = mercury_db::servers::update_server(
         &state.db,
         server_id,

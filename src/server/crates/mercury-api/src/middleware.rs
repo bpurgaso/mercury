@@ -1,12 +1,13 @@
 use axum::{
     extract::{ConnectInfo, State},
-    http::{Request, StatusCode},
+    http::{header, HeaderValue, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use fred::prelude::*;
 use serde_json::json;
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use crate::state::AppState;
 
@@ -90,4 +91,93 @@ async fn check_rate_limit(
         .await?;
 
     Ok(true)
+}
+
+// ── Request Duration Tracking Middleware ─────────────────────
+
+/// Records the duration of each HTTP request as a Prometheus histogram.
+pub async fn track_request_duration(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let method = request.method().to_string();
+    let path = request.uri().path().to_string();
+    let start = Instant::now();
+
+    let response = next.run(request).await;
+
+    let duration = start.elapsed().as_secs_f64();
+    let endpoint = normalize_path(&path);
+
+    metrics::histogram!(
+        crate::metrics::API_REQUEST_DURATION,
+        "method" => method,
+        "endpoint" => endpoint,
+    )
+    .record(duration);
+
+    response
+}
+
+/// Replace UUID path segments with `:id` for metric label cardinality control.
+fn normalize_path(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            if uuid::Uuid::parse_str(segment).is_ok() {
+                ":id"
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+// ── Security Headers Middleware ──────────────────────────────
+
+/// Adds security headers to every response.
+pub async fn security_headers(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    // Generate or forward X-Request-Id
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    if let Ok(val) = HeaderValue::from_str(&request_id) {
+        headers.insert("x-request-id", val);
+    }
+
+    response
 }

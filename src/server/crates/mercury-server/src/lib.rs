@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use fred::prelude::{Builder, ClientLike, RedisConfig, ReconnectPolicy};
 use tokio::net::TcpListener;
 
-use mercury_api::{create_router, spawn_abuse_detector, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
+use mercury_api::{create_router, init_metrics, spawn_abuse_detector, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
 use mercury_core::config::AppConfig;
 use mercury_db::pool::create_pool;
 use mercury_media::start_sfu;
@@ -44,6 +45,12 @@ pub async fn start_server(config: AppConfig) -> Result<SocketAddr> {
     // Start the SFU on a dedicated runtime
     let (sfu_handle, sfu_event_rx) = start_sfu(&config.media);
 
+    // Initialize Prometheus metrics
+    let metrics_handle = init_metrics();
+    let start_time = Instant::now();
+
+    let cors_origins = config.server.cors_origins.clone();
+
     let state = AppState {
         db: db_pool,
         redis,
@@ -56,6 +63,9 @@ pub async fn start_server(config: AppConfig) -> Result<SocketAddr> {
         sfu_handle,
         heartbeat_interval_secs: config.server.heartbeat_interval_secs,
         auth_rate_limit_per_min: config.server.auth_rate_limit_per_min,
+        metrics_handle,
+        start_time,
+        cors_origins,
     };
 
     // Spawn the SFU event consumer (dispatches SFU events to WebSocket clients)

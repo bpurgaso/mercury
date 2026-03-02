@@ -7,8 +7,8 @@ use fred::prelude::{Builder, ClientLike, RedisConfig, ReconnectPolicy};
 use futures_util::{SinkExt, StreamExt};
 use mercury_core::config::{
     AppConfig, AudioConfig, AuthConfig, BandwidthConfig, DatabaseConfig, IceConfig, MediaConfig,
-    ModerationConfig, RedisConfig as MercuryRedisConfig, ServerConfig, TlsConfig, TurnConfig,
-    VideoConfig,
+    ModerationConfig, ObservabilityConfig, RedisConfig as MercuryRedisConfig, ServerConfig,
+    TlsConfig, TurnConfig, VideoConfig,
 };
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -50,6 +50,7 @@ impl TestServer {
                 heartbeat_interval_secs: 5,
                 auth_rate_limit_per_min,
                 ws_rate_limit_per_sec: 10,
+                cors_origins: vec![],
             },
             database: DatabaseConfig {
                 url: database_url.clone(),
@@ -102,6 +103,7 @@ impl TestServer {
                 },
             },
             moderation: ModerationConfig::default(),
+            observability: ObservabilityConfig::default(),
         };
 
         // Create a separate pool for test cleanup

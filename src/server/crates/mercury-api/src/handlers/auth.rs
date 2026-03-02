@@ -226,9 +226,9 @@ async fn create_tokens_and_sessions(
 // ── Validation ────────────────────────────────────────────
 
 fn validate_registration(body: &RegisterRequest) -> Result<(), MercuryError> {
-    if body.username.len() < 3 || body.username.len() > 32 {
+    if body.username.is_empty() || body.username.len() > 100 {
         return Err(MercuryError::BadRequest(
-            "username must be 3-32 characters".into(),
+            "username must be 1-100 characters".into(),
         ));
     }
 

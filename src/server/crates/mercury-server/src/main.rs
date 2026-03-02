@@ -1,7 +1,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use fred::prelude::{Builder, ClientLike, RedisClient, RedisConfig, ReconnectPolicy};
@@ -12,7 +12,7 @@ use tower::Service;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use mercury_api::{create_router, spawn_abuse_detector, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
+use mercury_api::{create_router, init_metrics, spawn_abuse_detector, spawn_sfu_event_consumer, AppState, ConnectionManager, GlobalWsRateLimiter};
 use mercury_core::config::AppConfig;
 use mercury_db::pool::create_pool;
 use mercury_media::start_sfu;
@@ -97,8 +97,14 @@ async fn main() -> Result<()> {
         .install_default()
         .expect("failed to install rustls crypto provider");
 
+    let env_filter = EnvFilter::try_from_env("MERCURY_LOG_LEVEL")
+        .or_else(|_| EnvFilter::try_from_default_env())
+        .unwrap_or_else(|_| EnvFilter::new("mercury=info,mercury_media=warn"));
+
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .json()
+        .with_env_filter(env_filter)
+        .with_target(true)
         .init();
 
     let config = load_config()?;
@@ -127,6 +133,10 @@ async fn main() -> Result<()> {
     let (sfu_handle, sfu_event_rx) = start_sfu(&config.media);
     info!("SFU runtime started");
 
+    // Initialize Prometheus metrics
+    let metrics_handle = init_metrics();
+    let start_time = Instant::now();
+
     // Build application state
     let state = AppState {
         db: db_pool,
@@ -140,6 +150,9 @@ async fn main() -> Result<()> {
         sfu_handle,
         heartbeat_interval_secs: config.server.heartbeat_interval_secs,
         auth_rate_limit_per_min: config.server.auth_rate_limit_per_min,
+        metrics_handle,
+        start_time,
+        cors_origins: config.server.cors_origins,
     };
 
     // Spawn the SFU event consumer (dispatches SFU events to WebSocket clients)

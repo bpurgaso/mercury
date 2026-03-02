@@ -38,6 +38,9 @@ pub fn spawn_sfu_event_consumer(state: AppState, mut event_rx: mpsc::Receiver<Sf
                     initiator_id,
                     server_id,
                 } => {
+                    metrics::gauge!(crate::metrics::ACTIVE_CALLS).increment(1.0);
+                    metrics::gauge!(crate::metrics::SFU_ROOMS_ACTIVE).increment(1.0);
+
                     let payload = CallStartedEvent {
                         room_id,
                         channel_id: channel_id.to_string(),
@@ -56,6 +59,9 @@ pub fn spawn_sfu_event_consumer(state: AppState, mut event_rx: mpsc::Receiver<Sf
                     channel_id,
                     server_id,
                 } => {
+                    metrics::gauge!(crate::metrics::ACTIVE_CALLS).decrement(1.0);
+                    metrics::gauge!(crate::metrics::SFU_ROOMS_ACTIVE).decrement(1.0);
+
                     let payload = CallEndedEvent { room_id };
                     let msg = ServerMessage {
                         t: ServerEvent::CALL_ENDED,

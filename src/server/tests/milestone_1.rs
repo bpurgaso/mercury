@@ -61,7 +61,7 @@ fn test_health_returns_200() {
         let client = srv.client();
         let (status, body) = client.get_text("/health").await;
         assert_eq!(status, 200);
-        assert!(body.contains("OK"), "body should contain status indicator");
+        assert!(body.contains("ok") || body.contains("degraded"), "body should contain status indicator");
     });
 }
 

@@ -51,3 +51,6 @@ max_framerate = 30
 [media.bandwidth]
 total_mbps = 100
 per_user_kbps = 4000
+
+[observability]
+# metrics_bind = "0.0.0.0:9090"  # Optional separate metrics endpoint

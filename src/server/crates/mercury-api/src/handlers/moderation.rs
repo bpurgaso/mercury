@@ -16,6 +16,17 @@ use crate::ws::protocol::{ServerEvent, ServerMessage};
 
 // ── Helpers ──────────────────────────────────────────────────
 
+fn validate_reason(reason: &Option<String>) -> Result<(), MercuryError> {
+    if let Some(r) = reason {
+        if r.is_empty() || r.len() > 1000 {
+            return Err(MercuryError::BadRequest(
+                "reason must be 1-1000 characters".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn require_owner_or_mod(
     state: &AppState,
     user_id: UserId,
@@ -232,6 +243,7 @@ pub async fn ban_user(
 ) -> Result<(StatusCode, Json<BanResponse>), MercuryError> {
     let server_id = ServerId(server_id);
     let target_id = UserId(req.user_id);
+    validate_reason(&req.reason)?;
 
     require_owner_or_mod(&state, auth_user.user_id, server_id).await?;
 
@@ -385,6 +397,7 @@ pub async fn kick_user(
 ) -> Result<StatusCode, MercuryError> {
     let server_id = ServerId(server_id);
     let target_id = UserId(user_id);
+    validate_reason(&req.reason)?;
 
     require_owner_or_mod(&state, auth_user.user_id, server_id).await?;
 
@@ -474,6 +487,7 @@ pub async fn mute_user(
 ) -> Result<(StatusCode, Json<MuteResponse>), MercuryError> {
     let channel_id = ChannelId(channel_id);
     let target_id = UserId(req.user_id);
+    validate_reason(&req.reason)?;
 
     // Get server for channel
     let server_id = get_server_for_channel(&state, channel_id).await?;
@@ -780,9 +794,11 @@ pub async fn submit_report(
         ));
     }
 
-    // Validate description is not empty
-    if req.description.trim().is_empty() {
-        return Err(MercuryError::BadRequest("description cannot be empty".into()));
+    // Validate description is not empty and within length
+    if req.description.trim().is_empty() || req.description.len() > 1000 {
+        return Err(MercuryError::BadRequest(
+            "description must be 1-1000 characters".into(),
+        ));
     }
 
     let server_id = req.server_id.map(ServerId);

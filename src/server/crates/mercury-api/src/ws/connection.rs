@@ -225,6 +225,7 @@ async fn handle_identify(
         user_id,
         tx,
     });
+    metrics::gauge!(crate::metrics::CONNECTED_CLIENTS).increment(1.0);
 
     // Set presence to online
     if let Err(e) =
@@ -430,6 +431,7 @@ async fn handle_resume(
         user_id,
         tx,
     });
+    metrics::gauge!(crate::metrics::CONNECTED_CLIENTS).increment(1.0);
 
     // Cancel pending offline debounce
     if let Err(e) =
@@ -813,6 +815,7 @@ async fn handle_standard_message_send(
         filtered_ids.push(*mid);
     }
     state.ws_manager.send_binary_to_users(&filtered_ids, &bytes);
+    metrics::counter!(crate::metrics::MESSAGES_RELAYED).increment(1);
 }
 
 /// Handle a binary message_send — determine if it's a DM or private channel message.
@@ -1017,6 +1020,7 @@ async fn handle_dm_message_send(
         // Send to the target device
         state.ws_manager.send_binary_to_device(&recipient.device_id, &bytes);
     }
+    metrics::counter!(crate::metrics::MESSAGES_RELAYED).increment(1);
 }
 
 /// Handle a private channel (Sender Key) message_send.
@@ -1171,6 +1175,7 @@ async fn handle_private_message_send(
         filtered_ids.push(*mid);
     }
     state.ws_manager.send_binary_to_users(&filtered_ids, &bytes);
+    metrics::counter!(crate::metrics::MESSAGES_RELAYED).increment(1);
 }
 
 /// Handle sender_key_distribute op.
@@ -1601,6 +1606,7 @@ async fn cleanup_connection(
 ) {
     // Remove the connection handle (but keep session state for resume)
     state.ws_manager.remove_connection(session_id);
+    metrics::gauge!(crate::metrics::CONNECTED_CLIENTS).decrement(1.0);
 
     // Leave all voice rooms on disconnect
     if let Err(e) = state.sfu_handle.leave_all(user_id).await {

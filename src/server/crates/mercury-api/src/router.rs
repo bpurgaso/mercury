@@ -1,14 +1,15 @@
 use axum::{
-    extract::DefaultBodyLimit,
-    http::Method,
+    extract::{DefaultBodyLimit, State},
+    http::{header, HeaderValue, Method},
     middleware as axum_middleware,
     routing::{delete, get, patch, post, put},
-    Router,
+    Json, Router,
 };
-use tower_http::cors::{Any, CorsLayer};
+use serde::Serialize;
+use tower_http::cors::CorsLayer;
 
 use crate::handlers;
-use crate::middleware::rate_limit_auth;
+use crate::middleware::{rate_limit_auth, security_headers, track_request_duration};
 use crate::state::AppState;
 
 pub fn create_router(state: AppState) -> Router {
@@ -143,21 +144,13 @@ pub fn create_router(state: AppState) -> Router {
             get(handlers::moderation::get_abuse_stats),
         );
 
-    let cors = CorsLayer::new()
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::PATCH,
-            Method::DELETE,
-            Method::OPTIONS,
-        ])
-        .allow_headers(Any)
-        .allow_origin(Any);
+    // Build CORS layer from config
+    let cors = build_cors_layer(&state.cors_origins);
 
     // Combine all routes
     Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics_handler))
         .route("/ws", get(handlers::websocket::ws_upgrade))
         .nest("/auth", auth_routes)
         .nest("/users", user_routes)
@@ -225,9 +218,148 @@ pub fn create_router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(15 * 1024 * 1024)),
         )
         .layer(cors)
+        .layer(axum_middleware::from_fn(security_headers))
+        .layer(axum_middleware::from_fn(track_request_duration))
         .with_state(state)
 }
 
-async fn health() -> &'static str {
-    "OK"
+/// Build a CORS layer from the configured allowed origins.
+fn build_cors_layer(cors_origins: &[String]) -> CorsLayer {
+    let methods = [
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::OPTIONS,
+    ];
+    let allowed_headers = [
+        header::CONTENT_TYPE,
+        header::AUTHORIZATION,
+        header::HeaderName::from_static("x-request-id"),
+    ];
+
+    let layer = CorsLayer::new()
+        .allow_methods(methods)
+        .allow_headers(allowed_headers)
+        .allow_credentials(true);
+
+    if cors_origins.is_empty() {
+        // No origins configured — block all cross-origin requests
+        layer
+    } else {
+        let origins: Vec<HeaderValue> = cors_origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+        layer.allow_origin(origins)
+    }
+}
+
+// ── Health Check ────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+    database: String,
+    redis: String,
+    turn: String,
+    version: String,
+    uptime_seconds: u64,
+}
+
+async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+    let db_ok = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&state.db),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false);
+
+    let redis_ok = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        fred::prelude::ClientLike::ping::<String>(&state.redis),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false);
+
+    let turn_status = if state.turn_config.enabled {
+        // Check TURN reachability via UDP probe
+        match check_turn_reachable(&state.turn_config.urls).await {
+            true => "ok",
+            false => "unreachable",
+        }
+    } else {
+        "disabled"
+    };
+
+    let status = if db_ok && redis_ok {
+        if turn_status == "unreachable" {
+            "degraded"
+        } else {
+            "ok"
+        }
+    } else {
+        "unhealthy"
+    };
+
+    Json(HealthResponse {
+        status: status.to_string(),
+        database: if db_ok { "ok".to_string() } else { "down".to_string() },
+        redis: if redis_ok { "ok".to_string() } else { "down".to_string() },
+        turn: turn_status.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        uptime_seconds: state.start_time.elapsed().as_secs(),
+    })
+}
+
+/// Quick UDP probe to check if the TURN server is reachable.
+async fn check_turn_reachable(urls: &[String]) -> bool {
+    use tokio::net::UdpSocket;
+
+    for url in urls {
+        // Parse turn:host:port format
+        let addr = url
+            .strip_prefix("turn:")
+            .or_else(|| url.strip_prefix("turns:"))
+            .unwrap_or(url);
+
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+            if socket.connect(addr).await.is_ok() {
+                // Send a STUN binding request (first 4 bytes: type=0x0001, length=0x0000)
+                let stun_binding = [0x00, 0x01, 0x00, 0x00,
+                    0x21, 0x12, 0xa4, 0x42,
+                    0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x01];
+                let _ = socket.send(&stun_binding).await;
+
+                let mut buf = [0u8; 64];
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    socket.recv(&mut buf),
+                ).await {
+                    Ok(Ok(_)) => return true,
+                    _ => continue,
+                }
+            }
+        }
+    }
+    false
+}
+
+// ── Metrics Handler ─────────────────────────────────────────
+
+async fn metrics_handler(State(state): State<AppState>) -> String {
+    // Compute DB pool stats on-demand
+    let pool_size = state.db.size() as f64;
+    let idle = state.db.num_idle() as f64;
+    let active = pool_size - idle;
+
+    metrics::gauge!(crate::metrics::DB_POOL_CONNECTIONS, "state" => "active").set(active);
+    metrics::gauge!(crate::metrics::DB_POOL_CONNECTIONS, "state" => "idle").set(idle);
+
+    state.metrics_handle.render()
 }

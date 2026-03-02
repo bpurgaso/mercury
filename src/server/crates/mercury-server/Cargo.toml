@@ -43,6 +43,10 @@ path = "../../tests/phase_9a.rs"
 name = "phase_9b"
 path = "../../tests/phase_9b.rs"
 
+[[test]]
+name = "phase_10"
+path = "../../tests/phase_10.rs"
+
 [dependencies]
 mercury-core.workspace = true
 mercury-api.workspace = true
@@ -68,6 +72,9 @@ rustls-pemfile.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# Metrics
+metrics-exporter-prometheus.workspace = true
 
 # Config
 toml.workspace = true

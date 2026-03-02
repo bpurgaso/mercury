@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub media: MediaConfig,
     #[serde(default)]
     pub moderation: ModerationConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +27,8 @@ pub struct ServerConfig {
     pub auth_rate_limit_per_min: u64,
     #[serde(default = "default_ws_rate_limit_per_sec")]
     pub ws_rate_limit_per_sec: u64,
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
 }
 
 fn default_auth_rate_limit_per_min() -> u64 {
@@ -411,6 +415,22 @@ impl Default for ReportingConfig {
     fn default() -> Self {
         Self {
             operator_moderation_pubkey: String::new(),
+        }
+    }
+}
+
+// ── Observability Configuration ─────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ObservabilityConfig {
+    #[serde(default)]
+    pub metrics_bind: Option<String>,
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            metrics_bind: None,
         }
     }
 }

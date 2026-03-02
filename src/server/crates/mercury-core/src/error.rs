@@ -34,12 +34,20 @@ impl IntoResponse for MercuryError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
             MercuryError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            MercuryError::Database(_) => {
+            MercuryError::Database(ref e) => {
                 tracing::error!("database error: {self}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal server error".to_string(),
-                )
+                if matches!(e, sqlx::Error::PoolTimedOut) {
+                    metrics::counter!("mercury_db_pool_acquire_timeouts_total").increment(1);
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "service temporarily unavailable".to_string(),
+                    )
+                } else {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal server error".to_string(),
+                    )
+                }
             }
             MercuryError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             MercuryError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
