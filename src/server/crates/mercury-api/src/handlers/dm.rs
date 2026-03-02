@@ -81,10 +81,25 @@ pub async fn create_or_get_dm(
         .await?
         .ok_or_else(|| MercuryError::NotFound("recipient not found".into()))?;
 
-    // Block and DM-policy enforcement happens silently at message send time
-    // (see handle_dm_message_send). We intentionally do NOT reject DM channel
-    // creation here to avoid leaking whether a user has been blocked or has
-    // a restrictive DM policy — that would expose relationship metadata.
+    // Block enforcement: reject if either user has blocked the other
+    if mercury_moderation::blocks::is_blocked(&state.redis, recipient_id, auth_user.user_id).await
+        || mercury_moderation::blocks::is_blocked(&state.redis, auth_user.user_id, recipient_id)
+            .await
+    {
+        return Err(MercuryError::Forbidden("DM blocked".into()));
+    }
+
+    // DM policy enforcement: check recipient's policy
+    let dm_allowed = mercury_moderation::blocks::check_dm_policy(
+        &state.db,
+        auth_user.user_id,
+        recipient_id,
+    )
+    .await
+    .map_err(|e| MercuryError::Database(e))?;
+    if !dm_allowed {
+        return Err(MercuryError::Forbidden("DM not allowed by recipient's policy".into()));
+    }
 
     // Get or create the DM channel
     let dm_channel = mercury_db::dm_channels::get_or_create_dm_channel(
