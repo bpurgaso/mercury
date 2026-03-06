@@ -92,13 +92,6 @@ trait TestClientExt {
         path: &str,
     ) -> impl std::future::Future<Output = (reqwest::StatusCode, Value)>;
 
-    fn put_authed_with_token(
-        &self,
-        token: &str,
-        path: &str,
-        body: &Value,
-    ) -> impl std::future::Future<Output = (reqwest::StatusCode, Value)>;
-
     fn patch_authed_with_token(
         &self,
         token: &str,
@@ -106,11 +99,6 @@ trait TestClientExt {
         body: &Value,
     ) -> impl std::future::Future<Output = (reqwest::StatusCode, Value)>;
 
-    fn delete_authed_with_token(
-        &self,
-        token: &str,
-        path: &str,
-    ) -> impl std::future::Future<Output = reqwest::StatusCode>;
 }
 
 impl TestClientExt for common::TestClient {
@@ -156,28 +144,6 @@ impl TestClientExt for common::TestClient {
         (status, body)
     }
 
-    async fn put_authed_with_token(
-        &self,
-        token: &str,
-        path: &str,
-        body: &Value,
-    ) -> (reqwest::StatusCode, Value) {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let resp = client
-            .put(format!("{}{}", self.base_url, path))
-            .header("Authorization", format!("Bearer {}", token))
-            .json(body)
-            .send()
-            .await
-            .expect("PUT request failed");
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(json!({}));
-        (status, body)
-    }
-
     async fn patch_authed_with_token(
         &self,
         token: &str,
@@ -200,23 +166,6 @@ impl TestClientExt for common::TestClient {
         (status, body)
     }
 
-    async fn delete_authed_with_token(
-        &self,
-        token: &str,
-        path: &str,
-    ) -> reqwest::StatusCode {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let resp = client
-            .delete(format!("{}{}", self.base_url, path))
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await
-            .expect("DELETE request failed");
-        resp.status()
-    }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -428,8 +377,6 @@ fn test_rapid_messaging_auto_rate_limit() {
         let (token_owner, _) = register_user(srv, "owner", "owner@test.com").await;
         let (token_spammer, _spammer_id) =
             register_user(srv, "spammer", "spammer@test.com").await;
-        let client = srv.client();
-
         let (server_id, invite_code) = create_server(srv, &token_owner, "SpamServer").await;
         join_server(srv, &token_spammer, &invite_code).await;
         let channel_id =

@@ -12,6 +12,10 @@ async fn test_metrics_endpoint() {
     setup(&server).await;
 
     let client = server.client();
+    // Make a warm-up request so the duration middleware records at least one sample
+    // (the middleware records *after* the response, so the first /metrics render
+    // would not yet contain the histogram).
+    client.get_text("/health").await;
     let (status, body) = client.get_text("/metrics").await;
 
     assert_eq!(status, 200);
