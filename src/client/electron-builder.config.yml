@@ -1,34 +1,39 @@
-appId: com.mercury.client
+appId: com.mercury.app
 productName: Mercury
 directories:
-  output: release
+  output: dist
   buildResources: resources
 
 files:
-  - dist/**/*
+  - out/**/*
   - package.json
 
 mac:
   target:
-    - dmg
-    - zip
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
   category: public.app-category.social-networking
   hardenedRuntime: true
-  entitlements: resources/entitlements.mac.plist
-  entitlementsInherit: resources/entitlements.mac.plist
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
 
 win:
   target:
-    - nsis
-    - portable
+    - target: nsis
+      arch: [x64, arm64]
+    - target: portable
+  sign: true
 
 linux:
   target:
-    - AppImage
-    - deb
-    - rpm
-    - flatpak
-  category: Network;InstantMessaging
+    - target: AppImage
+      arch: [x64, arm64]
+    - target: deb
+    - target: rpm
+    - target: flatpak
+  category: Network
 
 nsis:
   oneClick: false
@@ -36,4 +41,4 @@ nsis:
 
 publish:
   provider: generic
-  url: https://updates.example.com
+  url: "https://updates.your-server.com"

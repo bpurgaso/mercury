@@ -7,6 +7,7 @@ import { join } from 'path'
 import { Worker } from 'worker_threads'
 import { IPC } from '../shared/ipc-channels'
 import { createTray, destroyTray } from './tray'
+import { initAutoUpdater } from './updater'
 
 const isDev = process.env.NODE_ENV === 'development' || !!process.env.ELECTRON_RENDERER_URL
 
@@ -208,6 +209,11 @@ app.whenReady().then(() => {
 
   mainWindow = createWindow()
   createTray(mainWindow)
+
+  // Initialize auto-updater in production
+  if (!isDev) {
+    initAutoUpdater(mainWindow)
+  }
 
   // Spawn the crypto worker thread
   cryptoWorker = spawnCryptoWorker()

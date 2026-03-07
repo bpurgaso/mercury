@@ -64,6 +64,11 @@ export type WorkerMessage =
   | CryptoResult
   | CryptoError
 
+export interface UpdaterStatus {
+  status: 'available' | 'downloaded'
+  message: string
+}
+
 // MercuryAPI exposed to renderer via contextBridge
 export interface MercuryAPI {
   app: {
@@ -82,6 +87,14 @@ export interface MercuryAPI {
     onMessage(callback: (data: unknown) => void): void
     /** Register callback for when the crypto port is ready */
     onReady(callback: () => void): void
+  }
+  updater: {
+    /** Check for updates manually */
+    check(): Promise<{ updateAvailable: boolean }>
+    /** Quit and install the downloaded update */
+    restartAndUpdate(): void
+    /** Listen for update status changes */
+    onStatus(callback: (status: UpdaterStatus) => void): void
   }
 }
 

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, RENDERER_SEND_CHANNELS } from '../shared/ipc-channels'
-import type { MercuryAPI } from '../shared/ipc-types'
+import type { MercuryAPI, UpdaterStatus } from '../shared/ipc-types'
 
 // Validate that we only send on explicitly allowed channels
 function safeSend(channel: string, ...args: unknown[]): void {
@@ -65,6 +65,20 @@ const api: MercuryAPI = {
       } else {
         readyCallbacks.push(callback)
       }
+    },
+  },
+
+  updater: {
+    check(): Promise<{ updateAvailable: boolean }> {
+      return ipcRenderer.invoke(IPC.UPDATER_CHECK)
+    },
+    restartAndUpdate(): void {
+      safeSend(IPC.UPDATER_RESTART)
+    },
+    onStatus(callback: (status: UpdaterStatus) => void): void {
+      ipcRenderer.on(IPC.UPDATER_STATUS, (_event, status: UpdaterStatus) => {
+        callback(status)
+      })
     },
   },
 }
