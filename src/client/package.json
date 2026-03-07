@@ -2,6 +2,7 @@
   "name": "mercury-client",
   "version": "0.1.0",
   "description": "Mercury — E2E encrypted communication client",
+  "author": "Mercury Contributors",
   "private": true,
   "main": "out/main/index.js",
   "scripts": {
