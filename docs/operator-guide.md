@@ -90,47 +90,47 @@ Mercury uses a layered configuration system. Values are resolved in this order (
 
 #### Core Server
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `MERCURY_SERVER_HOST` | Bind address | `0.0.0.0` |
-| `MERCURY_SERVER_PORT` | HTTPS listen port | `8443` |
-| `PUBLIC_DOMAIN` | Public hostname for TURN realm, ICE candidates, and invite links | `localhost` |
-| `RUST_LOG` | Log filter directive (development) | `mercury=info` |
-| `MERCURY_LOG_LEVEL` | Log filter directive (production, overrides `RUST_LOG`) | -- |
-| `CORS_ORIGINS` | Comma-separated allowed CORS origins | (empty = deny all) |
+| Variable              | Description                                                      | Default            |
+| --------------------- | ---------------------------------------------------------------- | ------------------ |
+| `MERCURY_SERVER_HOST` | Bind address                                                     | `0.0.0.0`          |
+| `MERCURY_SERVER_PORT` | HTTPS listen port                                                | `8443`             |
+| `PUBLIC_DOMAIN`       | Public hostname for TURN realm, ICE candidates, and invite links | `localhost`        |
+| `RUST_LOG`            | Log filter directive (development)                               | `mercury=info`     |
+| `MERCURY_LOG_LEVEL`   | Log filter directive (production, overrides `RUST_LOG`)          | --                 |
+| `CORS_ORIGINS`        | Comma-separated allowed CORS origins                             | (empty = deny all) |
 
 #### Database
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `MERCURY_DATABASE_URL` | PostgreSQL connection string | `postgres://mercury:mercury@localhost:5432/mercury` |
-| `POSTGRES_USER` | DB user (Docker init only) | `mercury` |
-| `POSTGRES_PASSWORD` | DB password (Docker init only) | `mercury` |
-| `POSTGRES_DB` | DB name (Docker init only) | `mercury` |
+| Variable               | Description                    | Default                                             |
+| ---------------------- | ------------------------------ | --------------------------------------------------- |
+| `MERCURY_DATABASE_URL` | PostgreSQL connection string   | `postgres://mercury:mercury@localhost:5432/mercury` |
+| `POSTGRES_USER`        | DB user (Docker init only)     | `mercury`                                           |
+| `POSTGRES_PASSWORD`    | DB password (Docker init only) | `mercury`                                           |
+| `POSTGRES_DB`          | DB name (Docker init only)     | `mercury`                                           |
 
 #### Redis
 
-| Variable | Description | Default |
-|----------|-------------|---------|
+| Variable            | Description             | Default                  |
+| ------------------- | ----------------------- | ------------------------ |
 | `MERCURY_REDIS_URL` | Redis connection string | `redis://localhost:6379` |
 
 #### Authentication
 
-| Variable | Description | Default |
-|----------|-------------|---------|
+| Variable                  | Description                                  | Default                           |
+| ------------------------- | -------------------------------------------- | --------------------------------- |
 | `MERCURY_AUTH_JWT_SECRET` | JWT signing secret (64+ chars, **required**) | `dev-secret-change-in-production` |
 
 #### TLS
 
-| Variable | Description | Default |
-|----------|-------------|---------|
+| Variable                | Description                 | Default            |
+| ----------------------- | --------------------------- | ------------------ |
 | `MERCURY_TLS_CERT_PATH` | Path to TLS certificate PEM | `./certs/cert.pem` |
-| `MERCURY_TLS_KEY_PATH` | Path to TLS private key PEM | `./certs/key.pem` |
+| `MERCURY_TLS_KEY_PATH`  | Path to TLS private key PEM | `./certs/key.pem`  |
 
 #### TURN/STUN
 
-| Variable | Description | Default |
-|----------|-------------|---------|
+| Variable      | Description                                                            | Default |
+| ------------- | ---------------------------------------------------------------------- | ------- |
 | `TURN_SECRET` | Shared secret for TURN credential generation (64+ chars, **required**) | (empty) |
 
 ### Config File (`config/default.toml`)
@@ -234,13 +234,13 @@ Mercury requires several ports to be forwarded from your router/firewall to the 
 
 ### Required Ports
 
-| Port | Protocol | Service | Purpose |
-|------|----------|---------|---------|
-| 443 (or 8443) | TCP | Mercury Server | HTTPS API + WebSocket Secure |
-| 3478 | TCP + UDP | coturn | STUN/TURN signaling |
-| 5349 | TCP | coturn | TURNS (TLS-secured TURN) |
-| 10000-10100 | UDP | Mercury SFU | WebRTC media relay (direct) |
-| 49152-49252 | UDP | coturn | TURN relay traffic |
+| Port          | Protocol  | Service        | Purpose                      |
+| ------------- | --------- | -------------- | ---------------------------- |
+| 443 (or 8443) | TCP       | Mercury Server | HTTPS API + WebSocket Secure |
+| 3478          | TCP + UDP | coturn         | STUN/TURN signaling          |
+| 5349          | TCP       | coturn         | TURNS (TLS-secured TURN)     |
+| 10000-10100   | UDP       | Mercury SFU    | WebRTC media relay (direct)  |
+| 49152-49252   | UDP       | coturn         | TURN relay traffic           |
 
 > **Note:** The Docker Compose file maps the server to port 8443. If you want clients to connect on standard port 443, either change the mapping in `docker-compose.prod.yml` or use a reverse proxy.
 
@@ -270,14 +270,14 @@ sudo iptables -A INPUT -p udp --dport 49152:49252 -j ACCEPT
 
 Create or update your security group with these inbound rules:
 
-| Type | Protocol | Port Range | Source |
-|------|----------|------------|--------|
-| Custom TCP | TCP | 8443 | 0.0.0.0/0 |
-| Custom TCP | TCP | 3478 | 0.0.0.0/0 |
-| Custom UDP | UDP | 3478 | 0.0.0.0/0 |
-| Custom TCP | TCP | 5349 | 0.0.0.0/0 |
-| Custom UDP | UDP | 10000-10100 | 0.0.0.0/0 |
-| Custom UDP | UDP | 49152-49252 | 0.0.0.0/0 |
+| Type       | Protocol | Port Range  | Source    |
+| ---------- | -------- | ----------- | --------- |
+| Custom TCP | TCP      | 8443        | 0.0.0.0/0 |
+| Custom TCP | TCP      | 3478        | 0.0.0.0/0 |
+| Custom UDP | UDP      | 3478        | 0.0.0.0/0 |
+| Custom TCP | TCP      | 5349        | 0.0.0.0/0 |
+| Custom UDP | UDP      | 10000-10100 | 0.0.0.0/0 |
+| Custom UDP | UDP      | 49152-49252 | 0.0.0.0/0 |
 
 Remember: AWS Security Groups are stateful (return traffic is automatically allowed), but you may also need to configure the OS-level firewall inside the instance (see UFW/iptables above).
 
@@ -316,27 +316,27 @@ Add to your `prometheus.yml`:
 
 ```yaml
 scrape_configs:
-  - job_name: 'mercury'
+  - job_name: "mercury"
     scheme: https
     tls_config:
-      insecure_skip_verify: true  # Remove if using a trusted CA cert
+      insecure_skip_verify: true # Remove if using a trusted CA cert
     static_configs:
-      - targets: ['your-domain:8443']
+      - targets: ["your-domain:8443"]
     scrape_interval: 15s
 ```
 
 #### Key Metrics and Alert Thresholds
 
-| Metric | Type | Alert Condition | Action |
-|--------|------|-----------------|--------|
-| `mercury_db_pool_acquire_timeouts_total` | Counter | Increasing (rate > 0 over 5m) | Scale DB pool (`max_connections`) or investigate slow queries |
-| `mercury_api_request_duration_seconds` | Histogram | p99 > 100ms sustained 5m | Investigate API bottlenecks, consider splitting API/media |
-| `mercury_connected_clients` | Gauge | Approaching server capacity | Plan capacity, consider horizontal scaling |
-| `mercury_active_calls` | Gauge | Approaching `max_participants_per_room * rooms` | Monitor SFU resource usage |
-| `mercury_sfu_rooms_active` | Gauge | Sustained high count | Monitor media bandwidth |
-| `mercury_media_bandwidth_bytes` | Gauge | Approaching `total_mbps` budget | Increase bandwidth or reduce video quality limits |
-| `mercury_db_pool_connections` | Gauge | `active` near `max_connections` | Increase pool size, investigate connection leaks |
-| `mercury_messages_relayed_total` | Counter | Baseline monitoring | Track usage growth |
+| Metric                                   | Type      | Alert Condition                                 | Action                                                        |
+| ---------------------------------------- | --------- | ----------------------------------------------- | ------------------------------------------------------------- |
+| `mercury_db_pool_acquire_timeouts_total` | Counter   | Increasing (rate > 0 over 5m)                   | Scale DB pool (`max_connections`) or investigate slow queries |
+| `mercury_api_request_duration_seconds`   | Histogram | p99 > 100ms sustained 5m                        | Investigate API bottlenecks, consider splitting API/media     |
+| `mercury_connected_clients`              | Gauge     | Approaching server capacity                     | Plan capacity, consider horizontal scaling                    |
+| `mercury_active_calls`                   | Gauge     | Approaching `max_participants_per_room * rooms` | Monitor SFU resource usage                                    |
+| `mercury_sfu_rooms_active`               | Gauge     | Sustained high count                            | Monitor media bandwidth                                       |
+| `mercury_media_bandwidth_bytes`          | Gauge     | Approaching `total_mbps` budget                 | Increase bandwidth or reduce video quality limits             |
+| `mercury_db_pool_connections`            | Gauge     | `active` near `max_connections`                 | Increase pool size, investigate connection leaks              |
+| `mercury_messages_relayed_total`         | Counter   | Baseline monitoring                             | Track usage growth                                            |
 
 #### Example Alertmanager Rules
 
@@ -419,13 +419,13 @@ Mercury runs all components (API server + SFU media server) in a single process 
 
 ### When to Scale
 
-| Condition | Threshold | Sustained For | Action |
-|-----------|-----------|---------------|--------|
-| API p99 latency | > 100ms | 5 minutes | Split API and Media into separate containers |
-| SFU audio jitter | > 20ms | 5 minutes | Split API and Media into separate containers |
-| DB pool active connections | Near `max_connections` | -- | Increase `max_connections` in config |
-| DB pool acquire timeouts | Any | 5 minutes | Increase `max_connections` or investigate slow queries |
-| Connected clients | Approaching capacity | -- | Add resources or plan a second instance |
+| Condition                  | Threshold              | Sustained For | Action                                                 |
+| -------------------------- | ---------------------- | ------------- | ------------------------------------------------------ |
+| API p99 latency            | > 100ms                | 5 minutes     | Split API and Media into separate containers           |
+| SFU audio jitter           | > 20ms                 | 5 minutes     | Split API and Media into separate containers           |
+| DB pool active connections | Near `max_connections` | --            | Increase `max_connections` in config                   |
+| DB pool acquire timeouts   | Any                    | 5 minutes     | Increase `max_connections` or investigate slow queries |
+| Connected clients          | Approaching capacity   | --            | Add resources or plan a second instance                |
 
 ### How to Split API and Media
 
@@ -555,9 +555,9 @@ Complete all items before exposing Mercury to the internet.
   - TURN is required for voice/video calls behind NATs
   - Test with the health endpoint: `turn` field should be `"ok"`
 
-- [ ] **Verify health endpoint**
-  - `curl -sk https://your-domain:8443/health` returns `"status": "ok"`
-  - All components (database, redis, turn) show as connected
+- [ ] **Run `GET /admin/connectivity-check` after setup**
+  - Use this administrative diagnostic endpoint to validate internal services.
+  - Also verify the health endpoint: `curl -sk https://your-domain:8443/health` returns `"status": "ok"`
 
 - [ ] **Review Docker resource limits**
   - Default limits: Mercury (4 CPU, 2GB RAM), PostgreSQL (2 CPU, 1GB RAM), Redis (1 CPU, 512MB RAM)
@@ -579,13 +579,14 @@ Complete all items before exposing Mercury to the internet.
 
 Voice and video calls require TURN to be properly configured and accessible.
 
-1. **Check health endpoint:** `curl -sk https://your-domain:8443/health | grep turn`
+1. **Check TURN ports:** Use an external tool to verify UDP ports (3478, 10000-10100, 49152-49252) are open.
+2. **Run connectivity diagnostic:** Run `GET /admin/connectivity-check` to explicitly test TURN relaying and system connectivity.
+3. **Check health endpoint:** `curl -sk https://your-domain:8443/health | grep turn`
    - If `"turn": "unreachable"`, coturn is not running or not accessible
-2. **Check coturn logs:** `docker compose -f docker-compose.prod.yml logs coturn`
-3. **Verify UDP ports are open:** Use an external tool to test ports 3478/udp, 49152-49252/udp
-4. **Check `TURN_SECRET`:** Must match between `.env.prod` (used by coturn) and the Mercury server
-5. **Check `PUBLIC_DOMAIN`:** Must resolve to your server's public IP. TURN realm uses this value.
-6. **Common fix (UniFi):** Create separate explicit UDP forwarding rules -- the combined TCP/UDP option often fails for UDP.
+4. **Check coturn logs:** `docker compose -f docker-compose.prod.yml logs coturn`
+5. **Check `TURN_SECRET`:** Must match between `.env.prod` (used by coturn) and the Mercury server
+6. **Check `PUBLIC_DOMAIN`:** Must resolve to your server's public IP. TURN realm uses this value.
+7. **Common fix (UniFi):** Create separate explicit UDP forwarding rules -- the combined TCP/UDP option often fails for UDP.
 
 ### Users can't connect
 
