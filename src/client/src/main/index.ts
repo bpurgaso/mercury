@@ -47,9 +47,23 @@ function createWindow(): BrowserWindow {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       webSecurity: true,
+      allowRunningInsecureContent: false,
     },
+  })
+
+  // Prevent screen capture of the window
+  win.setContentProtection(true)
+
+  // Block arbitrary new window creation
+  win.webContents.setWindowOpenHandler(() => {
+    return { action: 'deny' }
+  })
+
+  // Prevent navigation away from the app
+  win.webContents.on('will-navigate', (event) => {
+    event.preventDefault()
   })
 
   // Show window when ready to avoid white flash
@@ -193,8 +207,8 @@ app.whenReady().then(() => {
   // Set CSP dynamically — permissive in dev (Vite HMR needs ws:// and http://),
   // strict in production.
   const csp = isDev
-    ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src ws: wss: http: https:; img-src 'self' data: https://*;"
-    : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src wss://* https://*; img-src 'self' data: https://*;"
+    ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src ws: wss: http: https:; media-src blob: mediastream:; img-src 'self' data: https://*;"
+    : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src wss://* https://*; media-src blob: mediastream:; img-src 'self' data: https://*;"
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({

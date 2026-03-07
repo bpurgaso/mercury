@@ -152,7 +152,7 @@ pub async fn security_headers(
 
     headers.insert(
         header::STRICT_TRANSPORT_SECURITY,
-        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
     );
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
