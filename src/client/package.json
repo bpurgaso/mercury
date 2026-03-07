@@ -17,6 +17,8 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "electron-vite build && playwright test",
+    "bench": "vitest run --config vitest.bench.config.ts",
+    "bench:bundle": "bash ../../scripts/check-bundle-size.sh",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "build:mac": "electron-vite build && electron-builder --mac",

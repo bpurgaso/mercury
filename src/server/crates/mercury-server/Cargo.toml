@@ -47,6 +47,11 @@ path = "../../tests/phase_9b.rs"
 name = "phase_10"
 path = "../../tests/phase_10.rs"
 
+[[bench]]
+name = "server_benchmarks"
+path = "../../benches/server_benchmarks.rs"
+harness = false
+
 [dependencies]
 mercury-core.workspace = true
 mercury-api.workspace = true
