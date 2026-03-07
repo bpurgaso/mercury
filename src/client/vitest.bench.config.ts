@@ -4,7 +4,7 @@ import { resolve } from 'path'
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['tests/performance/**/*.test.ts'],
+    include: ['tests/performance/benchmarks.test.ts'],
     globals: true,
     testTimeout: 60_000,
   },
