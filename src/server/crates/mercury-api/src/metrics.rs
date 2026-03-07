@@ -57,6 +57,12 @@ pub fn init_metrics() -> PrometheusHandle {
                 "Total database pool acquire timeouts"
             );
 
+            // Initialize gauges to 0 so they appear in /metrics from startup
+            metrics::gauge!(CONNECTED_CLIENTS).set(0.0);
+            metrics::gauge!(ACTIVE_CALLS).set(0.0);
+            metrics::gauge!(SFU_ROOMS_ACTIVE).set(0.0);
+            metrics::gauge!(MEDIA_BANDWIDTH_BYTES).set(0.0);
+
             handle
         })
         .clone()
