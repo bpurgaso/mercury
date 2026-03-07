@@ -19,7 +19,7 @@ RUN cargo build --release --bin mercury-server
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -27,7 +27,6 @@ RUN groupadd -r mercury && useradd -r -g mercury -d /app -s /sbin/nologin mercur
 
 COPY --from=builder /build/src/server/target/release/mercury-server /usr/local/bin/mercury-server
 COPY src/server/config/default.toml /app/config/default.toml
-COPY src/server/migrations/ /app/migrations/
 
 RUN chown -R mercury:mercury /app
 WORKDIR /app

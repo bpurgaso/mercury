@@ -10,7 +10,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
-
   # ── Mercury Server ───────────────────────────────────────────────────────
   mercury:
     build:
@@ -21,9 +20,9 @@ services:
       - "8443:8443"
       - "10000-10100:10000-10100/udp"
     volumes:
-      - ./certs:/certs:ro
+      - certs:/certs:ro
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
       redis:
         condition: service_started
@@ -50,7 +49,7 @@ services:
       - mercury_network
 
   # ── Postgres ─────────────────────────────────────────────────────────────
-  postgres:
+  db:
     image: postgres:16-alpine
     env_file: .env.prod
     volumes:
@@ -95,7 +94,7 @@ services:
     network_mode: host
     env_file: .env.prod
     volumes:
-      - ./certs:/etc/coturn/certs:ro
+      - certs:/etc/coturn/certs:ro
     command: >
       -n
       --log-file=stdout
@@ -104,8 +103,8 @@ services:
       --min-port=49152
       --max-port=49252
       --use-auth-secret
-      --static-auth-secret=$${TURN_SECRET}
-      --realm=$${PUBLIC_DOMAIN}
+      --static-auth-secret=${TURN_SECRET}
+      --realm=${PUBLIC_DOMAIN}
       --cert=/etc/coturn/certs/cert.pem
       --pkey=/etc/coturn/certs/key.pem
       --no-cli
@@ -126,3 +125,4 @@ networks:
 volumes:
   pgdata:
   redisdata:
+  certs:
