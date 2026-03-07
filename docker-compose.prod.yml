@@ -5,7 +5,7 @@
 # Includes the Mercury server container alongside infrastructure services.
 #
 # Usage:
-#   cp .env.example .env          # Configure production values
+#   cp .env.prod.example .env.prod    # Configure production values
 #   docker compose -f docker-compose.prod.yml up -d
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -16,33 +16,25 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file: .env.prod
     ports:
-      - "${MERCURY_SERVER_PORT:-8443}:8443"
-      - "${METRICS_BIND_PORT:-9090}:9090"
-    environment:
-      MERCURY_SERVER_HOST: "0.0.0.0"
-      MERCURY_SERVER_PORT: "8443"
-      MERCURY_DATABASE_URL: "postgres://${POSTGRES_USER:-mercury}:${POSTGRES_PASSWORD:-mercury}@postgres:5432/${POSTGRES_DB:-mercury}"
-      MERCURY_REDIS_URL: "redis://redis:6379"
-      MERCURY_AUTH_JWT_SECRET: "${MERCURY_AUTH_JWT_SECRET:-change-me-in-production}"
-      MERCURY_TLS_CERT_PATH: "/certs/cert.pem"
-      MERCURY_TLS_KEY_PATH: "/certs/key.pem"
-      TURN_SECRET: "${TURN_SECRET:-change-me-in-production}"
-      MERCURY_LOG_LEVEL: "${MERCURY_LOG_LEVEL:-mercury=info,mercury_media=warn}"
-      CORS_ORIGINS: "${CORS_ORIGINS:-}"
+      - "8443:8443"
+      - "10000-10100:10000-10100/udp"
     volumes:
       - ./certs:/certs:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
+        condition: service_started
+      coturn:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8443/health"]
-      interval: 15s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 40s
     deploy:
       resources:
         limits:
@@ -60,14 +52,11 @@ services:
   # ── Postgres ─────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-mercury}
-      POSTGRES_USER: ${POSTGRES_USER:-mercury}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mercury}
+    env_file: .env.prod
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mercury}"]
+      test: ["CMD-SHELL", "pg_isready -U mercury"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -83,6 +72,7 @@ services:
   # ── Redis ────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
     volumes:
       - redisdata:/data
     healthcheck:
@@ -103,10 +93,9 @@ services:
   coturn:
     image: coturn/coturn:latest
     network_mode: host
+    env_file: .env.prod
     volumes:
       - ./certs:/etc/coturn/certs:ro
-    environment:
-      - TURN_SECRET=${TURN_SECRET:-mercury-turn-dev-secret}
     command: >
       -n
       --log-file=stdout
@@ -116,12 +105,18 @@ services:
       --max-port=49252
       --use-auth-secret
       --static-auth-secret=$${TURN_SECRET}
-      --realm=${PUBLIC_DOMAIN:-localhost}
+      --realm=$${PUBLIC_DOMAIN}
       --cert=/etc/coturn/certs/cert.pem
       --pkey=/etc/coturn/certs/key.pem
       --no-cli
       --no-multicast-peers
       --fingerprint
+    healthcheck:
+      test: ["CMD-SHELL", "echo | nc -u -w1 127.0.0.1 3478 && exit 0 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
 networks:

@@ -5,6 +5,7 @@ WORKDIR /build
 
 # Copy workspace manifests first for layer caching
 COPY src/server/Cargo.toml src/server/Cargo.toml
+COPY src/server/Cargo.lock src/server/Cargo.lock
 COPY src/server/crates/ src/server/crates/
 
 # Copy source code

@@ -1,0 +1,25 @@
+# Build artifacts
+src/server/target/
+
+# Git
+.git/
+
+# Client (not needed for server build)
+src/client/
+node_modules/
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment and secrets
+.env
+.env.prod
+certs/
+
+# Documentation
+specs/
+docs/
+*.md
