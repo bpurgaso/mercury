@@ -44,6 +44,8 @@ import {
 import { KeyStore } from '../../worker/store/keystore'
 import { MessageStore } from '../../worker/store/messages.db'
 import type { KeyBundle, SessionState, SenderKey } from '../../worker/crypto/types'
+import { generateRecoveryKey, encodeMnemonic, decodeMnemonic, InvalidMnemonicError } from '../../worker/crypto/recovery'
+import { createBackupBlob, restoreFromBackup, uploadKeyBackup, downloadKeyBackup, BackupDecryptionError } from '../../worker/crypto/backup'
 
 if (!parentPort) {
   throw new Error('crypto-worker must be run as a Worker Thread')
@@ -1195,6 +1197,126 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         memzero(kp.privateKey)
 
         result = { evidence: new TextDecoder().decode(decrypted) }
+        break
+      }
+
+      // --- Phase 6e: Recovery & Backup ---
+
+      case 'crypto:generateRecoveryKey': {
+        const key = await generateRecoveryKey()
+        const mnemonic = encodeMnemonic(key)
+        result = {
+          recoveryKey: Array.from(key),
+          mnemonic,
+        }
+        memzero(key)
+        break
+      }
+
+      case 'crypto:createBackup': {
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const recoveryKey = new Uint8Array(msg.data!.recoveryKey as number[])
+        const blob = await createBackupBlob(keyStore, recoveryKey)
+        result = {
+          encrypted_backup: Array.from(blob.encrypted_backup),
+          salt: Array.from(blob.salt),
+        }
+        memzero(recoveryKey)
+        break
+      }
+
+      case 'crypto:restoreFromBackup': {
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const rk = new Uint8Array(msg.data!.recoveryKey as number[])
+        const eb = new Uint8Array(msg.data!.encrypted_backup as number[])
+        const s = new Uint8Array(msg.data!.salt as number[])
+        await restoreFromBackup(eb, s, rk, keyStore)
+        memzero(rk)
+        result = { restored: true }
+        break
+      }
+
+      case 'crypto:decodeMnemonic': {
+        const words = msg.data!.mnemonic as string[]
+        const entropy = decodeMnemonic(words)
+        result = { recoveryKey: Array.from(entropy) }
+        memzero(entropy)
+        break
+      }
+
+      case 'crypto:getMasterVerifyKey': {
+        if (!keyStore) throw new Error('KeyStore not initialized')
+        const kp = keyStore.getMasterVerifyKeyPair()
+        result = { masterVerifyKey: Array.from(kp.publicKey) }
+        break
+      }
+
+      case 'crypto:recoverDevice': {
+        // Full recovery flow: restore backup → generate new device keys
+        // Returns everything needed for server upload.
+        if (!keyStore) throw new Error('KeyStore not initialized')
+
+        const recKey = new Uint8Array(msg.data!.recoveryKey as number[])
+        const encBackup = new Uint8Array(msg.data!.encrypted_backup as number[])
+        const salt = new Uint8Array(msg.data!.salt as number[])
+        const devId = msg.data!.deviceId as string
+
+        // 1. Restore master verify key + trusted identities from backup
+        await restoreFromBackup(encBackup, salt, recKey, keyStore)
+        memzero(recKey)
+
+        // Clear stale sessions and sender keys — they were negotiated with the
+        // old device identity key. The new device must re-establish sessions via
+        // X3DH. Trusted identities and master verify key are preserved.
+        keyStore.clearAllSessions()
+        sessionIndex.clear()
+
+        // 2. Generate new device-level keys (master verify key is already restored)
+        const deviceKP = await generateDeviceIdentityKeyPair()
+        keyStore.storeDeviceIdentityKeyPair(devId, deviceKP)
+
+        const spk = await generateSignedPreKey(deviceKP)
+        keyStore.storeSignedPreKey(spk)
+
+        const otpKeys = await generateOneTimePreKeys(1, 100)
+        keyStore.storeOneTimePreKeys(otpKeys)
+
+        // 3. Create signed device list with restored master verify key
+        const masterKP = keyStore.getMasterVerifyKeyPair()
+        const deviceX25519PK = identityKeyToX25519(deviceKP)
+
+        // DeviceListEntry expects base64-encoded Ed25519 public key
+        const deviceIdentityB64 = Buffer.from(deviceKP.publicKey).toString('base64')
+        const sdl = await createSignedDeviceList(masterKP, [
+          { device_id: devId, identity_key: deviceIdentityB64 },
+        ])
+
+        result = {
+          masterVerifyPublicKey: Array.from(masterKP.publicKey),
+          deviceId: devId,
+          deviceIdentityPublicKey: Array.from(deviceX25519PK.publicKey),
+          deviceIdentityEd25519PublicKey: Array.from(deviceKP.publicKey),
+          signedPreKey: {
+            keyId: spk.keyId,
+            publicKey: Array.from(spk.keyPair.publicKey),
+            signature: Array.from(spk.signature),
+          },
+          oneTimePreKeys: otpKeys.map((pk) => ({
+            keyId: pk.keyId,
+            publicKey: Array.from(pk.keyPair.publicKey),
+          })),
+          signedDeviceList: {
+            signedList: Array.from(sdl.signed_list),
+            signature: Array.from(sdl.signature),
+            masterVerifyKey: Array.from(masterKP.publicKey),
+          },
+        }
+
+        // Cleanup
+        memzero(deviceKP.privateKey)
+        memzero(spk.keyPair.privateKey)
+        for (const pk of otpKeys) memzero(pk.keyPair.privateKey)
+
         break
       }
 

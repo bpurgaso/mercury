@@ -177,6 +177,20 @@ export interface DecryptMediaKeyResult {
   error?: 'NO_SESSION' | 'DECRYPT_FAILED'
 }
 
+export interface RecoverDeviceResult {
+  masterVerifyPublicKey: number[]
+  deviceId: string
+  deviceIdentityPublicKey: number[]
+  deviceIdentityEd25519PublicKey: number[]
+  signedPreKey: { keyId: number; publicKey: number[]; signature: number[] }
+  oneTimePreKeys: Array<{ keyId: number; publicKey: number[] }>
+  signedDeviceList: {
+    signedList: number[]
+    signature: number[]
+    masterVerifyKey: number[]
+  }
+}
+
 export const cryptoService = {
   verifyDeviceList(
     userId: string,
@@ -368,6 +382,41 @@ export const cryptoService = {
 
   markSenderKeyStale(channelId: string): Promise<{ marked: boolean }> {
     return postCryptoOp('crypto:markSenderKeyStale', { channelId })
+  },
+
+  // --- Phase 6e: Recovery & Backup ---
+
+  generateRecoveryKey(): Promise<{ recoveryKey: number[]; mnemonic: string[] }> {
+    return postCryptoOp<{ recoveryKey: number[]; mnemonic: string[] }>('crypto:generateRecoveryKey')
+  },
+
+  createBackup(recoveryKey: number[]): Promise<{ encrypted_backup: number[]; salt: number[] }> {
+    return postCryptoOp<{ encrypted_backup: number[]; salt: number[] }>('crypto:createBackup', { recoveryKey })
+  },
+
+  restoreFromBackup(params: {
+    recoveryKey: number[]
+    encrypted_backup: number[]
+    salt: number[]
+  }): Promise<{ restored: boolean }> {
+    return postCryptoOp<{ restored: boolean }>('crypto:restoreFromBackup', params)
+  },
+
+  decodeMnemonic(mnemonic: string[]): Promise<{ recoveryKey: number[] }> {
+    return postCryptoOp<{ recoveryKey: number[] }>('crypto:decodeMnemonic', { mnemonic })
+  },
+
+  getMasterVerifyKey(): Promise<{ masterVerifyKey: number[] }> {
+    return postCryptoOp<{ masterVerifyKey: number[] }>('crypto:getMasterVerifyKey')
+  },
+
+  recoverDevice(params: {
+    recoveryKey: number[]
+    encrypted_backup: number[]
+    salt: number[]
+    deviceId: string
+  }): Promise<RecoverDeviceResult> {
+    return postCryptoOp<RecoverDeviceResult>('crypto:recoverDevice', params)
   },
 
   getPublicKeys(): Promise<GetPublicKeysResult> {
