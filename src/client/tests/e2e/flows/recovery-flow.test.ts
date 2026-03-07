@@ -483,18 +483,47 @@ test.describe('Recovery flow E2E', () => {
     })
 
     test('After restore: Alice can send new E2E messages to Bob', async () => {
-      // Navigate Alice to the main UI by reloading with auth state
-      // Force the app to recognize the authenticated state
-      await alice.page.reload()
+      // Clear auth tokens so the app shows the login page on relaunch.
+      // The device_id is preserved so ensureDeviceRegistered() is a no-op.
+      await alice.page.evaluate(() => {
+        localStorage.removeItem('mercury_access_token')
+        localStorage.removeItem('mercury_refresh_token')
+      })
+
+      // Close and relaunch to get a fresh Electron + crypto worker with proper
+      // MessagePort bridge (page.reload doesn't re-send the crypto port).
+      const savedDir = alice.userDataDir
+      await alice.app.close()
+
+      alice.app = await electron.launch({
+        args: [
+          join(__dirname, '../../../out/main/index.js'),
+          `--user-data-dir=${savedDir}`,
+        ],
+        env: {
+          ...process.env,
+          NODE_ENV: 'development',
+          MERCURY_DEV_MULTI_INSTANCE: '1',
+        },
+      })
+      alice.page = await alice.app.firstWindow()
       await alice.page.waitForLoadState('domcontentloaded')
 
-      // The app should auto-login from persisted tokens
+      // Login via UI to trigger full initialization: WS connect, initializeDevice
+      // (idempotent — finds existing keys from recovery and returns early).
+      await expect(alice.page.getByRole('heading', { name: 'Welcome back!' })).toBeVisible({ timeout: 10_000 })
+
+      await alice.page.getByPlaceholder('you@example.com').fill(alice.email)
+      await alice.page.locator('input[type="password"]').fill(PASSWORD)
+      await alice.page.getByRole('button', { name: 'Log In' }).click()
+
+      // Should land on main UI after full initialization
       await expect(alice.page.getByTitle('Create Server')).toBeVisible({ timeout: 15_000 })
 
       // Navigate to DMs
       await alice.page.getByTitle('Direct Messages').click()
 
-      // Start a new DM with Bob (old DM channel may not be visible since local DB was lost)
+      // Start a new DM with Bob (old DM channel not visible since local DB was lost)
       await alice.page.getByTitle('New Direct Message').click()
       await expect(alice.page.getByText('New Direct Message')).toBeVisible()
       await alice.page.getByPlaceholder('Enter user ID').fill(bob.userId)

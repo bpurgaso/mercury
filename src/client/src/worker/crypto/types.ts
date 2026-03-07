@@ -171,7 +171,6 @@ export interface IKeyStore {
   // Backup (Phase 6e)
   exportBackupBlob(): Uint8Array
   importBackupBlob(blob: Uint8Array): void
-  clearAllSessions(): void
 
   close(): void
 }

@@ -474,12 +474,6 @@ export class KeyStore implements IKeyStore {
     }
   }
 
-  // --- Recovery: clear stale sessions ---
-
-  clearAllSessions(): void {
-    this.db.exec('DELETE FROM sessions; DELETE FROM sender_keys;')
-  }
-
   // --- Moderation keys (Phase 9) ---
 
   storeModerationKeyPair(serverId: string, publicKey: Uint8Array, privateKey: Uint8Array): void {

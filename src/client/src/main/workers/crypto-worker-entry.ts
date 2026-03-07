@@ -44,8 +44,8 @@ import {
 import { KeyStore } from '../../worker/store/keystore'
 import { MessageStore } from '../../worker/store/messages.db'
 import type { KeyBundle, SessionState, SenderKey } from '../../worker/crypto/types'
-import { generateRecoveryKey, encodeMnemonic, decodeMnemonic, InvalidMnemonicError } from '../../worker/crypto/recovery'
-import { createBackupBlob, restoreFromBackup, uploadKeyBackup, downloadKeyBackup, BackupDecryptionError } from '../../worker/crypto/backup'
+import { generateRecoveryKey, encodeMnemonic, decodeMnemonic, deriveBackupEncryptionKey } from '../../worker/crypto/recovery'
+import { createBackupBlob, restoreFromBackup, deserializeBackupContents } from '../../worker/crypto/backup'
 
 if (!parentPort) {
   throw new Error('crypto-worker must be run as a Worker Thread')
@@ -1252,8 +1252,10 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
       }
 
       case 'crypto:recoverDevice': {
-        // Full recovery flow: restore backup → generate new device keys
-        // Returns everything needed for server upload.
+        // Full recovery flow: decrypt backup → restore only master verify key →
+        // generate new device-level keys. Sessions are NOT restored because they
+        // were negotiated with the old device identity key — the new device must
+        // establish fresh sessions via X3DH.
         if (!keyStore) throw new Error('KeyStore not initialized')
 
         const recKey = new Uint8Array(msg.data!.recoveryKey as number[])
@@ -1261,15 +1263,42 @@ async function handleCryptoOp(msg: CryptoRequest): Promise<void> {
         const salt = new Uint8Array(msg.data!.salt as number[])
         const devId = msg.data!.deviceId as string
 
-        // 1. Restore master verify key + trusted identities from backup
-        await restoreFromBackup(encBackup, salt, recKey, keyStore)
+        // 1. Decrypt backup manually (selective restore — master key only)
+        const AES_GCM_NONCE_BYTES = 12
+        const AES_GCM_TAG_BYTES = 16
+
+        if (encBackup.length < AES_GCM_NONCE_BYTES + AES_GCM_TAG_BYTES) {
+          throw new Error('Encrypted backup too short')
+        }
+
+        const backupKey = deriveBackupEncryptionKey(recKey, salt)
         memzero(recKey)
 
-        // Clear stale sessions and sender keys — they were negotiated with the
-        // old device identity key. The new device must re-establish sessions via
-        // X3DH. Trusted identities and master verify key are preserved.
-        keyStore.clearAllSessions()
-        sessionIndex.clear()
+        const nonce = encBackup.slice(0, AES_GCM_NONCE_BYTES)
+        const ctLen = encBackup.length - AES_GCM_NONCE_BYTES - AES_GCM_TAG_BYTES
+        const ct = encBackup.slice(AES_GCM_NONCE_BYTES, AES_GCM_NONCE_BYTES + ctLen)
+        const tag = encBackup.slice(AES_GCM_NONCE_BYTES + ctLen)
+
+        let plaintext: Buffer
+        try {
+          const decipher = createDecipheriv('aes-256-gcm', backupKey, nonce)
+          decipher.setAuthTag(tag)
+          plaintext = Buffer.concat([decipher.update(ct), decipher.final()])
+        } catch {
+          memzero(backupKey)
+          throw new Error('Backup decryption failed — wrong recovery key or corrupted data')
+        }
+        memzero(backupKey)
+
+        const contents = deserializeBackupContents(new Uint8Array(plaintext))
+
+        // Restore ONLY the master verify key (skip sessions and sender keys)
+        const restoredMasterPub = new Uint8Array(contents.master_verify_key.public_key)
+        const restoredMasterPriv = new Uint8Array(contents.master_verify_key.private_key)
+        keyStore.storeMasterVerifyKeyPair({
+          publicKey: restoredMasterPub,
+          privateKey: restoredMasterPriv,
+        })
 
         // 2. Generate new device-level keys (master verify key is already restored)
         const deviceKP = await generateDeviceIdentityKeyPair()
