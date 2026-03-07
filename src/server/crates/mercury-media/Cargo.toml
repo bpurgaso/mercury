@@ -16,3 +16,4 @@ chrono.workspace = true
 dashmap.workspace = true
 core_affinity.workspace = true
 str0m.workspace = true
+metrics.workspace = true

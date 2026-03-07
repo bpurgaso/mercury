@@ -1703,6 +1703,7 @@ dependencies = [
  "dashmap",
  "mercury-auth",
  "mercury-core",
+ "metrics",
  "serde",
  "serde_json",
  "str0m",

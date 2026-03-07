@@ -13,6 +13,9 @@ use tracing::{debug, warn};
 
 use crate::types::*;
 
+/// Metric name constant — must match `mercury-api`'s `metrics.rs`.
+const MEDIA_BANDWIDTH_BYTES: &str = "mercury_media_bandwidth_bytes";
+
 // ── Room & Participant ─────────────────────────────────────
 
 pub struct Room {
@@ -597,6 +600,9 @@ impl RoomManager {
                 match peer.rtc.poll_output() {
                     Ok(Output::Timeout(_)) => break,
                     Ok(Output::Transmit(t)) => {
+                        // Track outbound (download) bandwidth
+                        metrics::gauge!(MEDIA_BANDWIDTH_BYTES, "direction" => "download")
+                            .increment(t.contents.len() as f64);
                         // Send the packet out via UDP
                         let _ = socket.try_send_to(&t.contents, t.destination);
                     }
@@ -605,7 +611,10 @@ impl RoomManager {
                             debug!("peer {user_id} ICE disconnected");
                             disconnected = true;
                         }
-                        RtcEvent::RtpPacket(_rtp) => {
+                        RtcEvent::RtpPacket(rtp) => {
+                            // Track inbound (upload) bandwidth
+                            metrics::gauge!(MEDIA_BANDWIDTH_BYTES, "direction" => "upload")
+                                .increment(rtp.payload.len() as f64);
                             // RTP packet received from this participant.
                             // In a full SFU, we'd forward this to other participants'
                             // Rtc instances via StreamTx::write_rtp(). For now, we note

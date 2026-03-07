@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, MatchedPath, State},
     http::{header, HeaderValue, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -96,41 +96,40 @@ async fn check_rate_limit(
 // ── Request Duration Tracking Middleware ─────────────────────
 
 /// Records the duration of each HTTP request as a Prometheus histogram.
+///
+/// Uses Axum's `MatchedPath` extractor to get the route pattern (e.g.
+/// `/servers/{id}/channels`) instead of manually normalising the URI. This
+/// prevents unbounded label cardinality and avoids per-request String
+/// allocations on the hot path.
+///
+/// WebSocket upgrade requests (`/ws`) are excluded because the 101 response
+/// returns almost instantly, which would pollute API latency averages.
 pub async fn track_request_duration(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let method = request.method().to_string();
-    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+    let matched_path = request.extensions().get::<MatchedPath>().cloned();
     let start = Instant::now();
 
     let response = next.run(request).await;
 
-    let duration = start.elapsed().as_secs_f64();
-    let endpoint = normalize_path(&path);
+    // Only record if we have a matched route, and skip WebSocket upgrades
+    if let Some(path) = matched_path {
+        let endpoint = path.as_str();
+        if endpoint != "/ws" {
+            let duration = start.elapsed().as_secs_f64();
 
-    metrics::histogram!(
-        crate::metrics::API_REQUEST_DURATION,
-        "method" => method,
-        "endpoint" => endpoint,
-    )
-    .record(duration);
+            metrics::histogram!(
+                crate::metrics::API_REQUEST_DURATION,
+                "method" => method.as_str().to_owned(),
+                "endpoint" => endpoint.to_owned(),
+            )
+            .record(duration);
+        }
+    }
 
     response
-}
-
-/// Replace UUID path segments with `:id` for metric label cardinality control.
-fn normalize_path(path: &str) -> String {
-    path.split('/')
-        .map(|segment| {
-            if uuid::Uuid::parse_str(segment).is_ok() {
-                ":id"
-            } else {
-                segment
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 // ── Security Headers Middleware ──────────────────────────────

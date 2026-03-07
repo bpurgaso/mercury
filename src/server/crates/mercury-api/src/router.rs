@@ -307,8 +307,8 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 
     Json(HealthResponse {
         status: status.to_string(),
-        database: if db_ok { "ok".to_string() } else { "down".to_string() },
-        redis: if redis_ok { "ok".to_string() } else { "down".to_string() },
+        database: if db_ok { "ok".to_string() } else { "unreachable".to_string() },
+        redis: if redis_ok { "ok".to_string() } else { "unreachable".to_string() },
         turn: turn_status.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.start_time.elapsed().as_secs(),
@@ -352,7 +352,9 @@ async fn check_turn_reachable(urls: &[String]) -> bool {
 
 // ── Metrics Handler ─────────────────────────────────────────
 
-async fn metrics_handler(State(state): State<AppState>) -> String {
+async fn metrics_handler(
+    State(state): State<AppState>,
+) -> ([(header::HeaderName, HeaderValue); 1], String) {
     // Compute DB pool stats on-demand
     let pool_size = state.db.size() as f64;
     let idle = state.db.num_idle() as f64;
@@ -361,5 +363,11 @@ async fn metrics_handler(State(state): State<AppState>) -> String {
     metrics::gauge!(crate::metrics::DB_POOL_CONNECTIONS, "state" => "active").set(active);
     metrics::gauge!(crate::metrics::DB_POOL_CONNECTIONS, "state" => "idle").set(idle);
 
-    state.metrics_handle.render()
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+        )],
+        state.metrics_handle.render(),
+    )
 }
