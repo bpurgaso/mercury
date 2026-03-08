@@ -3,7 +3,7 @@
 // because they share a single server and truncate tables between tests.
 mod common;
 
-use common::{setup, TestServer};
+use common::{setup, valid_key_bundle, TestServer};
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -803,27 +803,10 @@ fn delete_device_cascades_keys() {
         assert_eq!(status, 201);
         let device_id = dev["device_id"].as_str().unwrap();
 
-        // Upload key bundle
-        use base64::Engine;
-        let pub_key =
-            base64::engine::general_purpose::STANDARD.encode([0xAAu8; 32]);
-        let sig =
-            base64::engine::general_purpose::STANDARD.encode([0xCCu8; 64]);
-
+        // Upload key bundle with valid Ed25519 signature
+        let bundle = valid_key_bundle(2);
         let (status, _) = owner
-            .put_authed(
-                &format!("/devices/{device_id}/keys"),
-                &json!({
-                    "identity_key": pub_key,
-                    "signed_prekey": pub_key,
-                    "signed_prekey_id": 1,
-                    "prekey_signature": sig,
-                    "one_time_prekeys": [
-                        {"key_id": 1, "prekey": pub_key},
-                        {"key_id": 2, "prekey": pub_key}
-                    ]
-                }),
-            )
+            .put_authed(&format!("/devices/{device_id}/keys"), &bundle)
             .await;
         assert!(status.is_success(), "key upload should succeed, got {status}");
 

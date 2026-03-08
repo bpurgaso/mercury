@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{setup, TestServer};
+use common::{setup, valid_key_bundle, TestServer};
 use serde_json::json;
 use std::time::Duration;
 
@@ -78,24 +78,18 @@ async fn no_private_keys_on_server() {
     assert_eq!(status, 201);
     let device_id = dev["device_id"].as_str().unwrap();
 
-    // Upload a key bundle with public keys (32 bytes each, base64-encoded)
+    // Upload a key bundle with valid Ed25519 signature
     use base64::Engine;
-    let pub_key = base64::engine::general_purpose::STANDARD.encode(&[0xABu8; 32]);
-    let sig = base64::engine::general_purpose::STANDARD.encode(&[0xCDu8; 64]);
-
+    let bundle = valid_key_bundle(1);
     let (status, _) = client.put_authed(
         &format!("/devices/{device_id}/keys"),
-        &json!({
-            "identity_key": pub_key,
-            "signed_prekey": pub_key,
-            "signed_prekey_id": 1,
-            "prekey_signature": sig,
-            "one_time_prekeys": [
-                {"key_id": 1, "prekey": pub_key}
-            ]
-        }),
+        &bundle,
     ).await;
     assert!(status.is_success() || status == 204, "key upload should succeed, got {status}");
+
+    // Extract the base64 keys for use in rejection tests below
+    let pub_key = bundle["identity_key"].as_str().unwrap().to_string();
+    let sig = bundle["prekey_signature"].as_str().unwrap().to_string();
 
     // Verify: device_identity_keys should only contain public keys (32 bytes)
     let rows: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
@@ -202,20 +196,10 @@ async fn otp_atomic_claim() {
     let (_, dev) = alice.post_authed("/devices", &json!({"device_name": "sec-dev"})).await;
     let device_id = dev["device_id"].as_str().unwrap();
 
-    use base64::Engine;
-    let pub_key = base64::engine::general_purpose::STANDARD.encode(&[0xABu8; 32]);
-    let sig = base64::engine::general_purpose::STANDARD.encode(&[0xCDu8; 64]);
-    let otps: Vec<_> = (1..=1).map(|i| json!({"key_id": i, "prekey": pub_key})).collect();
-
+    let bundle = valid_key_bundle(1);
     alice.put_authed(
         &format!("/devices/{device_id}/keys"),
-        &json!({
-            "identity_key": pub_key,
-            "signed_prekey": pub_key,
-            "signed_prekey_id": 1,
-            "prekey_signature": sig,
-            "one_time_prekeys": otps
-        }),
+        &bundle,
     ).await;
 
     // Two users try to claim the same OTP concurrently

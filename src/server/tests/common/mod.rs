@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use fred::prelude::{Builder, ClientLike, RedisConfig, ReconnectPolicy};
+use fred::types::ClusterHash;
 use futures_util::{SinkExt, StreamExt};
 use mercury_core::config::{
     AppConfig, AudioConfig, AuthConfig, BandwidthConfig, DatabaseConfig, IceConfig, MediaConfig,
@@ -194,12 +195,123 @@ pub async fn setup(server: &TestServer) {
     }
 
     // Flush test Redis database only (not all databases)
-    // XC-003: Use flushdb instead of flushall to avoid destroying developer data
-    let _: () = server
+    // XC-003: Use FLUSHDB instead of FLUSHALL to avoid destroying developer data
+    let cmd = fred::types::CustomCommand::new_static("FLUSHDB", ClusterHash::Random, false);
+    server
         .redis
-        .flushdb::<()>(false)
+        .custom::<(), Vec<fred::types::RedisValue>>(cmd, vec![])
         .await
         .expect("failed to flush Redis test database");
+}
+
+/// Generate a key bundle JSON payload with a valid Ed25519 signature.
+pub fn valid_key_bundle(num_otps: usize) -> serde_json::Value {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+    let signed_prekey_bytes = [0xBBu8; 32];
+    let sig = kp.sign(&signed_prekey_bytes);
+
+    let otps: Vec<serde_json::Value> = (0..num_otps)
+        .map(|i| {
+            let mut key = [0u8; 32];
+            key[0] = i as u8;
+            serde_json::json!({ "key_id": i, "prekey": STANDARD.encode(key) })
+        })
+        .collect();
+
+    serde_json::json!({
+        "identity_key": STANDARD.encode(kp.public_key().as_ref()),
+        "signed_prekey": STANDARD.encode(&signed_prekey_bytes),
+        "signed_prekey_id": 1,
+        "prekey_signature": STANDARD.encode(sig.as_ref()),
+        "one_time_prekeys": otps,
+    })
+}
+
+/// Signed device list helper — returns a JSON body and the master verify key (for TOFU tests).
+pub struct SignedDeviceList {
+    pub body: serde_json::Value,
+    pub master_verify_key: String,
+    /// The PKCS#8 keypair bytes, for re-signing updated lists with the same key.
+    pub pkcs8: Vec<u8>,
+}
+
+pub fn make_signed_device_list(device_entries: &[(&str, &str)]) -> SignedDeviceList {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+    let devices: Vec<serde_json::Value> = device_entries
+        .iter()
+        .map(|(did, ik)| serde_json::json!({"device_id": did, "identity_key": ik}))
+        .collect();
+    let payload = serde_json::json!({
+        "devices": devices,
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+    });
+    let payload_bytes = serde_json::to_vec(&payload).unwrap();
+    let sig = kp.sign(&payload_bytes);
+
+    SignedDeviceList {
+        body: serde_json::json!({
+            "signed_list": STANDARD.encode(&payload_bytes),
+            "master_verify_key": STANDARD.encode(kp.public_key().as_ref()),
+            "signature": STANDARD.encode(sig.as_ref()),
+        }),
+        master_verify_key: STANDARD.encode(kp.public_key().as_ref()),
+        pkcs8: pkcs8.as_ref().to_vec(),
+    }
+}
+
+/// Re-sign a device list with the given PKCS#8 keypair bytes.
+pub fn resign_device_list(pkcs8: &[u8], device_entries: &[(&str, &str)]) -> serde_json::Value {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let kp = Ed25519KeyPair::from_pkcs8(pkcs8).unwrap();
+
+    let devices: Vec<serde_json::Value> = device_entries
+        .iter()
+        .map(|(did, ik)| serde_json::json!({"device_id": did, "identity_key": ik}))
+        .collect();
+    let payload = serde_json::json!({
+        "devices": devices,
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+    });
+    let payload_bytes = serde_json::to_vec(&payload).unwrap();
+    let sig = kp.sign(&payload_bytes);
+
+    serde_json::json!({
+        "signed_list": STANDARD.encode(&payload_bytes),
+        "master_verify_key": STANDARD.encode(kp.public_key().as_ref()),
+        "signature": STANDARD.encode(sig.as_ref()),
+    })
+}
+
+/// Generate a valid encrypted backup blob (nonce + ciphertext + tag format) and 32-byte salt.
+/// Returns (encrypted_backup_b64, salt_b64).
+pub fn valid_backup_blob(content: &[u8]) -> (String, String) {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    // nonce (12 bytes) || ciphertext (content) || GCM tag (16 bytes)
+    let mut blob = Vec::with_capacity(12 + content.len() + 16);
+    blob.extend_from_slice(&[0u8; 12]); // fake nonce
+    blob.extend_from_slice(content);
+    blob.extend_from_slice(&[0u8; 16]); // fake tag
+
+    let salt = [0x42u8; 32]; // 32-byte salt
+
+    (STANDARD.encode(&blob), STANDARD.encode(&salt))
 }
 
 // ── TestClient (HTTP) ───────────────────────────────────────

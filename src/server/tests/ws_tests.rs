@@ -113,27 +113,9 @@ async fn create_device(srv: &TestServer, token: &str, name: &str) -> String {
     body["device_id"].as_str().unwrap().to_string()
 }
 
-/// Generate a fake key bundle payload with valid sizes.
+/// Generate a key bundle payload with a valid Ed25519 signature.
 fn fake_key_bundle(num_otps: usize) -> Value {
-    let identity_key = BASE64.encode([0xAAu8; 32]);
-    let signed_prekey = BASE64.encode([0xBBu8; 32]);
-    let prekey_signature = BASE64.encode([0xCCu8; 64]);
-
-    let otps: Vec<Value> = (0..num_otps)
-        .map(|i| {
-            let mut key = [0u8; 32];
-            key[0] = i as u8;
-            json!({ "key_id": i, "prekey": BASE64.encode(key) })
-        })
-        .collect();
-
-    json!({
-        "identity_key": identity_key,
-        "signed_prekey": signed_prekey,
-        "signed_prekey_id": 1,
-        "prekey_signature": prekey_signature,
-        "one_time_prekeys": otps,
-    })
+    common::valid_key_bundle(num_otps)
 }
 
 /// Upload a key bundle for a device.

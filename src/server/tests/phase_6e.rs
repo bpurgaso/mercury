@@ -1,7 +1,9 @@
 mod common;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use common::{setup, TestServer};
+use common::{
+    make_signed_device_list, resign_device_list, setup, valid_backup_blob, TestServer,
+};
 use serde_json::json;
 use std::sync::OnceLock;
 
@@ -49,20 +51,11 @@ fn test_upload_and_fetch_device_list() {
         let alice = register_client(srv, "alice_dl", "alice_dl@example.com").await;
         let bob = register_client(srv, "bob_dl", "bob_dl@example.com").await;
 
-        let signed_list = BASE64.encode(b"signed-device-list-payload");
-        let master_verify_key = BASE64.encode([0xAAu8; 32]);
-        let signature = BASE64.encode([0xBBu8; 64]);
+        let dl = make_signed_device_list(&[("dev-1", "key-1")]);
 
         // Alice uploads her device list
         let status = alice
-            .put_authed_status(
-                "/users/me/device-list",
-                &json!({
-                    "signed_list": signed_list,
-                    "master_verify_key": master_verify_key,
-                    "signature": signature,
-                }),
-            )
+            .put_authed_status("/users/me/device-list", &dl.body)
             .await;
         assert_eq!(status, 204);
 
@@ -72,9 +65,9 @@ fn test_upload_and_fetch_device_list() {
             .get_authed(&format!("/users/{alice_id}/device-list"))
             .await;
         assert_eq!(status, 200);
-        assert_eq!(body["signed_list"], signed_list);
-        assert_eq!(body["master_verify_key"], master_verify_key);
-        assert_eq!(body["signature"], signature);
+        assert_eq!(body["signed_list"], dl.body["signed_list"]);
+        assert_eq!(body["master_verify_key"], dl.body["master_verify_key"]);
+        assert_eq!(body["signature"], dl.body["signature"]);
     });
 }
 
@@ -86,34 +79,18 @@ fn test_device_list_tofu_violation() {
         setup(srv).await;
         let alice = register_client(srv, "alice_tofu", "alice_tofu@example.com").await;
 
-        let signed_list = BASE64.encode(b"device-list-v1");
-        let mvk1 = BASE64.encode([0xAAu8; 32]);
-        let mvk2 = BASE64.encode([0xBBu8; 32]); // Different key
-        let signature = BASE64.encode([0xCCu8; 64]);
-
         // First upload succeeds (TOFU — establishes the key)
+        let dl1 = make_signed_device_list(&[("dev-1", "key-1")]);
         let status = alice
-            .put_authed_status(
-                "/users/me/device-list",
-                &json!({
-                    "signed_list": signed_list,
-                    "master_verify_key": mvk1,
-                    "signature": signature,
-                }),
-            )
+            .put_authed_status("/users/me/device-list", &dl1.body)
             .await;
         assert_eq!(status, 204);
 
         // Second upload with DIFFERENT master_verify_key → rejected
+        let dl2 = make_signed_device_list(&[("dev-1", "key-1")]);
+        assert_ne!(dl1.master_verify_key, dl2.master_verify_key);
         let (status, body) = alice
-            .put_authed(
-                "/users/me/device-list",
-                &json!({
-                    "signed_list": signed_list,
-                    "master_verify_key": mvk2,
-                    "signature": signature,
-                }),
-            )
+            .put_authed("/users/me/device-list", &dl2.body)
             .await;
         assert_eq!(status, 403);
         assert!(
@@ -123,18 +100,10 @@ fn test_device_list_tofu_violation() {
                 .contains("trust-on-first-use"),
         );
 
-        // Same key still works (update is allowed)
-        let new_signed_list = BASE64.encode(b"device-list-v2");
-        let new_signature = BASE64.encode([0xDDu8; 64]);
+        // Same key still works (update with re-signed list)
+        let updated_body = resign_device_list(&dl1.pkcs8, &[("dev-2", "key-2")]);
         let status = alice
-            .put_authed_status(
-                "/users/me/device-list",
-                &json!({
-                    "signed_list": new_signed_list,
-                    "master_verify_key": mvk1,
-                    "signature": new_signature,
-                }),
-            )
+            .put_authed_status("/users/me/device-list", &updated_body)
             .await;
         assert_eq!(status, 204);
     });
@@ -153,8 +122,7 @@ fn test_upload_and_fetch_key_backup() {
         setup(srv).await;
         let alice = register_client(srv, "alice_kb", "alice_kb@example.com").await;
 
-        let encrypted_backup = BASE64.encode(b"encrypted-backup-blob");
-        let salt = BASE64.encode([0x11u8; 16]);
+        let (encrypted_backup, salt) = valid_backup_blob(b"encrypted-backup-blob");
 
         // Upload key backup
         let status = alice
@@ -185,14 +153,14 @@ fn test_key_backup_version_increments() {
         setup(srv).await;
         let alice = register_client(srv, "alice_ver", "alice_ver@example.com").await;
 
-        let salt = BASE64.encode([0x22u8; 16]);
+        let (backup_v1, salt) = valid_backup_blob(b"backup-v1");
 
         // First upload → version 1
         let status = alice
             .put_authed_status(
                 "/users/me/key-backup",
                 &json!({
-                    "encrypted_backup": BASE64.encode(b"backup-v1"),
+                    "encrypted_backup": backup_v1,
                     "key_derivation_salt": salt,
                 }),
             )
@@ -203,12 +171,13 @@ fn test_key_backup_version_increments() {
         assert_eq!(body["backup_version"], 1);
 
         // Second upload → version 2
+        let (backup_v2, salt2) = valid_backup_blob(b"backup-v2");
         let status = alice
             .put_authed_status(
                 "/users/me/key-backup",
                 &json!({
-                    "encrypted_backup": BASE64.encode(b"backup-v2"),
-                    "key_derivation_salt": salt,
+                    "encrypted_backup": backup_v2,
+                    "key_derivation_salt": salt2,
                 }),
             )
             .await;
@@ -216,7 +185,7 @@ fn test_key_backup_version_increments() {
 
         let (_, body) = alice.get_authed("/users/me/key-backup").await;
         assert_eq!(body["backup_version"], 2);
-        assert_eq!(body["encrypted_backup"], BASE64.encode(b"backup-v2"));
+        assert_eq!(body["encrypted_backup"], backup_v2);
     });
 }
 
@@ -228,14 +197,14 @@ fn test_delete_key_backup() {
         setup(srv).await;
         let alice = register_client(srv, "alice_del", "alice_del@example.com").await;
 
-        let salt = BASE64.encode([0x33u8; 16]);
+        let (backup, salt) = valid_backup_blob(b"to-delete");
 
         // Upload then delete
         alice
             .put_authed_status(
                 "/users/me/key-backup",
                 &json!({
-                    "encrypted_backup": BASE64.encode(b"to-delete"),
+                    "encrypted_backup": backup,
                     "key_derivation_salt": salt,
                 }),
             )
@@ -263,45 +232,29 @@ fn test_identity_reset_allows_new_master_key() {
         setup(srv).await;
         let alice = register_client(srv, "alice_reset", "alice_reset@example.com").await;
 
-        let signed_list = BASE64.encode(b"device-list-v1");
-        let mvk1 = BASE64.encode([0xAAu8; 32]);
-        let mvk2 = BASE64.encode([0xBBu8; 32]); // Different key
-        let signature = BASE64.encode([0xCCu8; 64]);
-
         // Upload initial device list
+        let dl1 = make_signed_device_list(&[("dev-1", "key-1")]);
         let status = alice
-            .put_authed_status(
-                "/users/me/device-list",
-                &json!({
-                    "signed_list": signed_list,
-                    "master_verify_key": mvk1,
-                    "signature": signature,
-                }),
-            )
+            .put_authed_status("/users/me/device-list", &dl1.body)
             .await;
         assert_eq!(status, 204);
 
         // Upload backup too
+        let (backup, salt) = valid_backup_blob(b"old-backup");
         alice
             .put_authed_status(
                 "/users/me/key-backup",
                 &json!({
-                    "encrypted_backup": BASE64.encode(b"old-backup"),
-                    "key_derivation_salt": BASE64.encode([0x11u8; 16]),
+                    "encrypted_backup": backup,
+                    "key_derivation_salt": salt,
                 }),
             )
             .await;
 
-        // Trying mvk2 should fail (TOFU)
+        // Trying a different key should fail (TOFU)
+        let dl2 = make_signed_device_list(&[("dev-1", "key-1")]);
         let (status, _) = alice
-            .put_authed(
-                "/users/me/device-list",
-                &json!({
-                    "signed_list": signed_list,
-                    "master_verify_key": mvk2,
-                    "signature": signature,
-                }),
-            )
+            .put_authed("/users/me/device-list", &dl2.body)
             .await;
         assert_eq!(status, 403);
 
@@ -309,16 +262,10 @@ fn test_identity_reset_allows_new_master_key() {
         let status = alice.delete_authed("/users/me/identity").await;
         assert_eq!(status, 204);
 
-        // Now mvk2 should succeed (TOFU reset)
+        // Now a new key should succeed (TOFU reset)
+        let dl3 = make_signed_device_list(&[("dev-1", "key-1")]);
         let status = alice
-            .put_authed_status(
-                "/users/me/device-list",
-                &json!({
-                    "signed_list": signed_list,
-                    "master_verify_key": mvk2,
-                    "signature": signature,
-                }),
-            )
+            .put_authed_status("/users/me/device-list", &dl3.body)
             .await;
         assert_eq!(status, 204);
 
@@ -356,7 +303,7 @@ fn test_key_backup_rejects_oversized_blob() {
 
         // Create a backup blob just over 10 MB (after base64 decode)
         let oversized = vec![0xFFu8; 10 * 1024 * 1024 + 1];
-        let salt = BASE64.encode([0x55u8; 16]);
+        let salt = BASE64.encode([0x55u8; 32]);
 
         let (status, body) = alice
             .put_authed(
@@ -387,14 +334,14 @@ fn test_key_backup_access_control() {
         let alice = register_client(srv, "alice_ac", "alice_ac@example.com").await;
         let bob = register_client(srv, "bob_ac", "bob_ac@example.com").await;
 
-        let salt = BASE64.encode([0x44u8; 16]);
+        let (backup, salt) = valid_backup_blob(b"alice-secret");
 
         // Alice uploads a key backup
         alice
             .put_authed_status(
                 "/users/me/key-backup",
                 &json!({
-                    "encrypted_backup": BASE64.encode(b"alice-secret"),
+                    "encrypted_backup": backup,
                     "key_derivation_salt": salt,
                 }),
             )
@@ -408,6 +355,6 @@ fn test_key_backup_access_control() {
         // Alice can still fetch her own backup
         let (status, body) = alice.get_authed("/users/me/key-backup").await;
         assert_eq!(status, 200);
-        assert_eq!(body["encrypted_backup"], BASE64.encode(b"alice-secret"));
+        assert_eq!(body["encrypted_backup"], backup);
     });
 }
