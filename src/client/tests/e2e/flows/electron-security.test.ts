@@ -126,6 +126,46 @@ test('window.open is blocked by setWindowOpenHandler', async () => {
   expect(popupOpened).toBe(false)
 })
 
+// TESTSPEC: SEC-010
+test('preload IPC uses hardcoded allowlist — no wildcard ipcRenderer.send', async () => {
+  // Verify that sending on a disallowed channel is blocked.
+  // The preload's safeSend() checks against RENDERER_SEND_CHANNELS allowlist.
+  const result = await page.evaluate(() => {
+    try {
+      // Attempt to use mercury API to send on an unlisted channel
+      // The safeSend function should block this silently
+      const api = (window as any).mercury
+      if (!api) return 'no-mercury-api'
+
+      // The exposed API only has hardcoded methods (minimize, maximize, close, etc.)
+      // There is NO generic send(channel, ...) method exposed to the renderer.
+      // Verify the API shape has no generic IPC send function.
+      const hasGenericSend = typeof api.send === 'function'
+        || typeof api.ipcSend === 'function'
+        || typeof api.ipc?.send === 'function'
+
+      return hasGenericSend ? 'generic-send-exposed' : 'no-generic-send'
+    } catch {
+      return 'error'
+    }
+  })
+
+  // The renderer should NOT have access to a generic IPC send function
+  expect(result).toBe('no-generic-send')
+
+  // Additionally verify that the exposed API only has known safe methods
+  const apiKeys = await page.evaluate(() => {
+    const api = (window as any).mercury
+    if (!api) return []
+    return Object.keys(api)
+  })
+
+  // Only expected top-level keys: app, crypto, updater, onCryptoPort
+  for (const key of apiKeys) {
+    expect(['app', 'crypto', 'updater', 'onCryptoPort']).toContain(key)
+  }
+})
+
 test('Node.js globals are not accessible in renderer', async () => {
   const result = await page.evaluate(() => {
     return {

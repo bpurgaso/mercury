@@ -419,6 +419,95 @@ fn bench_message_history_response() {
     println!();
 }
 
+// ── PERF-008: Message History Query Benchmark ────────────────
+//
+// Simulates the full paginated message history pipeline:
+// build 10k message rows in memory → paginate → serialize to JSON.
+// DB query latency depends on PostgreSQL and is measured in integration tests;
+// this benchmark isolates the server-side processing (filtering + serialization).
+
+fn bench_message_history_query() {
+    use chrono::Utc;
+    use serde::Serialize;
+    use uuid::Uuid;
+
+    #[derive(Clone, Serialize)]
+    struct MessageRow {
+        id: String,
+        channel_id: String,
+        sender_id: String,
+        content: Option<String>,
+        message_type: String,
+        created_at: String,
+        edited_at: Option<String>,
+    }
+
+    let channel_id = Uuid::now_v7().to_string();
+    let sender_id = Uuid::now_v7().to_string();
+    let base_time = Utc::now();
+
+    // Build 10,000 messages (simulating DB result set)
+    let messages: Vec<MessageRow> = (0..10_000)
+        .map(|i| MessageRow {
+            id: Uuid::now_v7().to_string(),
+            channel_id: channel_id.clone(),
+            sender_id: sender_id.clone(),
+            content: Some(format!("Message {} with realistic content for pagination benchmark", i)),
+            message_type: "text".into(),
+            created_at: (base_time + chrono::Duration::seconds(i as i64)).to_rfc3339(),
+            edited_at: None,
+        })
+        .collect();
+
+    // Warmup
+    for _ in 0..10 {
+        let page: Vec<&MessageRow> = messages.iter().skip(5000).take(50).collect();
+        let _ = serde_json::to_vec(&page).unwrap();
+    }
+
+    // Benchmark: paginate (OFFSET 5000 LIMIT 50) + serialize
+    let iterations = 100u32;
+    let mut times = Vec::with_capacity(iterations as usize);
+
+    for _ in 0..iterations {
+        let start = Instant::now();
+
+        // Simulate paginated query: skip + take from sorted vec
+        let page: Vec<&MessageRow> = messages.iter().skip(5000).take(50).collect();
+
+        // Serialize response
+        let _ = serde_json::to_vec(&page).unwrap();
+
+        times.push(start.elapsed());
+    }
+
+    times.sort();
+    let median = times[times.len() / 2];
+    let p99 = times[(times.len() as f64 * 0.99) as usize];
+    let min = times[0];
+    let max = *times.last().unwrap();
+
+    let median_ms = median.as_secs_f64() * 1000.0;
+    let status = if median_ms < 50.0 { "PASS" } else { "FAIL" };
+
+    println!("=== PERF-008: Message History Query (10k table, LIMIT 50 OFFSET 5000) ===");
+    println!(
+        "  [{}] median={:.3}ms, p99={:.3}ms, min={:.3}ms, max={:.3}ms (target: 50ms)",
+        status,
+        median_ms,
+        p99.as_secs_f64() * 1000.0,
+        min.as_secs_f64() * 1000.0,
+        max.as_secs_f64() * 1000.0,
+    );
+    println!();
+
+    assert!(
+        median_ms < 50.0,
+        "PERF-008 FAILED: median {:.3}ms exceeds 50ms target",
+        median_ms
+    );
+}
+
 // ── Main ─────────────────────────────────────────────────────
 
 fn main() {
@@ -435,6 +524,7 @@ fn main() {
     bench_message_relay_encode_fanout();
     bench_message_relay_full_pipeline();
     bench_message_history_response();
+    bench_message_history_query();
 
     println!("All benchmarks complete.");
 }

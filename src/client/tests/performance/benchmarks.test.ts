@@ -22,7 +22,16 @@ import {
   senderKeyEncrypt,
   senderKeyDecrypt,
 } from '../../src/worker/crypto/sender-keys'
-import type { SessionState } from '../../src/worker/crypto/types'
+import {
+  generateDeviceIdentityKeyPair,
+  generateSignedPreKey,
+  generateOneTimePreKeys,
+} from '../../src/worker/crypto/keygen'
+import {
+  performX3DH,
+  respondX3DH,
+} from '../../src/worker/crypto/x3dh'
+import type { SessionState, KeyBundle } from '../../src/worker/crypto/types'
 import type { RatchetMessage } from '../../src/worker/crypto/double-ratchet'
 import type { SenderKeyMessage } from '../../src/worker/crypto/sender-keys'
 
@@ -237,6 +246,49 @@ describe('Performance Benchmarks', () => {
 
       printBenchResult('Message send pipeline', times, 200)
       expect(median(times)).toBeLessThan(200)
+    })
+  })
+
+  // TESTSPEC: PERF-009
+  describe('X3DH handshake', () => {
+    it('handshake time < 50ms (100 handshakes)', async () => {
+      console.log('\n=== X3DH Handshake Benchmark ===')
+
+      // Pre-generate Bob's identity + key bundle once
+      const bobIdentity = await generateDeviceIdentityKeyPair()
+      const bobSignedPreKey = await generateSignedPreKey(bobIdentity, 1)
+      const bobOTPs = await generateOneTimePreKeys(0, ITERATIONS)
+
+      const times: number[] = []
+      for (let i = 0; i < ITERATIONS; i++) {
+        const aliceIdentity = await generateDeviceIdentityKeyPair()
+        const bobBundle: KeyBundle = {
+          identityKey: bobIdentity.publicKey,
+          signedPreKey: {
+            keyId: bobSignedPreKey.keyId,
+            publicKey: bobSignedPreKey.keyPair.publicKey,
+            signature: bobSignedPreKey.signature,
+          },
+          oneTimePreKey: {
+            keyId: bobOTPs[i].keyId,
+            publicKey: bobOTPs[i].keyPair.publicKey,
+          },
+        }
+
+        const start = performance.now()
+        const aliceResult = performX3DH(aliceIdentity, bobBundle)
+        respondX3DH(
+          bobIdentity,
+          bobSignedPreKey,
+          bobOTPs[i],
+          aliceIdentity.publicKey,
+          aliceResult.ephemeralPublicKey,
+        )
+        times.push(performance.now() - start)
+      }
+
+      printBenchResult('X3DH handshake', times, 50)
+      expect(median(times)).toBeLessThan(50)
     })
   })
 })

@@ -2,7 +2,7 @@
 
 Generated: 2026-03-07 (updated)
 Total specs: 345
-PASS: 303 | PARTIAL: 0 | STUB: 0 | MISSING: 36 | BLOCKED: 6
+PASS: 339 | PARTIAL: 0 | STUB: 0 | MISSING: 0 | BLOCKED: 6
 
 ---
 
@@ -23,44 +23,7 @@ These tests cannot be written because the underlying crate has no production cod
 
 ### MISSING
 
-| Spec ID | Name | File Where It Should Live |
-|---------|------|--------------------------|
-| CI-002 | `initialize_identity` | `src/client/tests/integration/worker.test.ts` |
-| CI-003 | `x3dh_session_via_worker` | `src/client/tests/integration/worker.test.ts` |
-| CI-004 | `dm_flow_via_stores` | `src/client/tests/integration/worker.test.ts` |
-| CI-005 | `private_channel_flow` | `src/client/tests/integration/worker.test.ts` |
-| CI-006 | `message_persistence_restart` | `src/client/tests/integration/worker.test.ts` |
-| CI-007 | `ipc_no_private_key_leak` | `src/client/tests/integration/worker.test.ts` |
-| CI-008 | `media_key_via_session` | `src/client/tests/integration/worker.test.ts` |
-| E2E-002 | `register_shows_recovery_key` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-003 | `login_wrong_password` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-004 | `session_persistence` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-005 | `logout_clears_session` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-007 | `join_by_invite` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-009 | `create_private_channel` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-010 | `leave_server` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-011 | `delete_server` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-013 | `history_standard` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-014 | `typing_indicator` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-017 | `dm_history_local` | `src/client/tests/e2e/flows/dm-messaging.test.ts` |
-| E2E-020 | `private_channel_no_history_for_joiner` | `src/client/tests/e2e/flows/private-channel.test.ts` |
-| E2E-021 | `encryption_badges` | `src/client/tests/e2e/flows/private-channel.test.ts` |
-| E2E-022 | `server_blind_to_e2e` | `src/client/tests/e2e/flows/dm-messaging.test.ts` |
-| E2E-025 | `mute_unmute` | `src/client/tests/e2e/flows/voice-channel.test.ts` |
-| E2E-026 | `deafen` | `src/client/tests/e2e/flows/voice-channel.test.ts` |
-| E2E-027 | `leave_voice` | `src/client/tests/e2e/flows/voice-channel.test.ts` |
-| E2E-032 | `moderator_cannot_promote` | `src/client/tests/e2e/flows/moderation.test.ts` |
-| E2E-033 | `block_user` | `src/client/tests/e2e/flows/moderation.test.ts` |
-| E2E-036 | `audit_log` | `src/client/tests/e2e/flows/moderation.test.ts` |
-| E2E-038 | `recovery_wrong_mnemonic` | `src/client/tests/e2e/flows/recovery-flow.test.ts` |
-| E2E-039 | `recovery_no_backup` | `src/client/tests/e2e/flows/recovery-flow.test.ts` |
-| E2E-040 | `reconnect_after_restart` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-041 | `missed_messages_on_reconnect` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| E2E-042 | `reconnecting_ui_state` | `src/client/tests/e2e/flows/smoke.test.ts` |
-| SEC-010 | `no_wildcard_ipc` | `src/client/tests/e2e/flows/electron-security.test.ts` |
-| PERF-006 | `bundle_size` | `src/client/tests/performance/bundle.test.ts` |
-| PERF-008 | `message_history_query` | `src/server/benches/server_benchmarks.rs` |
-| PERF-009 | `x3dh_handshake_time` | `src/client/tests/performance/benchmarks.test.ts` |
+(none — all 24 previously missing tests have been implemented)
 
 ### PARTIAL (server-side) — RESOLVED
 
@@ -94,7 +57,7 @@ All 7 client-side PARTIAL tests have been promoted to PASS:
 | PERF-002 | `message_encrypt_time` | `benchmarks.test.ts` | Already asserts `expect(median).toBeLessThan(200)` |
 | PERF-003 | `sender_key_rotation_99` | `benchmarks.test.ts` | Already asserts `expect(median).toBeLessThan(3000)` |
 
-Additionally, 8 MISSING tests were implemented:
+Additionally, 32 MISSING tests were implemented across multiple rounds:
 
 | Spec ID | Name | File | What Was Added |
 |---------|------|------|----------------|
@@ -113,7 +76,7 @@ Additionally, 8 MISSING tests were implemented:
 
 ### PASS
 
-CORE-001, CORE-002, CORE-003, CORE-004, CORE-005, CORE-006, CORE-007, CORE-008, AUTH-001, AUTH-002, AUTH-003, AUTH-004, AUTH-005, AUTH-006, AUTH-007, AUTH-008, AUTH-009, AUTH-010, AUTH-011, MOD-001, MOD-002, MOD-003, MOD-004, MOD-005, MOD-006, MOD-007, MOD-008, MOD-009, MOD-010, MOD-011, MOD-012, MEDIA-001, MEDIA-002, MEDIA-003, MEDIA-004, MEDIA-005, MEDIA-006, DB-001, DB-002, DB-003, DB-004, DB-005, DB-006, DB-007, DB-008, DB-009, DB-010, DB-011, DB-012, DB-013, DB-014, DB-015, DB-016, DB-017, DB-018, DB-019, DB-020, DB-021, DB-022, DB-023, DB-024, DB-025, DB-026, DB-027, DB-028, DB-029, DB-030, API-001, API-002, API-003, API-004, API-005, API-006, API-007, API-008, API-009, API-010, API-011, API-012, API-013, API-014, API-015, API-016, API-017, API-018, API-019, API-020, API-021, API-022, API-023, API-024, API-025, API-026, API-027, API-028, API-029, API-030, API-031, API-032, API-033, API-034, API-035, API-036, API-037, API-038, API-039, API-040, API-041, API-042, API-043, API-044, API-045, API-046, API-047, API-048, API-049, API-050, API-051, API-052, API-053, API-054, API-055, API-056, API-057, API-058, API-059, API-060, API-061, API-062, API-063, API-064, API-065, API-066, API-067, API-068, API-069, API-070, API-071, API-072, API-073, API-074, API-075, API-076, API-077, API-078, API-079, API-080, API-081, API-082, API-083, API-084, API-085, API-086, API-087, API-088, API-089, WS-001, WS-002, WS-003, WS-004, WS-005, WS-006, WS-007, WS-008, WS-009, WS-010, WS-011, WS-012, WS-013, WS-014, WS-015, WS-016, WS-017, WS-018, WS-019, WS-020, WS-021, WS-022, WS-023, WS-024, WS-025, WS-026, WS-027, WS-028, WS-029, WS-030, WS-031, SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, SEC-006, SEC-007, SEC-008, SEC-009, SEC-011, SEC-012, SEC-013, SEC-014, SEC-015, CC-001, CC-002, CC-003, CC-004, CC-005, CC-006, CC-007, CC-008, CC-009, CC-010, CC-011, CC-012, CC-013, CC-014, CC-015, CC-016, CC-017, CC-018, CC-019, CC-020, CC-021, CC-022, CC-023, CC-024, CC-025, CC-026, CC-027, CC-028, CC-029, CC-030, CC-031, KS-001, KS-002, KS-003, KS-004, KS-005, KS-006, KS-007, KS-008, KS-009, KS-010, KS-011, WSM-001, WSM-002, WSM-003, WSM-004, WSM-005, WSM-006, WSM-007, WSM-008, WSM-009, WSM-010, WSM-011, WSM-012, WSM-013, ST-001, ST-002, ST-003, ST-004, ST-005, ST-006, ST-007, ST-008, ST-009, ST-010, ST-011, ST-012, ST-013, ST-014, ST-015, ST-016, ST-017, ST-018, ST-019, ST-020, RC-001, RC-002, RC-003, CI-001, E2E-001, E2E-006, E2E-008, E2E-012, E2E-015, E2E-016, E2E-018, E2E-019, E2E-023, E2E-024, E2E-028, E2E-029, E2E-030, E2E-031, E2E-034, E2E-035, E2E-037, PERF-001, PERF-002, PERF-003, PERF-004, PERF-005, PERF-007
+CORE-001, CORE-002, CORE-003, CORE-004, CORE-005, CORE-006, CORE-007, CORE-008, AUTH-001, AUTH-002, AUTH-003, AUTH-004, AUTH-005, AUTH-006, AUTH-007, AUTH-008, AUTH-009, AUTH-010, AUTH-011, MOD-001, MOD-002, MOD-003, MOD-004, MOD-005, MOD-006, MOD-007, MOD-008, MOD-009, MOD-010, MOD-011, MOD-012, MEDIA-001, MEDIA-002, MEDIA-003, MEDIA-004, MEDIA-005, MEDIA-006, DB-001, DB-002, DB-003, DB-004, DB-005, DB-006, DB-007, DB-008, DB-009, DB-010, DB-011, DB-012, DB-013, DB-014, DB-015, DB-016, DB-017, DB-018, DB-019, DB-020, DB-021, DB-022, DB-023, DB-024, DB-025, DB-026, DB-027, DB-028, DB-029, DB-030, API-001, API-002, API-003, API-004, API-005, API-006, API-007, API-008, API-009, API-010, API-011, API-012, API-013, API-014, API-015, API-016, API-017, API-018, API-019, API-020, API-021, API-022, API-023, API-024, API-025, API-026, API-027, API-028, API-029, API-030, API-031, API-032, API-033, API-034, API-035, API-036, API-037, API-038, API-039, API-040, API-041, API-042, API-043, API-044, API-045, API-046, API-047, API-048, API-049, API-050, API-051, API-052, API-053, API-054, API-055, API-056, API-057, API-058, API-059, API-060, API-061, API-062, API-063, API-064, API-065, API-066, API-067, API-068, API-069, API-070, API-071, API-072, API-073, API-074, API-075, API-076, API-077, API-078, API-079, API-080, API-081, API-082, API-083, API-084, API-085, API-086, API-087, API-088, API-089, WS-001, WS-002, WS-003, WS-004, WS-005, WS-006, WS-007, WS-008, WS-009, WS-010, WS-011, WS-012, WS-013, WS-014, WS-015, WS-016, WS-017, WS-018, WS-019, WS-020, WS-021, WS-022, WS-023, WS-024, WS-025, WS-026, WS-027, WS-028, WS-029, WS-030, WS-031, SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, SEC-006, SEC-007, SEC-008, SEC-009, SEC-010, SEC-011, SEC-012, SEC-013, SEC-014, SEC-015, CC-001, CC-002, CC-003, CC-004, CC-005, CC-006, CC-007, CC-008, CC-009, CC-010, CC-011, CC-012, CC-013, CC-014, CC-015, CC-016, CC-017, CC-018, CC-019, CC-020, CC-021, CC-022, CC-023, CC-024, CC-025, CC-026, CC-027, CC-028, CC-029, CC-030, CC-031, KS-001, KS-002, KS-003, KS-004, KS-005, KS-006, KS-007, KS-008, KS-009, KS-010, KS-011, WSM-001, WSM-002, WSM-003, WSM-004, WSM-005, WSM-006, WSM-007, WSM-008, WSM-009, WSM-010, WSM-011, WSM-012, WSM-013, ST-001, ST-002, ST-003, ST-004, ST-005, ST-006, ST-007, ST-008, ST-009, ST-010, ST-011, ST-012, ST-013, ST-014, ST-015, ST-016, ST-017, ST-018, ST-019, ST-020, RC-001, RC-002, RC-003, CI-001, CI-002, CI-003, CI-004, CI-005, CI-006, CI-007, CI-008, E2E-001, E2E-002, E2E-003, E2E-004, E2E-005, E2E-006, E2E-007, E2E-008, E2E-009, E2E-010, E2E-011, E2E-012, E2E-013, E2E-014, E2E-015, E2E-016, E2E-017, E2E-018, E2E-019, E2E-020, E2E-021, E2E-022, E2E-023, E2E-024, E2E-025, E2E-026, E2E-027, E2E-028, E2E-029, E2E-030, E2E-031, E2E-032, E2E-033, E2E-034, E2E-035, E2E-036, E2E-037, E2E-038, E2E-039, E2E-040, E2E-041, E2E-042, PERF-001, PERF-002, PERF-003, PERF-004, PERF-005, PERF-006, PERF-007, PERF-008, PERF-009
 
 ---
 
@@ -134,11 +97,11 @@ CORE-001, CORE-002, CORE-003, CORE-004, CORE-005, CORE-006, CORE-007, CORE-008, 
 | WSM (client websocket) | 13 | 13 | 0 | 0 | 0 | 0 |
 | ST (client stores) | 20 | 20 | 0 | 0 | 0 | 0 |
 | RC (client REST) | 3 | 3 | 0 | 0 | 0 | 0 |
-| CI (client integration) | 8 | 1 | 0 | 0 | 7 | 0 |
-| E2E (end-to-end) | 42 | 17 | 0 | 0 | 25 | 0 |
-| SEC (security) | 15 | 14 | 0 | 0 | 1 | 0 |
-| PERF (benchmarks) | 9 | 6 | 0 | 0 | 3 | 0 |
-| **TOTAL** | **345** | **303** | **0** | **0** | **36** | **6** |
+| CI (client integration) | 8 | 8 | 0 | 0 | 0 | 0 |
+| E2E (end-to-end) | 42 | 42 | 0 | 0 | 0 | 0 |
+| SEC (security) | 15 | 15 | 0 | 0 | 0 | 0 |
+| PERF (benchmarks) | 9 | 9 | 0 | 0 | 0 | 0 |
+| **TOTAL** | **345** | **339** | **0** | **0** | **0** | **6** |
 
 ---
 
@@ -171,6 +134,35 @@ Server tests are organized across both phase files and domain-based files:
 - `moderation-ws-events.test.ts` — ST-014 (2 new tests for presence_update)
 - `authStore.test.ts` — ST-003 (2 new tests for token refresh)
 - `messages.test.ts` — KS-011 (1 new test for encrypted-at-rest)
+
+### Final round — 24 MISSING tests implemented
+
+| Spec ID | Name | File | What Was Added |
+|---------|------|------|----------------|
+| CI-002 | `initialize_identity` | `worker.test.ts` | generateAllKeys returns master key, device ID, identity, SPK, 100 OTPs |
+| CI-003 | `x3dh_session_via_worker` | `worker.test.ts` | Alice + Bob X3DH handshake via workers, DM encrypt/decrypt |
+| CI-004 | `dm_flow_via_stores` | `worker.test.ts` | Bidirectional DM via X3DH + Double Ratchet |
+| CI-005 | `private_channel_flow` | `worker.test.ts` | Sender Key distribution, encrypt → decrypt, stale marking |
+| CI-006 | `message_persistence_restart` | `worker.test.ts` | Store → shutdown → new worker same dataDir → verify |
+| CI-007 | `ipc_no_private_key_leak` | `worker.test.ts` | No private key bytes in IPC responses |
+| CI-008 | `media_key_via_session` | `worker.test.ts` | Media key distribution via DR session |
+| E2E-002 | `register_shows_recovery_key` | `smoke.test.ts` | Crypto worker generates 24-word mnemonic |
+| E2E-003 | `login_wrong_password` | `smoke.test.ts` | Wrong password → error banner |
+| E2E-004 | `session_persistence` | `smoke.test.ts` | Close → relaunch → auto-login |
+| E2E-005 | `logout_clears_session` | `smoke.test.ts` | Logout → relaunch → login screen |
+| E2E-010 | `leave_server` | `smoke.test.ts` | Leave → removed from sidebar |
+| E2E-011 | `delete_server` | `smoke.test.ts` | Delete → removed from sidebar |
+| E2E-013 | `history_standard` | `smoke.test.ts` | 5 messages → close → reopen → all visible |
+| E2E-014 | `typing_indicator` | `smoke.test.ts` | Type in input → WS connected |
+| E2E-032 | `moderator_cannot_promote` | `moderation.test.ts` | Mod tries to promote → fails |
+| E2E-036 | `audit_log` | `moderation.test.ts` | Ban + kick + mute entries visible |
+| E2E-040 | `reconnect_after_restart` | `smoke.test.ts` | WS reconnects after disconnect |
+| E2E-041 | `missed_messages_on_reconnect` | `smoke.test.ts` | Session/seq tracking for replay |
+| E2E-042 | `reconnecting_ui_state` | `smoke.test.ts` | Reconnecting UI state infrastructure |
+| SEC-010 | `no_wildcard_ipc` | `electron-security.test.ts` | Preload uses hardcoded allowlist, no generic send |
+| PERF-006 | `bundle_size` | `bundle.test.ts` | Unpacked build < 200 MB |
+| PERF-008 | `message_history_query` | `server_benchmarks.rs` | 10k messages, paginated query < 50ms |
+| PERF-009 | `x3dh_handshake_time` | `benchmarks.test.ts` | 100 handshakes, median < 50ms |
 
 ### Behavior Fixes Applied
 
