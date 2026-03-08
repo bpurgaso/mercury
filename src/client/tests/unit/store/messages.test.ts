@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { ensureSodium, randomBytes } from '../../../src/worker/crypto/utils'
@@ -299,5 +299,37 @@ describe('MessageStore persistence', () => {
     expect(msg!.senderId).toBe('user-1')
 
     store2.close()
+  })
+})
+
+// ── KS-011: messages_db_encrypted_at_rest ─────────────────
+
+// TESTSPEC: KS-011
+describe('MessageStore encrypted at rest', () => {
+  it('raw database file does NOT contain plaintext message content', () => {
+    const dbPath = join(tempDir, 'encrypted-messages.db')
+    const now = Date.now()
+
+    // A recognizable plaintext string that we'll search for in raw bytes
+    const secretContent = 'THIS_IS_A_SUPER_SECRET_PLAINTEXT_MESSAGE_XYZ123'
+
+    const store = new MessageStore(dbPath, new Uint8Array(encryptionKey))
+    store.insertMessage({
+      id: 'msg-secret',
+      channelId: 'ch-secret',
+      senderId: 'user-secret',
+      content: secretContent,
+      createdAt: now,
+      receivedAt: now,
+    })
+    store.close()
+
+    // Read raw file bytes and search for the plaintext
+    const rawBytes = readFileSync(dbPath)
+    const rawString = rawBytes.toString('utf8')
+
+    expect(rawString).not.toContain(secretContent)
+    // Also check as latin1 in case of encoding differences
+    expect(rawBytes.toString('latin1')).not.toContain(secretContent)
   })
 })

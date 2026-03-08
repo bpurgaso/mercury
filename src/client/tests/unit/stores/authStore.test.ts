@@ -173,4 +173,46 @@ describe('authStore', () => {
     expect(localStorageMock.setItem).toHaveBeenCalledWith('mercury_access_token', 'a')
     expect(localStorageMock.setItem).toHaveBeenCalledWith('mercury_refresh_token', 'r')
   })
+
+  // TESTSPEC: ST-003
+  it('refreshTokens calls refresh API and updates tokens', async () => {
+    // Set up state with existing refresh token
+    useAuthStore.setState({
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      isAuthenticated: true,
+    })
+
+    vi.mocked(authApi.refresh).mockResolvedValue({
+      access_token: 'new-access',
+      refresh_token: 'new-refresh',
+    })
+
+    await useAuthStore.getState().refreshTokens()
+
+    const state = useAuthStore.getState()
+    expect(state.accessToken).toBe('new-access')
+    expect(state.refreshToken).toBe('new-refresh')
+    expect(authApi.refresh).toHaveBeenCalledWith('old-refresh')
+    expect(localStorageMock.setItem).toHaveBeenCalledWith('mercury_access_token', 'new-access')
+    expect(localStorageMock.setItem).toHaveBeenCalledWith('mercury_refresh_token', 'new-refresh')
+  })
+
+  it('refreshTokens logs out when refresh fails', async () => {
+    useAuthStore.setState({
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      isAuthenticated: true,
+    })
+
+    vi.mocked(authApi.refresh).mockRejectedValue(new Error('token expired'))
+    vi.mocked(authApi.logout).mockResolvedValue(undefined)
+
+    await useAuthStore.getState().refreshTokens()
+
+    const state = useAuthStore.getState()
+    expect(state.isAuthenticated).toBe(false)
+    expect(state.accessToken).toBeNull()
+    expect(state.refreshToken).toBeNull()
+  })
 })

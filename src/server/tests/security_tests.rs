@@ -397,11 +397,23 @@ async fn banned_user_ws_rejected() {
     let target_token = target.access_token.clone().unwrap();
     let target_id = target.user_id.clone().unwrap();
 
-    // Create server, target joins
+    let mut observer = server.client();
+    observer.register_raw("sec_ban_obs", "sec_ban_obs@test.com", "password123").await;
+    let observer_token = observer.access_token.clone().unwrap();
+
+    // Create server, target and observer join
     let (_, srv) = owner.post_authed("/servers", &json!({"name": "ban-ws-test"})).await;
     let server_id = srv["id"].as_str().unwrap();
     let invite = srv["invite_code"].as_str().unwrap();
     target.post_authed("/servers/join", &json!({"invite_code": invite})).await;
+    observer.post_authed("/servers/join", &json!({"invite_code": invite})).await;
+
+    // Create channel before banning
+    let (_, ch) = owner.post_authed(
+        &format!("/servers/{server_id}/channels"),
+        &json!({"name": "test-ch", "channel_type": "text", "encryption_mode": "standard"}),
+    ).await;
+    let channel_id = ch["id"].as_str().unwrap();
 
     // Ban target
     owner.post_authed(
@@ -409,16 +421,24 @@ async fn banned_user_ws_rejected() {
         &json!({"user_id": target_id, "reason": "test ban"}),
     ).await;
 
-    // Target connects via WS — messages to that server should be rejected
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Target connects via WS after being banned
     let mut target_ws = server.ws_client(&target_token).await;
     target_ws.identify(&target_token, "ban-dev").await;
 
-    // Create a channel to try messaging
-    let (_, ch) = owner.post_authed(
-        &format!("/servers/{server_id}/channels"),
-        &json!({"name": "test-ch", "channel_type": "text", "encryption_mode": "standard"}),
-    ).await;
-    let channel_id = ch["id"].as_str().unwrap();
+    // Observer connects to verify messages don't arrive
+    let mut obs_ws = server.ws_client(&observer_token).await;
+    obs_ws.identify(&observer_token, "obs-dev").await;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Drain initial events
+    loop {
+        if obs_ws.receive_any_timeout(Duration::from_millis(200)).await.is_none() {
+            break;
+        }
+    }
 
     // Target tries to send message to the banned server's channel
     target_ws.send_json(&json!({
@@ -429,16 +449,19 @@ async fn banned_user_ws_rejected() {
         }
     })).await;
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Target should receive an error or the message should be rejected
-    let events = target_ws
-        .collect_events("ERROR", Duration::from_millis(500))
+    // Observer should NOT receive the message — banned user's message must be rejected
+    let obs_msg = obs_ws
+        .collect_events("MESSAGE_CREATE", Duration::from_millis(1000))
         .await;
-    // The banned user should either get an error or be disconnected
-    // Either way, the message must not be relayed
+    assert!(
+        obs_msg.is_empty(),
+        "observer should NOT receive message from banned user — message must be rejected"
+    );
 
     target_ws.close().await;
+    obs_ws.close().await;
 }
 
 // TESTSPEC: SEC-014

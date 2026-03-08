@@ -562,6 +562,332 @@ async fn cascade_delete_server() {
     );
 }
 
+// TESTSPEC: DB-002
+#[tokio::test]
+async fn user_crud_full_cycle() {
+    let server = TestServer::start().await;
+    setup(&server).await;
+
+    // Create user via direct SQL
+    let user_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO users (id, username, display_name, email, password_hash) \
+         VALUES ($1, 'db002_user', 'Original Name', 'db002@test.com', 'hash')",
+    )
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    // Read by ID
+    let row: (String, String) = sqlx::query_as(
+        "SELECT username, display_name FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(row.0, "db002_user");
+    assert_eq!(row.1, "Original Name");
+
+    // Update display_name
+    let updated = sqlx::query(
+        "UPDATE users SET display_name = 'Updated Name' WHERE id = $1",
+    )
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(updated.rows_affected(), 1);
+
+    let row: (String,) = sqlx::query_as(
+        "SELECT display_name FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(row.0, "Updated Name");
+
+    // Delete
+    let deleted = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(deleted.rows_affected(), 1);
+
+    // Verify gone
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0, "user should be deleted");
+}
+
+// TESTSPEC: DB-005
+#[tokio::test]
+async fn server_crud_cascade_delete() {
+    let server = TestServer::start().await;
+    setup(&server).await;
+
+    let user_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO users (id, username, display_name, email, password_hash) \
+         VALUES ($1, 'db005_user', 'DB005', 'db005@test.com', 'hash')",
+    )
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let srv_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO servers (id, name, owner_id, invite_code) \
+         VALUES ($1, 'cascade-srv', $2, 'DB005INV')",
+    )
+    .bind(srv_id)
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    // Read server
+    let row: (String,) = sqlx::query_as("SELECT name FROM servers WHERE id = $1")
+        .bind(srv_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(row.0, "cascade-srv");
+
+    // Update name
+    sqlx::query("UPDATE servers SET name = 'updated-srv' WHERE id = $1")
+        .bind(srv_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    // Add member and channel
+    sqlx::query("INSERT INTO server_members (user_id, server_id) VALUES ($1, $2)")
+        .bind(user_id)
+        .bind(srv_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let ch_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO channels (id, server_id, name, channel_type) \
+         VALUES ($1, $2, 'general', 'text')",
+    )
+    .bind(ch_id)
+    .bind(srv_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    // Delete server → cascade should remove channels and members
+    sqlx::query("DELETE FROM servers WHERE id = $1")
+        .bind(srv_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let ch_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM channels WHERE server_id = $1")
+            .bind(srv_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(ch_count.0, 0, "channels should be cascade-deleted");
+
+    let mem_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM server_members WHERE server_id = $1")
+            .bind(srv_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(mem_count.0, 0, "server_members should be cascade-deleted");
+}
+
+// TESTSPEC: DB-008
+#[tokio::test]
+async fn channel_encryption_mode_immutable() {
+    let server = TestServer::start().await;
+    setup(&server).await;
+
+    let user_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO users (id, username, display_name, email, password_hash) \
+         VALUES ($1, 'db008_user', 'DB008', 'db008@test.com', 'hash')",
+    )
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    // Create server + standard channel via API to test PATCH behavior
+    let mut client = server.client();
+    client
+        .register_raw("db008_owner", "db008_owner@test.com", "password123")
+        .await;
+
+    let (_, srv) = client
+        .post_authed("/servers", &json!({"name": "immut-test"}))
+        .await;
+    let server_id = srv["id"].as_str().unwrap();
+
+    let (_, ch) = client
+        .post_authed(
+            &format!("/servers/{server_id}/channels"),
+            &json!({"name": "std-ch", "encryption_mode": "standard"}),
+        )
+        .await;
+    let channel_id = ch["id"].as_str().unwrap();
+
+    // Attempt to PATCH encryption_mode from standard → private
+    let (status, _) = client
+        .patch_authed(
+            &format!("/channels/{channel_id}"),
+            &json!({"encryption_mode": "private"}),
+        )
+        .await;
+
+    // The PATCH handler only supports updating `name`, so encryption_mode should be unchanged
+    // Verify it's still standard
+    let (_, channels_body) = client
+        .get_authed(&format!("/servers/{server_id}/channels"))
+        .await;
+    let channels = channels_body.as_array().unwrap();
+    let ch = channels
+        .iter()
+        .find(|c| c["id"].as_str() == Some(channel_id))
+        .expect("channel should exist");
+    assert_eq!(
+        ch["encryption_mode"].as_str().unwrap_or(""),
+        "standard",
+        "encryption_mode must remain standard after PATCH attempt"
+    );
+}
+
+// TESTSPEC: DB-009
+#[tokio::test]
+async fn channel_private_max_members_101_rejected() {
+    let server = TestServer::start().await;
+    setup(&server).await;
+
+    let user_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO users (id, username, display_name, email, password_hash) \
+         VALUES ($1, 'db009_user', 'DB009', 'db009@test.com', 'hash')",
+    )
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let srv_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO servers (id, name, owner_id, invite_code) VALUES ($1, 'db009-srv', $2, 'DB009INV')",
+    )
+    .bind(srv_id)
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    // Private channel with max_members=100 should succeed
+    let ok = sqlx::query(
+        "INSERT INTO channels (id, server_id, name, channel_type, encryption_mode, max_members) \
+         VALUES ($1, $2, 'ok-ch', 'text', 'private', 100)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(srv_id)
+    .execute(&server.db)
+    .await;
+    assert!(ok.is_ok(), "private channel with max_members=100 should succeed");
+
+    // Private channel with max_members=101 should fail CHECK constraint
+    let fail = sqlx::query(
+        "INSERT INTO channels (id, server_id, name, channel_type, encryption_mode, max_members) \
+         VALUES ($1, $2, 'bad-ch', 'text', 'private', 101)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(srv_id)
+    .execute(&server.db)
+    .await;
+    assert!(
+        fail.is_err(),
+        "private channel with max_members=101 should violate CHECK constraint"
+    );
+}
+
+// TESTSPEC: DB-016
+#[tokio::test]
+async fn dm_channel_crud() {
+    let server = TestServer::start().await;
+    setup(&server).await;
+
+    // Create two users
+    let user_a = uuid::Uuid::now_v7();
+    let user_b = uuid::Uuid::now_v7();
+    for (uid, name, email) in [
+        (user_a, "db016_a", "db016_a@test.com"),
+        (user_b, "db016_b", "db016_b@test.com"),
+    ] {
+        sqlx::query(
+            "INSERT INTO users (id, username, display_name, email, password_hash) \
+             VALUES ($1, $2, $2, $3, 'hash')",
+        )
+        .bind(uid)
+        .bind(name)
+        .bind(email)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    }
+
+    // Create DM channel
+    let dm_id = uuid::Uuid::now_v7();
+    sqlx::query("INSERT INTO dm_channels (id) VALUES ($1)")
+        .bind(dm_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    // Add both members
+    for uid in [user_a, user_b] {
+        sqlx::query("INSERT INTO dm_members (dm_channel_id, user_id) VALUES ($1, $2)")
+            .bind(dm_id)
+            .bind(uid)
+            .execute(&server.db)
+            .await
+            .unwrap();
+    }
+
+    // Count members
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM dm_members WHERE dm_channel_id = $1",
+    )
+    .bind(dm_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(count.0, 2, "DM channel should have 2 members");
+
+    // List DMs for user_a
+    let dms: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT dm_channel_id FROM dm_members WHERE user_id = $1",
+    )
+    .bind(user_a)
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(dms.len(), 1, "user_a should see 1 DM channel");
+    assert_eq!(dms[0].0, dm_id);
+}
+
 // TESTSPEC: DB-030
 #[tokio::test]
 async fn pool_acquire_timeout() {

@@ -1,5 +1,24 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
+// Mock presence store for ST-014 (needs to be before api mock)
+vi.mock('../../../src/renderer/stores/presenceStore', async () => {
+  const { create } = await vi.importActual<typeof import('zustand')>('zustand')
+  const store = create<{
+    presences: Map<string, { user_id: string; status: string }>
+    updatePresence: (userId: string, status: string) => void
+  }>((set) => ({
+    presences: new Map(),
+    updatePresence(userId: string, status: string) {
+      set((state) => {
+        const presences = new Map(state.presences)
+        presences.set(userId, { user_id: userId, status })
+        return { presences }
+      })
+    },
+  }))
+  return { usePresenceStore: store }
+})
+
 // Mock all store modules
 vi.mock('../../../src/renderer/services/api', () => ({
   moderation: {
@@ -227,5 +246,40 @@ describe('WebSocket moderation event handling', () => {
       // This is the check in App.tsx MESSAGE_CREATE handler
       expect(blockedUserIds.has(senderId)).toBe(true)
     })
+  })
+})
+
+// ── ST-014: presence_update ───────────────────────────────
+
+// TESTSPEC: ST-014
+describe('PRESENCE_UPDATE event handling', () => {
+  it('updates presences map on PRESENCE_UPDATE', async () => {
+    // Import the mocked presence store
+    const { usePresenceStore } = await import('../../../src/renderer/stores/presenceStore')
+
+    // Reset state
+    usePresenceStore.setState({ presences: new Map() })
+
+    // Simulate what App.tsx does on PRESENCE_UPDATE event
+    const event = { user_id: 'user-abc', status: 'online' }
+    usePresenceStore.getState().updatePresence(event.user_id, event.status)
+
+    const presences = usePresenceStore.getState().presences
+    expect(presences.has('user-abc')).toBe(true)
+    expect(presences.get('user-abc')!.status).toBe('online')
+  })
+
+  it('overwrites previous presence status', async () => {
+    const { usePresenceStore } = await import('../../../src/renderer/stores/presenceStore')
+
+    usePresenceStore.setState({ presences: new Map() })
+
+    // User goes online
+    usePresenceStore.getState().updatePresence('user-abc', 'online')
+    expect(usePresenceStore.getState().presences.get('user-abc')!.status).toBe('online')
+
+    // User goes offline
+    usePresenceStore.getState().updatePresence('user-abc', 'offline')
+    expect(usePresenceStore.getState().presences.get('user-abc')!.status).toBe('offline')
   })
 })

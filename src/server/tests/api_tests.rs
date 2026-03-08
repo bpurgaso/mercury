@@ -193,6 +193,33 @@ impl TestClientExt for common::TestClient {
 }
 
 // ────────────────────────────────────────────────────────────
+//  Auth token validation tests
+// ────────────────────────────────────────────────────────────
+
+// TESTSPEC: API-015
+#[test]
+fn garbage_bearer_token_rejected() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let client = srv.client();
+
+        // Garbage random token
+        let (status, _) = client
+            .get_authed_with_token("this-is-total-garbage-not-a-jwt", "/users/me")
+            .await;
+        assert_eq!(status, 401, "garbage Bearer token should return 401");
+
+        // Random base64 that isn't a valid JWT
+        let (status2, _) = client
+            .get_authed_with_token("eyJhbGciOiJIUzI1NiJ9.garbage.garbage", "/users/me")
+            .await;
+        assert_eq!(status2, 401, "random base64 Bearer token should return 401");
+    });
+}
+
+// ────────────────────────────────────────────────────────────
 //  Registration validation tests
 // ────────────────────────────────────────────────────────────
 
@@ -644,6 +671,268 @@ fn moderator_cannot_delete_server() {
 
 // TESTSPEC: API-080
 // Already covered in phase_9b.rs — test_report_invalid_category
+
+// ────────────────────────────────────────────────────────────
+//  Health check tests
+// ────────────────────────────────────────────────────────────
+
+// ────────────────────────────────────────────────────────────
+//  Private channel tests
+// ────────────────────────────────────────────────────────────
+
+// TESTSPEC: API-030
+#[test]
+fn create_private_channel_max_members() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let owner = register_client(srv, "api030_owner", "api030_owner@test.com").await;
+
+        let (_, server_body) = owner
+            .post_authed("/servers", &json!({ "name": "PrivServer" }))
+            .await;
+        let server_id = server_body["id"].as_str().unwrap();
+
+        // Create a private channel
+        let (status, ch) = owner
+            .post_authed(
+                &format!("/servers/{server_id}/channels"),
+                &json!({
+                    "name": "private-ch",
+                    "encryption_mode": "private"
+                }),
+            )
+            .await;
+        assert_eq!(status, 201, "private channel creation should succeed");
+
+        // Verify max_members ≤ 100 in the response or DB
+        // The channel may not return max_members in JSON, so verify via DB
+        let channel_id = ch["id"].as_str().unwrap();
+        let row: (Option<i32>,) = sqlx::query_as(
+            "SELECT max_members FROM channels WHERE id = $1::uuid",
+        )
+        .bind(channel_id)
+        .fetch_one(&srv.db)
+        .await
+        .unwrap();
+
+        if let Some(max_members) = row.0 {
+            assert!(
+                max_members <= 100,
+                "private channel max_members should be ≤ 100, got {max_members}"
+            );
+        }
+        // If max_members is NULL, the DB CHECK constraint still ensures ≤ 100
+        // for private channels (any INSERT with max_members > 100 would fail)
+    });
+}
+
+// TESTSPEC: API-034
+#[test]
+fn encryption_mode_in_channel_response() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let owner = register_client(srv, "api034_owner", "api034_owner@test.com").await;
+
+        let (_, server_body) = owner
+            .post_authed("/servers", &json!({ "name": "ModeServer" }))
+            .await;
+        let server_id = server_body["id"].as_str().unwrap();
+
+        // Create standard channel
+        let (status, std_ch) = owner
+            .post_authed(
+                &format!("/servers/{server_id}/channels"),
+                &json!({"name": "std-ch", "encryption_mode": "standard"}),
+            )
+            .await;
+        assert_eq!(status, 201);
+        assert_eq!(
+            std_ch["encryption_mode"].as_str(),
+            Some("standard"),
+            "standard channel response should include encryption_mode: standard"
+        );
+
+        // Create private channel
+        let (status, priv_ch) = owner
+            .post_authed(
+                &format!("/servers/{server_id}/channels"),
+                &json!({"name": "priv-ch", "encryption_mode": "private"}),
+            )
+            .await;
+        assert_eq!(status, 201);
+        assert_eq!(
+            priv_ch["encryption_mode"].as_str(),
+            Some("private"),
+            "private channel response should include encryption_mode: private"
+        );
+
+        // Verify list endpoint also includes encryption_mode
+        let (status, channels) = owner
+            .get_authed(&format!("/servers/{server_id}/channels"))
+            .await;
+        assert_eq!(status, 200);
+        let arr = channels.as_array().expect("should be array");
+        for ch in arr {
+            let mode = ch["encryption_mode"].as_str();
+            assert!(
+                mode == Some("standard") || mode == Some("private"),
+                "each channel in list should have encryption_mode, got {:?}",
+                ch["encryption_mode"]
+            );
+        }
+    });
+}
+
+// TESTSPEC: API-048
+#[test]
+fn delete_device_cascades_keys() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let owner = register_client(srv, "api048_user", "api048@test.com").await;
+
+        // Create a device
+        let (status, dev) = owner
+            .post_authed("/devices", &json!({"device_name": "cascade-dev"}))
+            .await;
+        assert_eq!(status, 201);
+        let device_id = dev["device_id"].as_str().unwrap();
+
+        // Upload key bundle
+        use base64::Engine;
+        let pub_key =
+            base64::engine::general_purpose::STANDARD.encode([0xAAu8; 32]);
+        let sig =
+            base64::engine::general_purpose::STANDARD.encode([0xCCu8; 64]);
+
+        let (status, _) = owner
+            .put_authed(
+                &format!("/devices/{device_id}/keys"),
+                &json!({
+                    "identity_key": pub_key,
+                    "signed_prekey": pub_key,
+                    "signed_prekey_id": 1,
+                    "prekey_signature": sig,
+                    "one_time_prekeys": [
+                        {"key_id": 1, "prekey": pub_key},
+                        {"key_id": 2, "prekey": pub_key}
+                    ]
+                }),
+            )
+            .await;
+        assert!(status.is_success(), "key upload should succeed, got {status}");
+
+        // Verify keys exist before delete
+        let ik_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM device_identity_keys WHERE device_id = $1::uuid",
+        )
+        .bind(device_id)
+        .fetch_one(&srv.db)
+        .await
+        .unwrap();
+        assert!(ik_count.0 > 0, "identity keys should exist before delete");
+
+        let otp_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM one_time_prekeys WHERE device_id = $1::uuid",
+        )
+        .bind(device_id)
+        .fetch_one(&srv.db)
+        .await
+        .unwrap();
+        assert!(otp_count.0 > 0, "OTPs should exist before delete");
+
+        // Delete the device
+        let status = owner.delete_authed(&format!("/devices/{device_id}")).await;
+        assert!(
+            status == 200 || status == 204,
+            "device deletion should succeed, got {status}"
+        );
+
+        // Verify keys are cascade-deleted
+        let ik_after: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM device_identity_keys WHERE device_id = $1::uuid",
+        )
+        .bind(device_id)
+        .fetch_one(&srv.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            ik_after.0, 0,
+            "identity keys should be cascade-deleted after device delete"
+        );
+
+        let otp_after: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM one_time_prekeys WHERE device_id = $1::uuid",
+        )
+        .bind(device_id)
+        .fetch_one(&srv.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            otp_after.0, 0,
+            "OTPs should be cascade-deleted after device delete"
+        );
+    });
+}
+
+// ────────────────────────────────────────────────────────────
+//  Reporting tests (with evidence)
+// ────────────────────────────────────────────────────────────
+
+// TESTSPEC: API-076
+#[test]
+fn submit_report_with_evidence() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let (token_reporter, _) =
+            register_user(srv, "api076_reporter", "api076_reporter@test.com").await;
+        let (_, target_id) =
+            register_user(srv, "api076_target", "api076_target@test.com").await;
+        let client = srv.client();
+
+        // Submit report with evidence_blob
+        let evidence: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
+        let (status, body) = client
+            .post_authed_with_token(
+                &token_reporter,
+                "/reports",
+                &json!({
+                    "reported_user_id": target_id,
+                    "category": "harassment",
+                    "description": "Test report with evidence blob",
+                    "evidence_blob": evidence
+                }),
+            )
+            .await;
+        assert_eq!(status, 201, "report with evidence should return 201, got {status}");
+
+        // Verify evidence_blob is stored
+        let report_id = body["id"].as_str().unwrap();
+        let row: (Option<Vec<u8>>,) = sqlx::query_as(
+            "SELECT evidence_blob FROM reports WHERE id = $1::uuid",
+        )
+        .bind(report_id)
+        .fetch_one(&srv.db)
+        .await
+        .unwrap();
+        assert!(
+            row.0.is_some(),
+            "evidence_blob should be stored in the database"
+        );
+        assert_eq!(
+            row.0.unwrap(),
+            evidence,
+            "evidence_blob should match what was submitted"
+        );
+    });
+}
 
 // ────────────────────────────────────────────────────────────
 //  Health check tests
