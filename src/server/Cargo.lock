@@ -1610,6 +1610,7 @@ dependencies = [
  "futures-util",
  "mercury-auth",
  "mercury-core",
+ "mercury-crypto",
  "mercury-db",
  "mercury-media",
  "mercury-moderation",
@@ -1676,6 +1677,7 @@ dependencies = [
  "mercury-core",
  "ring",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -1746,6 +1748,7 @@ dependencies = [
  "mercury-api",
  "mercury-auth",
  "mercury-core",
+ "mercury-crypto",
  "mercury-db",
  "mercury-media",
  "mercury-moderation",

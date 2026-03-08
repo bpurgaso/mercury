@@ -78,6 +78,14 @@ pub async fn upload_device_list(
         return Err(MercuryError::BadRequest("signature must not be empty".into()));
     }
 
+    // Verify the Ed25519 signature on the device list
+    mercury_crypto::device_list::verify_signed_device_list(
+        &master_verify_key,
+        &signed_list,
+        &signature,
+    )
+    .map_err(|e| MercuryError::BadRequest(format!("device list verification failed: {e}")))?;
+
     // TOFU: if a device list already exists, the master_verify_key must match
     let existing = mercury_db::device_lists::get_device_list(&state.db, auth_user.user_id).await?;
     if let Some(existing) = existing {
@@ -233,9 +241,10 @@ pub async fn upload_key_backup(
             MAX_BACKUP_SIZE_BYTES,
         )));
     }
-    if key_derivation_salt.is_empty() {
-        return Err(MercuryError::BadRequest("key_derivation_salt must not be empty".into()));
-    }
+
+    // Validate backup blob structure (nonce + ciphertext + tag) and salt length
+    mercury_crypto::backup::validate_backup_blob(&encrypted_backup, &key_derivation_salt)
+        .map_err(|e| MercuryError::BadRequest(format!("backup validation failed: {e}")))?;
 
     mercury_db::device_lists::upsert_key_backup(
         &state.db,

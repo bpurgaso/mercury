@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 mercury-core.workspace = true
+mercury-crypto.workspace = true
 mercury-db.workspace = true
 mercury-auth.workspace = true
 mercury-media.workspace = true

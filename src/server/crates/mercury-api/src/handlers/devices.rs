@@ -202,6 +202,10 @@ pub async fn upload_keys(
     let signed_prekey = decode_base64_field(&req.signed_prekey, "signed_prekey", 32)?;
     let prekey_signature = decode_base64_field(&req.prekey_signature, "prekey_signature", 64)?;
 
+    // Verify the Ed25519 signature: the signed pre-key must be signed by the identity key
+    mercury_crypto::verify::verify_prekey_signature(&identity_key, &signed_prekey, &prekey_signature)
+        .map_err(|e| MercuryError::BadRequest(format!("prekey signature verification failed: {e}")))?;
+
     if req.one_time_prekeys.len() > 100 {
         return Err(MercuryError::BadRequest(
             "maximum 100 one-time prekeys per upload".into(),

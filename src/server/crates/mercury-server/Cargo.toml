@@ -131,6 +131,7 @@ serde_bytes.workspace = true
 ring = "0.17"
 argon2.workspace = true
 mercury-auth.workspace = true
+mercury-crypto.workspace = true
 mercury-moderation.workspace = true
 mercury-media.workspace = true
 mercury-core.workspace = true

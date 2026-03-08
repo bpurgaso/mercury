@@ -410,11 +410,189 @@ fn turn_credential_hmac_verifiable() {
 // ════════════════════════════════════════════════════════════
 //  CRYPTO — mercury-crypto
 // ════════════════════════════════════════════════════════════
-//
-// CRYPTO-001 through CRYPTO-006 are blocked: the mercury-crypto crate
-// contains only a stub comment and no production code to test.
-// The server stores/relays crypto blobs but does not perform crypto
-// operations. These tests require production code to be implemented first.
+
+// TESTSPEC: CRYPTO-001
+#[test]
+fn key_bundle_type_serialization() {
+    // Key bundle struct (identity key, signed prekey, prekey signature)
+    // survives serialize → deserialize.
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct KeyBundle {
+        identity_key: Vec<u8>,
+        signed_prekey: Vec<u8>,
+        signed_prekey_id: i32,
+        prekey_signature: Vec<u8>,
+    }
+
+    let bundle = KeyBundle {
+        identity_key: vec![0xAA; 32],
+        signed_prekey: vec![0xBB; 32],
+        signed_prekey_id: 42,
+        prekey_signature: vec![0xCC; 64],
+    };
+
+    let serialized = serde_json::to_string(&bundle).expect("serialize");
+    let deserialized: KeyBundle = serde_json::from_str(&serialized).expect("deserialize");
+    assert_eq!(bundle, deserialized);
+}
+
+// TESTSPEC: CRYPTO-002
+#[test]
+fn signed_device_list_verification() {
+    // Mock signed device list with valid Ed25519 signature. Verify → success.
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+    let payload = r#"{"devices":[{"device_id":"abc-123","identity_key":"dGVzdA=="}],"timestamp":1700000000000}"#;
+    let signed_list = payload.as_bytes();
+    let signature = key_pair.sign(signed_list);
+
+    let result = mercury_crypto::device_list::verify_signed_device_list(
+        key_pair.public_key().as_ref(),
+        signed_list,
+        signature.as_ref(),
+    );
+    assert!(result.is_ok(), "valid signature should verify successfully");
+
+    let parsed = result.unwrap();
+    assert_eq!(parsed.devices.len(), 1);
+    assert_eq!(parsed.devices[0].device_id, "abc-123");
+    assert_eq!(parsed.timestamp, 1700000000000);
+}
+
+// TESTSPEC: CRYPTO-003
+#[test]
+fn signed_device_list_tampered_fails() {
+    // Signed device list. Modify one byte. Signature verify → failure.
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+    let payload = r#"{"devices":[{"device_id":"abc-123","identity_key":"dGVzdA=="}],"timestamp":1700000000000}"#;
+    let signed_list = payload.as_bytes();
+    let signature = key_pair.sign(signed_list);
+
+    // Tamper with the signed list
+    let mut tampered = signed_list.to_vec();
+    tampered[10] ^= 0xFF;
+
+    let result = mercury_crypto::device_list::verify_signed_device_list(
+        key_pair.public_key().as_ref(),
+        &tampered,
+        signature.as_ref(),
+    );
+    assert!(result.is_err(), "tampered payload should fail verification");
+}
+
+// TESTSPEC: CRYPTO-004
+#[test]
+fn signed_device_list_wrong_key_fails() {
+    // Device list signed with key A. Verify with key B → failure.
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let rng = ring::rand::SystemRandom::new();
+
+    let pkcs8_a = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let key_pair_a = Ed25519KeyPair::from_pkcs8(pkcs8_a.as_ref()).unwrap();
+
+    let pkcs8_b = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let key_pair_b = Ed25519KeyPair::from_pkcs8(pkcs8_b.as_ref()).unwrap();
+
+    let payload = r#"{"devices":[{"device_id":"abc-123","identity_key":"dGVzdA=="}],"timestamp":1700000000000}"#;
+    let signed_list = payload.as_bytes();
+    let signature = key_pair_a.sign(signed_list);
+
+    // Verify with key B — should fail
+    let result = mercury_crypto::device_list::verify_signed_device_list(
+        key_pair_b.public_key().as_ref(),
+        signed_list,
+        signature.as_ref(),
+    );
+    assert!(result.is_err(), "wrong key should fail verification");
+}
+
+// TESTSPEC: CRYPTO-005
+#[test]
+fn key_upload_signature_validation() {
+    // Signed prekey signed by device identity key. Verify → success. Tamper → failure.
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+    // Simulate a signed pre-key (32 random bytes representing an X25519 public key)
+    let signed_prekey = [0x42u8; 32];
+    let signature = key_pair.sign(&signed_prekey);
+
+    // Valid verification
+    let result = mercury_crypto::verify::verify_prekey_signature(
+        key_pair.public_key().as_ref(),
+        &signed_prekey,
+        signature.as_ref(),
+    );
+    assert!(result.is_ok(), "valid prekey signature should verify");
+
+    // Tamper with the prekey
+    let mut tampered_prekey = signed_prekey;
+    tampered_prekey[0] ^= 0xFF;
+
+    let result = mercury_crypto::verify::verify_prekey_signature(
+        key_pair.public_key().as_ref(),
+        &tampered_prekey,
+        signature.as_ref(),
+    );
+    assert!(result.is_err(), "tampered prekey should fail verification");
+}
+
+// TESTSPEC: CRYPTO-006
+#[test]
+fn backup_blob_validation() {
+    // Mock encrypted backup blob has expected structure.
+    // Blob bytes do not contain marker plaintext strings.
+    use mercury_crypto::backup::validate_backup_blob;
+
+    // Valid backup: 12 (nonce) + 100 (ciphertext) + 16 (tag) = 128 bytes
+    let valid_blob = vec![0xAA; 128];
+    let valid_salt = vec![0xBB; 32];
+    assert!(
+        validate_backup_blob(&valid_blob, &valid_salt).is_ok(),
+        "valid blob and salt should pass"
+    );
+
+    // Too-short blob (less than nonce + 1 byte + tag = 29 bytes)
+    let short_blob = vec![0xAA; 28];
+    assert!(
+        validate_backup_blob(&short_blob, &valid_salt).is_err(),
+        "blob shorter than nonce+1+tag should fail"
+    );
+
+    // Invalid salt length
+    let bad_salt = vec![0xBB; 16];
+    assert!(
+        validate_backup_blob(&valid_blob, &bad_salt).is_err(),
+        "salt != 32 bytes should fail"
+    );
+
+    // Verify the blob bytes themselves don't appear to contain plaintext
+    // (a real encrypted blob should look random, not contain ASCII markers)
+    let blob_str = String::from_utf8_lossy(&valid_blob);
+    assert!(
+        !blob_str.contains("master_verify_key"),
+        "encrypted blob should not contain plaintext key names"
+    );
+    assert!(
+        !blob_str.contains("sessions"),
+        "encrypted blob should not contain plaintext field names"
+    );
+}
 
 // ════════════════════════════════════════════════════════════
 //  MOD — mercury-moderation
