@@ -52,6 +52,7 @@ async fn register_user(
 //  1. Health Check (Phase 1)
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-083 (partial)
 #[test]
 fn test_health_returns_200() {
     let srv = server();
@@ -65,6 +66,7 @@ fn test_health_returns_200() {
     });
 }
 
+// TESTSPEC: API-087
 #[test]
 fn test_health_requires_no_auth() {
     let srv = server();
@@ -347,6 +349,7 @@ fn test_message_recipients_unique_constraint() {
 //  3. Authentication (Phase 3)
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-001
 #[test]
 fn test_register_success() {
     let srv = server();
@@ -366,6 +369,7 @@ fn test_register_success() {
     });
 }
 
+// TESTSPEC: API-002
 #[test]
 fn test_register_duplicate_email() {
     let srv = server();
@@ -386,6 +390,7 @@ fn test_register_duplicate_email() {
     });
 }
 
+// TESTSPEC: API-003
 #[test]
 fn test_register_duplicate_username() {
     let srv = server();
@@ -406,6 +411,7 @@ fn test_register_duplicate_username() {
     });
 }
 
+// TESTSPEC: API-007
 #[test]
 fn test_login_success() {
     let srv = server();
@@ -428,6 +434,7 @@ fn test_login_success() {
     });
 }
 
+// TESTSPEC: API-008
 #[test]
 fn test_login_wrong_password() {
     let srv = server();
@@ -447,6 +454,7 @@ fn test_login_wrong_password() {
     });
 }
 
+// TESTSPEC: API-009
 #[test]
 fn test_login_nonexistent_user() {
     let srv = server();
@@ -461,6 +469,7 @@ fn test_login_nonexistent_user() {
     });
 }
 
+// TESTSPEC: API-010
 #[test]
 fn test_refresh_token() {
     let srv = server();
@@ -489,6 +498,7 @@ fn test_refresh_token() {
     });
 }
 
+// TESTSPEC: API-011
 #[test]
 fn test_refresh_with_access_token_fails() {
     let srv = server();
@@ -512,6 +522,7 @@ fn test_refresh_with_access_token_fails() {
     });
 }
 
+// TESTSPEC: API-012
 #[test]
 fn test_logout_revokes_session() {
     let srv = server();
@@ -536,6 +547,7 @@ fn test_logout_revokes_session() {
     });
 }
 
+// TESTSPEC: AUTH-006 (integration)
 #[test]
 fn test_expired_token_rejected() {
     let srv = server();
@@ -572,6 +584,7 @@ fn test_expired_token_rejected() {
     });
 }
 
+// TESTSPEC: API-013
 #[test]
 fn test_authenticated_endpoint() {
     let srv = server();
@@ -590,6 +603,7 @@ fn test_authenticated_endpoint() {
     });
 }
 
+// TESTSPEC: API-014
 #[test]
 fn test_unauthenticated_endpoint_rejected() {
     let srv = server();
@@ -602,6 +616,7 @@ fn test_unauthenticated_endpoint_rejected() {
     });
 }
 
+// TESTSPEC: API-016
 #[test]
 fn test_rate_limiting_auth_endpoints() {
     let srv = server();
@@ -642,6 +657,7 @@ fn test_rate_limiting_auth_endpoints() {
 //  4. WebSocket (Phase 4)
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-001, WS-004
 #[test]
 fn test_ws_connect_and_identify() {
     let srv = server();
@@ -669,6 +685,7 @@ fn test_ws_connect_and_identify() {
     });
 }
 
+// TESTSPEC: WS-002
 #[test]
 fn test_ws_invalid_token_rejected() {
     let srv = server();
@@ -681,6 +698,7 @@ fn test_ws_invalid_token_rejected() {
     });
 }
 
+// TESTSPEC: WS-003
 #[test]
 fn test_ws_identify_required_first() {
     let srv = server();
@@ -700,6 +718,7 @@ fn test_ws_identify_required_first() {
     });
 }
 
+// TESTSPEC: WS-005
 #[test]
 fn test_ws_heartbeat_acknowledged() {
     let srv = server();
@@ -723,6 +742,7 @@ fn test_ws_heartbeat_acknowledged() {
     });
 }
 
+// TESTSPEC: WS-006
 #[test]
 fn test_ws_missed_heartbeats_disconnect() {
     let srv = server();
@@ -750,6 +770,7 @@ fn test_ws_missed_heartbeats_disconnect() {
     });
 }
 
+// TESTSPEC: WS-012
 #[test]
 fn test_ws_presence_online_on_identify() {
     let srv = server();
@@ -774,6 +795,7 @@ fn test_ws_presence_online_on_identify() {
     });
 }
 
+// TESTSPEC: WS-014
 #[test]
 fn test_ws_presence_debounce_absorbs_reconnect() {
     let srv = server();
@@ -811,6 +833,7 @@ fn test_ws_presence_debounce_absorbs_reconnect() {
     });
 }
 
+// TESTSPEC: WS-013
 #[test]
 fn test_ws_presence_goes_offline_after_debounce() {
     let srv = server();
@@ -846,6 +869,7 @@ fn test_ws_presence_goes_offline_after_debounce() {
     });
 }
 
+// TESTSPEC: WS-007
 #[test]
 fn test_ws_resume_replays_missed_events() {
     let srv = server();
@@ -913,6 +937,7 @@ fn test_ws_resume_replays_missed_events() {
     });
 }
 
+// TESTSPEC: WS-008
 #[test]
 fn test_ws_resume_expired_session() {
     let srv = server();
@@ -938,6 +963,7 @@ fn test_ws_resume_expired_session() {
     });
 }
 
+// TESTSPEC: WS-019
 #[test]
 fn test_ws_upgrade_rate_limiting() {
     let srv = server();
@@ -975,6 +1001,7 @@ fn test_ws_upgrade_rate_limiting() {
     });
 }
 
+// TESTSPEC: WS-012 (multi-user)
 #[test]
 fn test_ws_cross_user_presence() {
     let srv = server();

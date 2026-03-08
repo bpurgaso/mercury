@@ -303,6 +303,7 @@ async fn wait_for_event(
 //  Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-009
 #[test]
 fn test_standard_channel_message() {
     let srv = server();
@@ -366,6 +367,7 @@ fn test_standard_channel_message() {
     });
 }
 
+// TESTSPEC: WS-010
 #[test]
 fn test_e2e_dm_message() {
     let srv = server();
@@ -423,6 +425,7 @@ fn test_e2e_dm_message() {
     });
 }
 
+// TESTSPEC: WS-010
 #[test]
 fn test_e2e_dm_with_x3dh_header() {
     let srv = server();
@@ -494,6 +497,7 @@ fn test_e2e_dm_with_x3dh_header() {
     });
 }
 
+// TESTSPEC: WS-010, CC-014
 #[test]
 fn test_private_channel_message() {
     let srv = server();
@@ -561,6 +565,7 @@ fn test_private_channel_message() {
     });
 }
 
+// TESTSPEC: SEC-014, CC-017
 #[test]
 fn test_epoch_validation_rejects_stale() {
     let srv = server();
@@ -606,6 +611,7 @@ fn test_epoch_validation_rejects_stale() {
     });
 }
 
+// TESTSPEC: API-055
 #[test]
 fn test_dm_channel_creation_idempotent() {
     let srv = server();
@@ -643,6 +649,7 @@ fn test_dm_channel_creation_idempotent() {
     });
 }
 
+// TESTSPEC: API-038
 #[test]
 fn test_dm_history() {
     let srv = server();
@@ -714,6 +721,7 @@ fn test_dm_history() {
     });
 }
 
+// TESTSPEC: WS-010, WS-005
 #[test]
 fn test_msgpack_framing() {
     let srv = server();
@@ -786,6 +794,7 @@ fn test_msgpack_framing() {
     });
 }
 
+// TESTSPEC: API-039
 #[test]
 fn test_cross_device_isolation() {
     let srv = server();
@@ -876,6 +885,7 @@ fn test_cross_device_isolation() {
     });
 }
 
+// TESTSPEC: WS-018
 #[test]
 fn test_message_too_large() {
     let srv = server();
@@ -923,6 +933,7 @@ fn test_message_too_large() {
     });
 }
 
+// TESTSPEC: CC-014
 #[test]
 fn test_sender_key_distribution() {
     let srv = server();
@@ -976,6 +987,7 @@ fn test_sender_key_distribution() {
 //  Negative / security tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-054
 #[test]
 fn test_self_dm_rejected() {
     let srv = server();
@@ -996,6 +1008,7 @@ fn test_self_dm_rejected() {
     });
 }
 
+// TESTSPEC: API-061
 #[test]
 fn test_non_member_dm_rejected() {
     let srv = server();
@@ -1053,6 +1066,7 @@ fn test_non_member_dm_rejected() {
     });
 }
 
+// TESTSPEC: SEC-014
 #[test]
 fn test_sender_key_distribute_rejected_on_standard_channel() {
     let srv = server();
@@ -1093,6 +1107,7 @@ fn test_sender_key_distribute_rejected_on_standard_channel() {
     });
 }
 
+// TESTSPEC: API-037
 #[test]
 fn test_non_member_private_channel_rejected() {
     let srv = server();

@@ -194,6 +194,7 @@ impl TestClientExt for common::TestClient {
 //  Block Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-059, API-060
 #[test]
 fn test_block_user_and_list() {
     let srv = server();
@@ -234,6 +235,7 @@ fn test_block_user_and_list() {
     });
 }
 
+// TESTSPEC: API-059
 #[test]
 fn test_block_self_rejected() {
     let srv = server();
@@ -253,6 +255,7 @@ fn test_block_self_rejected() {
 //  DM Policy Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-062
 #[test]
 fn test_dm_policy_set() {
     let srv = server();
@@ -299,6 +302,7 @@ fn test_dm_policy_set() {
 //  Ban Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-063, API-072
 #[test]
 fn test_ban_user_and_access_denied() {
     let srv = server();
@@ -378,6 +382,7 @@ fn test_ban_user_and_access_denied() {
     });
 }
 
+// TESTSPEC: API-066
 #[test]
 fn test_ban_owner_rejected() {
     let srv = server();
@@ -412,6 +417,7 @@ fn test_ban_owner_rejected() {
     });
 }
 
+// TESTSPEC: API-063
 #[test]
 fn test_temp_ban_expiry() {
     let srv = server();
@@ -472,6 +478,7 @@ fn test_temp_ban_expiry() {
 //  Kick Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-070
 #[test]
 fn test_kick_user_can_rejoin() {
     let srv = server();
@@ -512,6 +519,7 @@ fn test_kick_user_can_rejoin() {
     });
 }
 
+// TESTSPEC: API-066
 #[test]
 fn test_kick_owner_rejected() {
     let srv = server();
@@ -550,6 +558,7 @@ fn test_kick_owner_rejected() {
 //  Channel Mute Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-071, WS-021
 #[test]
 fn test_channel_mute_blocks_messages() {
     let srv = server();
@@ -631,6 +640,7 @@ fn test_channel_mute_blocks_messages() {
 //  Moderator Promotion/Demotion Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-064, API-068, API-071
 #[test]
 fn test_moderator_can_ban_kick_mute() {
     let srv = server();
@@ -687,6 +697,7 @@ fn test_moderator_can_ban_kick_mute() {
     });
 }
 
+// TESTSPEC: API-067
 #[test]
 fn test_moderator_cannot_promote() {
     let srv = server();
@@ -726,6 +737,7 @@ fn test_moderator_cannot_promote() {
 //  Non-member/Non-mod Access Denied
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-065
 #[test]
 fn test_non_member_cannot_access_moderation() {
     let srv = server();
@@ -751,6 +763,7 @@ fn test_non_member_cannot_access_moderation() {
     });
 }
 
+// TESTSPEC: API-065
 #[test]
 fn test_regular_member_cannot_moderate() {
     let srv = server();
@@ -787,6 +800,7 @@ fn test_regular_member_cannot_moderate() {
 //  Audit Log Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-073
 #[test]
 fn test_audit_log_records_actions() {
     let srv = server();
@@ -854,6 +868,7 @@ fn test_audit_log_records_actions() {
 //  WebSocket Ban/Kick Event Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-027
 #[test]
 fn test_ban_sends_websocket_event() {
     let srv = server();
@@ -890,6 +905,7 @@ fn test_ban_sends_websocket_event() {
     });
 }
 
+// TESTSPEC: WS-028
 #[test]
 fn test_kick_sends_websocket_event() {
     let srv = server();
@@ -929,6 +945,7 @@ fn test_kick_sends_websocket_event() {
 //  Mute/Unmute WebSocket Event Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-021
 #[test]
 fn test_mute_unmute_websocket_events() {
     let srv = server();
@@ -985,6 +1002,7 @@ fn test_mute_unmute_websocket_events() {
 //  Block enforcement on DM creation
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-061
 #[test]
 fn test_blocked_user_cannot_create_dm() {
     let srv = server();
@@ -1023,6 +1041,7 @@ fn test_blocked_user_cannot_create_dm() {
     });
 }
 
+// TESTSPEC: API-057
 #[test]
 fn test_dm_policy_nobody_rejects_dm() {
     let srv = server();
@@ -1054,6 +1073,7 @@ fn test_dm_policy_nobody_rejects_dm() {
     });
 }
 
+// TESTSPEC: API-058
 #[test]
 fn test_dm_policy_mutual_servers_enforced() {
     let srv = server();
@@ -1103,6 +1123,7 @@ fn test_dm_policy_mutual_servers_enforced() {
 //  Audit log moderator_id filter
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-073
 #[test]
 fn test_audit_log_moderator_id_filter() {
     let srv = server();

@@ -6,6 +6,7 @@ use serde_json::json;
 use std::time::Duration;
 
 /// GET /metrics returns 200 and contains expected metric names.
+// TESTSPEC: API-086, API-087
 #[tokio::test]
 async fn test_metrics_endpoint() {
     let server = TestServer::start().await;
@@ -37,6 +38,7 @@ async fn test_metrics_endpoint() {
 }
 
 /// After WS identify, mercury_connected_clients should be >= 1.
+// TESTSPEC: API-088
 #[tokio::test]
 async fn test_metrics_after_ws_connect() {
     let server = TestServer::start().await;
@@ -69,6 +71,7 @@ async fn test_metrics_after_ws_connect() {
 }
 
 /// After message relay, mercury_messages_relayed_total should increment.
+// TESTSPEC: API-088
 #[tokio::test]
 async fn test_metrics_after_message_send() {
     let server = TestServer::start().await;
@@ -148,6 +151,7 @@ async fn test_metrics_after_message_send() {
 }
 
 /// GET /health returns JSON with all expected fields.
+// TESTSPEC: API-083, API-085
 #[tokio::test]
 async fn test_health_check_json() {
     let server = TestServer::start().await;
@@ -188,6 +192,7 @@ async fn test_health_check_degraded_turn() {
 }
 
 /// Security headers are present on all responses.
+// TESTSPEC: API-089, SEC-015
 #[tokio::test]
 async fn test_security_headers() {
     let server = TestServer::start().await;
@@ -260,6 +265,7 @@ async fn test_cors_denies_unlisted_origin() {
 }
 
 /// display_name longer than 100 chars should be rejected.
+// TESTSPEC: CORE-008 (integration)
 #[tokio::test]
 async fn test_input_validation_display_name_too_long() {
     let server = TestServer::start().await;

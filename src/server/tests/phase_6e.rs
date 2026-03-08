@@ -39,6 +39,7 @@ async fn register_client(
 //  Device List Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-046, API-047
 #[test]
 fn test_upload_and_fetch_device_list() {
     let srv = server();
@@ -76,6 +77,7 @@ fn test_upload_and_fetch_device_list() {
     });
 }
 
+// TESTSPEC: API-046
 #[test]
 fn test_device_list_tofu_violation() {
     let srv = server();
@@ -141,6 +143,7 @@ fn test_device_list_tofu_violation() {
 //  Key Backup Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-049, API-050
 #[test]
 fn test_upload_and_fetch_key_backup() {
     let srv = server();
@@ -172,6 +175,7 @@ fn test_upload_and_fetch_key_backup() {
     });
 }
 
+// TESTSPEC: API-051
 #[test]
 fn test_key_backup_version_increments() {
     let srv = server();
@@ -214,6 +218,7 @@ fn test_key_backup_version_increments() {
     });
 }
 
+// TESTSPEC: API-052
 #[test]
 fn test_delete_key_backup() {
     let srv = server();
@@ -247,6 +252,7 @@ fn test_delete_key_backup() {
 //  Identity Reset Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-046, API-052
 #[test]
 fn test_identity_reset_allows_new_master_key() {
     let srv = server();
@@ -319,6 +325,7 @@ fn test_identity_reset_allows_new_master_key() {
     });
 }
 
+// TESTSPEC: API-046
 #[test]
 fn test_identity_reset_no_identity_returns_404() {
     let srv = server();
@@ -336,6 +343,7 @@ fn test_identity_reset_no_identity_returns_404() {
 //  Backup Size Limit Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-049
 #[test]
 fn test_key_backup_rejects_oversized_blob() {
     let srv = server();
@@ -366,6 +374,7 @@ fn test_key_backup_rejects_oversized_blob() {
     });
 }
 
+// TESTSPEC: API-050, API-053
 #[test]
 fn test_key_backup_access_control() {
     let srv = server();

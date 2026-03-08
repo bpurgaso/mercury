@@ -172,6 +172,7 @@ impl TestClientExt for common::TestClient {
 //  Report Submission Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-075, API-077, API-078, WS-029
 #[test]
 fn test_submit_report_and_list_and_review() {
     let srv = server();
@@ -270,6 +271,7 @@ fn test_submit_report_and_list_and_review() {
     });
 }
 
+// TESTSPEC: API-075
 #[test]
 fn test_report_self_rejected() {
     let srv = server();
@@ -293,6 +295,7 @@ fn test_report_self_rejected() {
     });
 }
 
+// TESTSPEC: API-079
 #[test]
 fn test_report_from_non_member_rejected() {
     let srv = server();
@@ -323,6 +326,7 @@ fn test_report_from_non_member_rejected() {
     });
 }
 
+// TESTSPEC: API-075
 #[test]
 fn test_report_rate_limit() {
     let srv = server();
@@ -369,6 +373,7 @@ fn test_report_rate_limit() {
 //  Abuse Detection Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-018, WS-020
 #[test]
 fn test_rapid_messaging_auto_rate_limit() {
     let srv = server();
@@ -436,6 +441,7 @@ fn test_rapid_messaging_auto_rate_limit() {
     });
 }
 
+// TESTSPEC: API-061
 #[test]
 fn test_dm_blocked_rejects_new_dm() {
     let srv = server();
@@ -471,6 +477,7 @@ fn test_dm_blocked_rejects_new_dm() {
     });
 }
 
+// TESTSPEC: API-063
 #[test]
 fn test_join_blocked_rejects_server_join() {
     let srv = server();
@@ -508,6 +515,7 @@ fn test_join_blocked_rejects_server_join() {
     });
 }
 
+// TESTSPEC: API-081
 #[test]
 fn test_report_threshold_creates_high_severity_signal() {
     let srv = server();
@@ -564,6 +572,7 @@ fn test_report_threshold_creates_high_severity_signal() {
 //  Abuse Signal Management Tests
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-081, API-082
 #[test]
 fn test_abuse_signal_list_filter_and_mark_reviewed() {
     let srv = server();
@@ -630,6 +639,7 @@ fn test_abuse_signal_list_filter_and_mark_reviewed() {
     });
 }
 
+// TESTSPEC: API-081
 #[test]
 fn test_abuse_stats() {
     let srv = server();
@@ -695,6 +705,7 @@ fn test_abuse_stats() {
 //  Moderation Key Endpoint Test
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-071
 #[test]
 fn test_moderation_key_endpoint() {
     let srv = server();
@@ -735,6 +746,7 @@ fn test_moderation_key_endpoint() {
 //  Invalid report category
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-080
 #[test]
 fn test_report_invalid_category() {
     let srv = server();
@@ -763,6 +775,7 @@ fn test_report_invalid_category() {
 //  Report review with ban action
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-078, API-063
 #[test]
 fn test_report_review_with_ban_action() {
     let srv = server();

@@ -47,6 +47,26 @@ path = "../../tests/phase_9b.rs"
 name = "phase_10"
 path = "../../tests/phase_10.rs"
 
+[[test]]
+name = "unit_tests"
+path = "../../tests/unit_tests.rs"
+
+[[test]]
+name = "security_tests"
+path = "../../tests/security_tests.rs"
+
+[[test]]
+name = "db_tests"
+path = "../../tests/db_tests.rs"
+
+[[test]]
+name = "api_tests"
+path = "../../tests/api_tests.rs"
+
+[[test]]
+name = "ws_tests"
+path = "../../tests/ws_tests.rs"
+
 [[bench]]
 name = "server_benchmarks"
 path = "../../benches/server_benchmarks.rs"
@@ -109,5 +129,8 @@ rmpv.workspace = true
 rmp-serde.workspace = true
 serde_bytes.workspace = true
 ring = "0.17"
+argon2.workspace = true
 mercury-auth.workspace = true
 mercury-moderation.workspace = true
+mercury-media.workspace = true
+mercury-core.workspace = true

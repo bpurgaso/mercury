@@ -137,6 +137,7 @@ fn test_sdp_offer() -> String {
 //  Test 1: voice_state_update join → VOICE_STATE_UPDATE broadcast + CALL_STARTED
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-015
 #[test]
 fn test_voice_state_update_join() {
     let srv = server();
@@ -223,6 +224,7 @@ fn test_voice_state_update_join() {
 //  Test 2: voice_state_update leave → VOICE_STATE_UPDATE + CALL_ENDED
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-015
 #[test]
 fn test_voice_state_update_leave() {
     let srv = server();
@@ -298,6 +300,7 @@ fn test_voice_state_update_leave() {
 //  Test 3: webrtc_signal relay — SDP offer → str0m SDP answer
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-016
 #[test]
 fn test_webrtc_signal_sdp_relay() {
     let srv = server();
@@ -365,6 +368,7 @@ fn test_webrtc_signal_sdp_relay() {
 //  Test 4: ICE candidate relay
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-016
 #[test]
 fn test_ice_candidate_relay() {
     let srv = server();
@@ -431,6 +435,7 @@ fn test_ice_candidate_relay() {
 //  Test 5: CALL_CONFIG includes TURN credentials and simulcast
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-017, MEDIA-004
 #[test]
 fn test_call_config_turn_credentials() {
     let srv = server();
@@ -513,6 +518,7 @@ fn test_call_config_turn_credentials() {
 //  Test 6: POST /calls — creates room, returns call info
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-017, MEDIA-001
 #[test]
 fn test_post_calls() {
     let srv = server();
@@ -551,6 +557,7 @@ fn test_post_calls() {
 //  Test 7: GET /calls/:id — returns participants and status
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: MEDIA-001, MEDIA-002
 #[test]
 fn test_get_call() {
     let srv = server();
@@ -595,6 +602,7 @@ fn test_get_call() {
 //  Test 8: Max participants — 26th participant rejected
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: MEDIA-003
 #[test]
 fn test_max_participants_rejected() {
     let srv = server_high_rate();
@@ -665,6 +673,7 @@ fn test_max_participants_rejected() {
 //  Test 9: Non-member cannot join voice channel
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-020
 #[test]
 fn test_non_member_cannot_join() {
     let srv = server();
@@ -712,6 +721,7 @@ fn test_non_member_cannot_join() {
 //  Test 10: Room cleanup — all leave → room destroyed
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: MEDIA-001
 #[test]
 fn test_room_cleanup() {
     let srv = server();
@@ -771,6 +781,7 @@ fn test_room_cleanup() {
 //  Test 11: Multiple rooms — two channels, independent calls
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: MEDIA-001, MEDIA-002
 #[test]
 fn test_multiple_rooms() {
     let srv = server();
@@ -841,6 +852,7 @@ fn test_multiple_rooms() {
 //  Test 12: DM call — voice_state_update with DM channel
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-015, WS-017
 #[test]
 fn test_dm_call() {
     let srv = server();
@@ -925,6 +937,7 @@ fn test_dm_call() {
 //  Test 13: Disconnect triggers leave_all and room cleanup
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-015, MEDIA-001
 #[test]
 fn test_disconnect_triggers_leave() {
     let srv = server();

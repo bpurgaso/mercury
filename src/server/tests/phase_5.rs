@@ -41,6 +41,7 @@ async fn register_client(
 //  5a. Server CRUD
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-019
 #[test]
 fn test_create_server() {
     let srv = server();
@@ -65,6 +66,7 @@ fn test_create_server() {
     });
 }
 
+// TESTSPEC: API-020
 #[test]
 fn test_list_servers() {
     let srv = server();
@@ -88,6 +90,7 @@ fn test_list_servers() {
     });
 }
 
+// TESTSPEC: API-022
 #[test]
 fn test_get_server_requires_membership() {
     let srv = server();
@@ -117,6 +120,7 @@ fn test_get_server_requires_membership() {
     });
 }
 
+// TESTSPEC: API-023
 #[test]
 fn test_update_server_owner_only() {
     let srv = server();
@@ -158,6 +162,7 @@ fn test_update_server_owner_only() {
     });
 }
 
+// TESTSPEC: API-024
 #[test]
 fn test_delete_server_owner_only() {
     let srv = server();
@@ -196,6 +201,7 @@ fn test_delete_server_owner_only() {
     });
 }
 
+// TESTSPEC: API-025
 #[test]
 fn test_join_server_via_invite_code() {
     let srv = server();
@@ -232,6 +238,7 @@ fn test_join_server_via_invite_code() {
     });
 }
 
+// TESTSPEC: API-026
 #[test]
 fn test_join_invalid_invite_code() {
     let srv = server();
@@ -247,6 +254,7 @@ fn test_join_invalid_invite_code() {
     });
 }
 
+// TESTSPEC: API-027
 #[test]
 fn test_leave_server() {
     let srv = server();
@@ -280,6 +288,7 @@ fn test_leave_server() {
     });
 }
 
+// TESTSPEC: API-028
 #[test]
 fn test_owner_cannot_leave_server() {
     let srv = server();
@@ -304,6 +313,7 @@ fn test_owner_cannot_leave_server() {
 //  5b. Channel CRUD
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-029
 #[test]
 fn test_create_channel() {
     let srv = server();
@@ -361,6 +371,7 @@ fn test_create_channel_requires_encryption_mode() {
     });
 }
 
+// TESTSPEC: API-032
 #[test]
 fn test_list_channels() {
     let srv = server();
@@ -424,6 +435,7 @@ fn test_list_channels_requires_membership() {
     });
 }
 
+// TESTSPEC: API-033
 #[test]
 fn test_delete_channel() {
     let srv = server();
@@ -497,6 +509,7 @@ fn test_delete_channel_non_owner_forbidden() {
 //  5c. Messages — send via WebSocket, receive, and history
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-009, WS-010
 #[test]
 fn test_message_send_and_receive() {
     let srv = server();
@@ -608,6 +621,7 @@ fn test_message_send_and_receive() {
     });
 }
 
+// TESTSPEC: API-035
 #[test]
 fn test_message_history_pagination() {
     let srv = server();
@@ -682,6 +696,7 @@ fn test_message_history_pagination() {
     });
 }
 
+// TESTSPEC: API-037
 #[test]
 fn test_message_history_requires_membership() {
     let srv = server();
@@ -715,6 +730,7 @@ fn test_message_history_requires_membership() {
 //  5d. READY payload includes servers and channels
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-031
 #[test]
 fn test_ready_includes_servers_and_channels() {
     let srv = server();
@@ -760,6 +776,7 @@ fn test_ready_includes_servers_and_channels() {
 //  5e. MEMBER_ADD and MEMBER_REMOVE events
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: WS-023
 #[test]
 fn test_member_add_event_on_join() {
     let srv = server();
@@ -812,6 +829,7 @@ fn test_member_add_event_on_join() {
     });
 }
 
+// TESTSPEC: WS-024
 #[test]
 fn test_member_remove_event_on_leave() {
     let srv = server();

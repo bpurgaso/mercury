@@ -71,6 +71,7 @@ fn fake_key_bundle(num_otps: usize) -> serde_json::Value {
 //  Device Registration & CRUD
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-040
 #[test]
 fn test_register_device() {
     let srv = server();
@@ -89,6 +90,7 @@ fn test_register_device() {
     });
 }
 
+// TESTSPEC: API-041
 #[test]
 fn test_list_devices() {
     let srv = server();
@@ -109,6 +111,7 @@ fn test_list_devices() {
     });
 }
 
+// TESTSPEC: API-048
 #[test]
 fn test_delete_device() {
     let srv = server();
@@ -128,6 +131,7 @@ fn test_delete_device() {
     });
 }
 
+// TESTSPEC: API-048
 #[test]
 fn test_delete_device_ownership() {
     let srv = server();
@@ -152,6 +156,7 @@ fn test_delete_device_ownership() {
 //  Key Bundle Upload
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-042
 #[test]
 fn test_upload_key_bundle() {
     let srv = server();
@@ -169,6 +174,7 @@ fn test_upload_key_bundle() {
     });
 }
 
+// TESTSPEC: API-042
 #[test]
 fn test_upload_key_bundle_validation() {
     let srv = server();
@@ -194,6 +200,7 @@ fn test_upload_key_bundle_validation() {
     });
 }
 
+// TESTSPEC: API-042
 #[test]
 fn test_upload_keys_wrong_owner() {
     let srv = server();
@@ -217,6 +224,7 @@ fn test_upload_keys_wrong_owner() {
 //  Key Bundle Fetch
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-043
 #[test]
 fn test_fetch_key_bundle() {
     let srv = server();
@@ -246,6 +254,7 @@ fn test_fetch_key_bundle() {
     });
 }
 
+// TESTSPEC: API-045
 #[test]
 fn test_fetch_all_bundles() {
     let srv = server();
@@ -280,6 +289,7 @@ fn test_fetch_all_bundles() {
     });
 }
 
+// TESTSPEC: API-043
 #[test]
 fn test_fetch_bundle_not_found() {
     let srv = server();
@@ -309,6 +319,7 @@ fn test_fetch_bundle_not_found() {
 //  One-Time Pre-Key Claiming
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-044
 #[test]
 fn test_claim_otp() {
     let srv = server();
@@ -343,6 +354,7 @@ fn test_claim_otp() {
     });
 }
 
+// TESTSPEC: API-044
 #[test]
 fn test_claim_otp_exhaustion() {
     let srv = server();
@@ -373,6 +385,7 @@ fn test_claim_otp_exhaustion() {
     });
 }
 
+// TESTSPEC: API-044, SEC-003
 #[test]
 fn test_claim_otp_no_duplicate() {
     let srv = server();
@@ -431,6 +444,7 @@ fn test_claim_otp_no_duplicate() {
 //  Authentication Enforcement
 // ────────────────────────────────────────────────────────────
 
+// TESTSPEC: API-014
 #[test]
 fn test_unauthenticated_access() {
     let srv = server();
