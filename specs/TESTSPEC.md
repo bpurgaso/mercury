@@ -1,6 +1,6 @@
 # Mercury — Test Specification
 
-**Version:** 1.0
+**Version:** 1.1
 **Spec ID:** `TESTSPEC-001`
 
 This file is the authoritative definition of all tests that must exist for the Mercury project. Each test has a unique ID, a canonical name, an expected file location, a tier classification, and a precise description of what it asserts.
@@ -12,9 +12,10 @@ This file is a **reference spec**, not an instruction prompt. It should be commi
 ## Conventions
 
 - **Server tests:** Rust, `cargo nextest run`, per-crate.
-- **Client unit tests:** TypeScript, Vitest.
-- **Client E2E tests:** TypeScript, Playwright + Electron.
-- **Infrastructure tests:** Require Postgres + Redis (testcontainers or Docker Compose).
+- **Client unit tests:** TypeScript, Vitest (`vitest.config.ts`).
+- **Client integration tests:** TypeScript, Vitest (`vitest.integration.config.ts`).
+- **Client E2E tests:** TypeScript, Playwright + Electron (`playwright.config.ts`).
+- **Client benchmarks:** Vitest (`vitest.bench.config.ts`) and Playwright (`playwright.bench.config.ts`).
 - **Determinism:** Every test is self-contained and idempotent. No inter-test dependencies.
 - **Fresh state:** Tests requiring multiple users create them at runtime.
 
@@ -28,15 +29,45 @@ This file is a **reference spec**, not an instruction prompt. It should be commi
 | `security` | Security property verification | Varies | < 5m |
 | `bench` | Performance measurement | Varies | < 10m |
 
+## Repo Test Layout
+
+```
+src/server/
+├── crates/mercury-*/src/           # Inline #[cfg(test)] unit tests per crate
+├── tests/                          # Integration tests
+│   ├── common/mod.rs               # Shared helpers (user/server creation, WS client, etc.)
+│   ├── milestone_1.rs              # Existing phase-based tests
+│   ├── phase_5.rs … phase_10.rs    # Existing phase-based tests
+│   └── <domain>_tests.rs           # New domain-based tests (db_tests, api_tests, ws_tests, etc.)
+└── benches/server_benchmarks.rs    # Criterion benchmarks
+
+src/client/
+├── tests/
+│   ├── unit/
+│   │   ├── crypto/                 # keygen, x3dh, double-ratchet, sender-keys, recovery, etc.
+│   │   ├── services/               # websocket, api, media-encryption, msgpack-framing, etc.
+│   │   ├── store/                  # keystore, messages, backup, tofu
+│   │   ├── stores/                 # authStore, serverStore, messageStore, callStore, etc.
+│   │   └── components/             # moderation, voice-panel, video-grid, etc.
+│   ├── integration/                # Cross-module (worker lifecycle, IPC flows)
+│   ├── e2e/flows/                  # Playwright E2E (smoke, dm, private-channel, moderation, etc.)
+│   └── performance/                # Benchmarks (launch, memory, CPU, crypto throughput)
+├── vitest.config.ts                # Unit test runner
+├── vitest.integration.config.ts    # Integration test runner
+├── vitest.bench.config.ts          # Benchmark runner
+├── playwright.config.ts            # E2E test runner
+└── playwright.bench.config.ts      # E2E benchmark runner
+```
+
 ---
 
 ## 1. Server Unit Tests
 
-Infrastructure: None.
+Infrastructure: None. Inline `#[cfg(test)]` modules within each crate's source files.
 
 ### 1.1 `mercury-core`
 
-Location: `src/server/crates/mercury-core/src/` (inline `#[cfg(test)]`) or `tests/`
+Location: `src/server/crates/mercury-core/src/*.rs` (inline `#[cfg(test)]`)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -51,7 +82,7 @@ Location: `src/server/crates/mercury-core/src/` (inline `#[cfg(test)]`) or `test
 
 ### 1.2 `mercury-auth`
 
-Location: `src/server/crates/mercury-auth/src/` + `tests/`
+Location: `src/server/crates/mercury-auth/src/*.rs` (inline `#[cfg(test)]`)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -69,7 +100,7 @@ Location: `src/server/crates/mercury-auth/src/` + `tests/`
 
 ### 1.3 `mercury-crypto`
 
-Location: `src/server/crates/mercury-crypto/src/` + `tests/`
+Location: `src/server/crates/mercury-crypto/src/*.rs` (inline `#[cfg(test)]`)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -82,7 +113,7 @@ Location: `src/server/crates/mercury-crypto/src/` + `tests/`
 
 ### 1.4 `mercury-moderation`
 
-Location: `src/server/crates/mercury-moderation/src/` + `tests/`
+Location: `src/server/crates/mercury-moderation/src/*.rs` (inline `#[cfg(test)]`)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -101,7 +132,7 @@ Location: `src/server/crates/mercury-moderation/src/` + `tests/`
 
 ### 1.5 `mercury-media`
 
-Location: `src/server/crates/mercury-media/src/` + `tests/`
+Location: `src/server/crates/mercury-media/src/*.rs` (inline `#[cfg(test)]`)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -118,9 +149,13 @@ Location: `src/server/crates/mercury-media/src/` + `tests/`
 
 Infrastructure: Postgres + Redis (testcontainers or Docker Compose).
 
+Shared helpers: `src/server/tests/common/mod.rs`
+
+Note: Existing tests are organized by phase (`milestone_1.rs`, `phase_5.rs`, `phase_9a.rs`, etc.). New tests for gap-filling should be organized by domain. Both coexist in `src/server/tests/`.
+
 ### 2.1 Database Layer (`mercury-db`)
 
-Location: `src/server/crates/mercury-db/tests/` or `src/server/tests/db/`
+Location: `src/server/tests/db_tests.rs` (new) — or coverage may already exist in phase files
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -157,7 +192,9 @@ Location: `src/server/crates/mercury-db/tests/` or `src/server/tests/db/`
 
 ### 2.2 REST API (`mercury-api`)
 
-Location: `src/server/crates/mercury-api/tests/` or `src/server/tests/api/`
+Location: `src/server/tests/api_tests.rs` (new) — or coverage may already exist in phase files (`phase_5.rs`, `phase_9a.rs`, `phase_10.rs`, etc.)
+
+Uses shared helpers from `src/server/tests/common/mod.rs`.
 
 #### 2.2.1 Authentication
 
@@ -315,9 +352,9 @@ Location: `src/server/crates/mercury-api/tests/` or `src/server/tests/api/`
 
 ### 2.3 WebSocket Protocol
 
-Location: `src/server/tests/websocket/`
+Location: `src/server/tests/ws_tests.rs` (new) — or coverage may already exist in `milestone_1.rs`, `phase_5.rs`, etc.
 
-Test harness: `tokio-tungstenite` WebSocket clients.
+Test harness: Reusable `WsTestClient` in `src/server/tests/common/mod.rs`.
 
 #### 2.3.1 Connection Lifecycle
 
@@ -404,11 +441,11 @@ Test harness: `tokio-tungstenite` WebSocket clients.
 
 ## 3. Client Unit Tests
 
-Infrastructure: None. Vitest.
+Infrastructure: None. Vitest via `vitest.config.ts`.
 
 ### 3.1 Crypto Engine
 
-Location: `src/client/src/worker/crypto/__tests__/`
+Location: `src/client/tests/unit/crypto/` (existing files: `keygen.test.ts`, `x3dh.test.ts`, `double-ratchet.test.ts`, `sender-keys.test.ts`, `recovery.test.ts`, `safety-numbers.test.ts`, `device-list.test.ts`)
 
 All tests use real crypto implementations, not mocks.
 
@@ -446,9 +483,9 @@ All tests use real crypto implementations, not mocks.
 | CC-030 | `media_key_ring_rotation` | unit | Set key epoch=0. Rotate to epoch=1. `getKey(0)` returns old (within 5s). After 6s → null. `getKey(1)` → current. |
 | CC-031 | `media_key_unknown_epoch` | unit | `getKey(99)` on fresh ring → null. |
 
-### 3.2 Key Store (SQLite)
+### 3.2 Key Store & Message Store
 
-Location: `src/client/src/worker/store/__tests__/`
+Location: `src/client/tests/unit/store/` (existing files: `keystore.test.ts`, `messages.test.ts`, `backup.test.ts`, `tofu.test.ts`)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -466,7 +503,7 @@ Location: `src/client/src/worker/store/__tests__/`
 
 ### 3.3 WebSocket Manager
 
-Location: `src/client/src/renderer/services/__tests__/`
+Location: `src/client/tests/unit/services/websocket.test.ts` (existing)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -486,7 +523,7 @@ Location: `src/client/src/renderer/services/__tests__/`
 
 ### 3.4 Zustand Stores
 
-Location: `src/client/src/renderer/stores/__tests__/`
+Location: `src/client/tests/unit/stores/` (existing files: `authStore.test.ts`, `serverStore.test.ts`, `messageStore.test.ts`, `callStore.test.ts`, `dmChannelStore.test.ts`, `dmMessageStore.test.ts`, `moderationStore.test.ts`)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -513,7 +550,7 @@ Location: `src/client/src/renderer/stores/__tests__/`
 
 ### 3.5 REST API Client
 
-Location: `src/client/src/renderer/services/__tests__/`
+Location: `src/client/tests/unit/services/api.test.ts` (existing)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -527,7 +564,7 @@ Location: `src/client/src/renderer/services/__tests__/`
 
 Infrastructure: Crypto worker running, mock or real API as needed.
 
-Location: `src/client/tests/integration/`
+Location: `src/client/tests/integration/` (Vitest via `vitest.integration.config.ts`; existing file: `worker.test.ts`)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -544,9 +581,9 @@ Location: `src/client/tests/integration/`
 
 ## 5. End-to-End Tests
 
-Infrastructure: Full stack (server + Postgres + Redis + Electron). Playwright.
+Infrastructure: Full stack (server + Postgres + Redis + Electron). Playwright via `playwright.config.ts`.
 
-Location: `src/client/tests/e2e/`
+Location: `src/client/tests/e2e/flows/` (existing files: `smoke.test.ts`, `dm-messaging.test.ts`, `private-channel.test.ts`, `moderation.test.ts`, `recovery-flow.test.ts`, `voice-channel.test.ts`, `electron-security.test.ts`)
 
 ### 5.1 Auth & Onboarding
 
@@ -636,7 +673,8 @@ Location: `src/client/tests/e2e/`
 
 These verify security invariants. Any failure is a vulnerability.
 
-Location: `src/server/tests/security/` and `src/client/tests/security/`
+Server location: `src/server/tests/security_tests.rs` (new)
+Client location: `src/client/tests/e2e/flows/electron-security.test.ts` (extend existing)
 
 | ID | Name | Tier | Assertion |
 |----|------|------|-----------|
@@ -662,7 +700,8 @@ Location: `src/server/tests/security/` and `src/client/tests/security/`
 
 Not pass/fail. Measure and report against targets.
 
-Location: `src/server/benches/` and `src/client/tests/performance/`
+Server location: `src/server/benches/server_benchmarks.rs` (extend existing)
+Client location: `src/client/tests/performance/` (existing dir with benchmarks, cpu-idle, launch, memory tests)
 
 | ID | Name | Tier | Target | Method |
 |----|------|------|--------|--------|
