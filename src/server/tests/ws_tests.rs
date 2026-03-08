@@ -522,21 +522,16 @@ fn blocked_user_msg_dropped() {
 // ────────────────────────────────────────────────────────────
 
 // TESTSPEC: WS-025
-// NOTE: The KEY_BUNDLE_UPDATE event is defined in the protocol enum but the
-// current upload_keys REST handler does not broadcast it. This test verifies
-// the current behavior: uploading a key bundle via REST succeeds, but no
-// KEY_BUNDLE_UPDATE WS event is emitted. When the broadcast is wired up,
-// this test should be updated to assert the event IS received.
 #[test]
 fn key_bundle_update_event() {
     let srv = server();
     runtime().block_on(async {
         setup(srv).await;
 
-        let (token_a, _user_a) = register_user(srv, "ws025_alice", "ws025_alice@test.com").await;
+        let (token_a, user_a) = register_user(srv, "ws025_alice", "ws025_alice@test.com").await;
         let (token_b, _user_b) = register_user(srv, "ws025_bob", "ws025_bob@test.com").await;
 
-        // Create shared server so events could propagate
+        // Create shared server so events propagate
         let (_, invite_code) = create_server(srv, &token_a, "KeyServer").await;
         join_server(srv, &token_b, &invite_code).await;
 
@@ -549,10 +544,7 @@ fn key_bundle_update_event() {
         // Alice uploads a key bundle
         upload_key_bundle(srv, &token_a, &device_a).await;
 
-        // Check if Bob receives a KEY_BUNDLE_UPDATE event.
-        // Current implementation does NOT broadcast this event from the REST
-        // handler, so we expect no event. When the feature is wired up, change
-        // this assertion to expect Some.
+        // Bob should receive KEY_BUNDLE_UPDATE
         let event = wait_for_event(
             &mut ws_b,
             "KEY_BUNDLE_UPDATE",
@@ -560,18 +552,11 @@ fn key_bundle_update_event() {
         )
         .await;
 
-        // TODO: Once KEY_BUNDLE_UPDATE broadcast is implemented, change to:
-        //   assert!(event.is_some(), "Bob should receive KEY_BUNDLE_UPDATE");
-        //   assert_eq!(event.unwrap()["d"]["user_id"], _user_a);
-        if event.is_some() {
-            // If the broadcast IS now wired up, validate the payload
-            let ev = event.unwrap();
-            assert_eq!(ev["t"], "KEY_BUNDLE_UPDATE");
-            // The event should reference Alice
-        } else {
-            // Expected: event not yet broadcast (feature not wired up)
-            eprintln!("KEY_BUNDLE_UPDATE not broadcast from REST handler (expected for now)");
-        }
+        assert!(event.is_some(), "Bob should receive KEY_BUNDLE_UPDATE");
+        let ev = event.unwrap();
+        assert_eq!(ev["t"], "KEY_BUNDLE_UPDATE");
+        assert_eq!(ev["d"]["user_id"], user_a);
+        assert_eq!(ev["d"]["device_id"], device_a);
 
         ws_b.close().await;
     });
@@ -582,16 +567,13 @@ fn key_bundle_update_event() {
 // ────────────────────────────────────────────────────────────
 
 // TESTSPEC: WS-026
-// NOTE: The DEVICE_LIST_UPDATE event is defined in the protocol enum but the
-// current create_device REST handler does not broadcast it. This test verifies
-// the current behavior. When the broadcast is wired up, update assertions.
 #[test]
 fn device_list_update_event() {
     let srv = server();
     runtime().block_on(async {
         setup(srv).await;
 
-        let (token_a, _user_a) = register_user(srv, "ws026_alice", "ws026_alice@test.com").await;
+        let (token_a, user_a) = register_user(srv, "ws026_alice", "ws026_alice@test.com").await;
         let (token_b, _user_b) = register_user(srv, "ws026_bob", "ws026_bob@test.com").await;
 
         // Create shared server
@@ -603,9 +585,9 @@ fn device_list_update_event() {
         drain_events(&mut ws_b).await;
 
         // Alice registers a new device
-        let _device_id = create_device(srv, &token_a, "AliceNewDevice").await;
+        let device_id = create_device(srv, &token_a, "AliceNewDevice").await;
 
-        // Check if Bob receives a DEVICE_LIST_UPDATE event.
+        // Bob should receive DEVICE_LIST_UPDATE
         let event = wait_for_event(
             &mut ws_b,
             "DEVICE_LIST_UPDATE",
@@ -613,17 +595,12 @@ fn device_list_update_event() {
         )
         .await;
 
-        // TODO: Once DEVICE_LIST_UPDATE broadcast is implemented, change to:
-        //   assert!(event.is_some(), "Bob should receive DEVICE_LIST_UPDATE");
-        //   assert_eq!(event.unwrap()["d"]["user_id"], _user_a);
-        if event.is_some() {
-            let ev = event.unwrap();
-            assert_eq!(ev["t"], "DEVICE_LIST_UPDATE");
-        } else {
-            eprintln!(
-                "DEVICE_LIST_UPDATE not broadcast from REST handler (expected for now)"
-            );
-        }
+        assert!(event.is_some(), "Bob should receive DEVICE_LIST_UPDATE");
+        let ev = event.unwrap();
+        assert_eq!(ev["t"], "DEVICE_LIST_UPDATE");
+        assert_eq!(ev["d"]["user_id"], user_a);
+        assert_eq!(ev["d"]["device_id"], device_id);
+        assert_eq!(ev["d"]["action"], "add");
 
         ws_b.close().await;
     });
@@ -635,11 +612,8 @@ fn device_list_update_event() {
 
 // TESTSPEC: WS-030
 // When an abuse signal is created (e.g., via rapid messaging detection),
-// only the server owner should receive the ABUSE_SIGNAL event. Regular
-// members and even moderators should NOT receive it (the abuse detector
-// sends to is_any_server_mod_or_owner, which includes moderators — but the
-// spec says owner-only. This test validates the current behavior and
-// documents any discrepancy).
+// the server owner and moderators receive the ABUSE_SIGNAL event. Regular
+// members should NOT receive it.
 #[test]
 fn abuse_signal_event_owner_only() {
     let srv = server();
@@ -722,11 +696,6 @@ fn abuse_signal_event_owner_only() {
             "regular member should NOT receive ABUSE_SIGNAL event"
         );
 
-        // NOTE: The current implementation sends ABUSE_SIGNAL to ALL users who
-        // are moderators or owners of ANY server (is_any_server_mod_or_owner).
-        // This means moderators WILL receive the event. The spec says
-        // "owner only" — this documents the current behavior.
-        //
         // Check owner — they should receive it (if the abuse detector ran)
         let owner_event = wait_for_event(
             &mut ws_owner,
@@ -737,10 +706,22 @@ fn abuse_signal_event_owner_only() {
 
         // The abuse detector may not have triggered within our test window
         // (it runs on a timer, and the threshold may not be met).
-        // If owner received it, validate the payload.
+        // If owner received it, validate the payload and check moderator too.
         if let Some(ev) = owner_event {
             assert_eq!(ev["t"], "ABUSE_SIGNAL");
             assert_eq!(ev["d"]["user_id"], spammer_id);
+
+            // Moderators should also receive the event (accepted behavior)
+            let mod_event = wait_for_event(
+                &mut ws_mod,
+                "ABUSE_SIGNAL",
+                Duration::from_secs(2),
+            )
+            .await;
+            assert!(
+                mod_event.is_some(),
+                "moderator should also receive ABUSE_SIGNAL event"
+            );
         } else {
             // Abuse detector may not have triggered; that's acceptable in the
             // test environment since the detector runs on a background timer.

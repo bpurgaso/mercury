@@ -112,6 +112,20 @@ pub async fn create_device(
         mercury_db::devices::create_device(&state.db, device_id, auth_user.user_id, &req.device_name)
             .await?;
 
+    // Broadcast DEVICE_LIST_UPDATE to users in shared servers
+    if let Ok(co_members) = mercury_db::servers::get_co_member_user_ids(&state.db, auth_user.user_id).await {
+        let event = crate::ws::protocol::ServerMessage {
+            t: crate::ws::protocol::ServerEvent::DEVICE_LIST_UPDATE,
+            d: serde_json::to_value(crate::ws::protocol::DeviceListUpdateEvent {
+                user_id: auth_user.user_id.to_string(),
+                device_id: device_id.to_string(),
+                action: "add".to_string(),
+            }).unwrap_or_default(),
+            seq: None,
+        };
+        state.ws_manager.send_to_users(&co_members, &event);
+    }
+
     Ok((StatusCode::CREATED, Json(DeviceResponse::from(device))))
 }
 
@@ -145,6 +159,21 @@ pub async fn delete_device(
     }
 
     mercury_db::devices::delete_device(&state.db, device_id, auth_user.user_id).await?;
+
+    // Broadcast DEVICE_LIST_UPDATE to users in shared servers
+    if let Ok(co_members) = mercury_db::servers::get_co_member_user_ids(&state.db, auth_user.user_id).await {
+        let event = crate::ws::protocol::ServerMessage {
+            t: crate::ws::protocol::ServerEvent::DEVICE_LIST_UPDATE,
+            d: serde_json::to_value(crate::ws::protocol::DeviceListUpdateEvent {
+                user_id: auth_user.user_id.to_string(),
+                device_id: device_id.to_string(),
+                action: "remove".to_string(),
+            }).unwrap_or_default(),
+            seq: None,
+        };
+        state.ws_manager.send_to_users(&co_members, &event);
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -223,6 +252,19 @@ pub async fn upload_keys(
     }
 
     tx.commit().await.map_err(|e| MercuryError::Database(e))?;
+
+    // Broadcast KEY_BUNDLE_UPDATE to users in shared servers
+    if let Ok(co_members) = mercury_db::servers::get_co_member_user_ids(&state.db, auth_user.user_id).await {
+        let event = crate::ws::protocol::ServerMessage {
+            t: crate::ws::protocol::ServerEvent::KEY_BUNDLE_UPDATE,
+            d: serde_json::to_value(crate::ws::protocol::KeyBundleUpdateEvent {
+                user_id: auth_user.user_id.to_string(),
+                device_id: device_id.to_string(),
+            }).unwrap_or_default(),
+            seq: None,
+        };
+        state.ws_manager.send_to_users(&co_members, &event);
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

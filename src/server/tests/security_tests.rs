@@ -276,10 +276,7 @@ async fn jwt_algorithm_confusion() {
 }
 
 // TESTSPEC: SEC-011
-// KNOWN GAP: Server does not currently filter presence updates by block list.
-// This test documents the expected behavior per spec. Remove #[ignore] once fixed.
 #[tokio::test]
-#[ignore = "server does not yet filter presence by block list (SEC-011 security gap)"]
 async fn blocked_user_no_presence() {
     let server = TestServer::start().await;
     setup(&server).await;

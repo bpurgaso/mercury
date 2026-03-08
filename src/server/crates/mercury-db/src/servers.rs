@@ -170,6 +170,25 @@ pub async fn get_owner_and_mod_ids(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// Get all distinct user IDs that share at least one server with the given user.
+pub async fn get_co_member_user_ids(
+    pool: &PgPool,
+    user_id: UserId,
+) -> Result<Vec<UserId>, sqlx::Error> {
+    let rows: Vec<(UserId,)> = sqlx::query_as(
+        r#"
+        SELECT DISTINCT sm2.user_id
+        FROM server_members sm1
+        INNER JOIN server_members sm2 ON sm1.server_id = sm2.server_id
+        WHERE sm1.user_id = $1 AND sm2.user_id != $1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// Get the server_id for a channel (used for ownership/membership checks on channel routes).
 pub async fn get_server_id_for_channel(
     pool: &PgPool,

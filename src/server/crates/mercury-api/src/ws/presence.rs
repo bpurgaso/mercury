@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use super::manager::ConnectionManager;
 use super::protocol::{PresenceUpdateEvent, ServerEvent, ServerMessage};
 
-/// Filter a list of connected user IDs to exclude those who have blocked `target_user`.
+/// Filter a list of connected user IDs to exclude those involved in a block
+/// relationship with `target_user` (either direction).
 async fn filter_blocked(
     redis: &RedisClient,
     connected_users: &[UserId],
@@ -19,9 +20,14 @@ async fn filter_blocked(
             filtered.push(*uid);
             continue;
         }
-        if !mercury_moderation::blocks::is_blocked(redis, *uid, target_user).await {
-            filtered.push(*uid);
+        // Exclude if either user has blocked the other
+        if mercury_moderation::blocks::is_blocked(redis, *uid, target_user).await {
+            continue;
         }
+        if mercury_moderation::blocks::is_blocked(redis, target_user, *uid).await {
+            continue;
+        }
+        filtered.push(*uid);
     }
     filtered
 }

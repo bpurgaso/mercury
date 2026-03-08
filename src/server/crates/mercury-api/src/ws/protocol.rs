@@ -166,6 +166,21 @@ pub struct PresenceUpdateEvent {
     pub status: String,
 }
 
+/// Payload for KEY_BUNDLE_UPDATE server event.
+#[derive(Debug, Serialize)]
+pub struct KeyBundleUpdateEvent {
+    pub user_id: String,
+    pub device_id: String,
+}
+
+/// Payload for DEVICE_LIST_UPDATE server event.
+#[derive(Debug, Serialize)]
+pub struct DeviceListUpdateEvent {
+    pub user_id: String,
+    pub device_id: String,
+    pub action: String, // "add" or "remove"
+}
+
 /// Payload for the `message_send` client op (standard channel — JSON text frame).
 #[derive(Debug, Deserialize)]
 pub struct MessageSendPayload {
