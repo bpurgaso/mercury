@@ -17,6 +17,7 @@ use std::time::Instant;
 
 // ── JWT Benchmarks ──────────────────────────────────────────
 
+// TESTSPEC: PERF-007
 fn bench_jwt_validation() {
     use mercury_auth::jwt::{create_access_token, validate_token};
     use mercury_core::config::AuthConfig;
@@ -419,8 +420,7 @@ fn bench_message_history_response() {
     println!();
 }
 
-// ── PERF-008: Message History Query Benchmark ────────────────
-//
+// TESTSPEC: PERF-008
 // Simulates the full paginated message history pipeline:
 // build 10k message rows in memory → paginate → serialize to JSON.
 // DB query latency depends on PostgreSQL and is measured in integration tests;

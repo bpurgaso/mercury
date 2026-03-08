@@ -72,6 +72,7 @@ describe('authStore', () => {
     localStorageMock.clear()
   })
 
+  // TESTSPEC: ST-001
   it('login sets tokens, user, and connects websocket', async () => {
     const mockAuthResponse = {
       user_id: 'user-1',
@@ -114,6 +115,7 @@ describe('authStore', () => {
     expect(state.isLoading).toBe(false)
   })
 
+  // TESTSPEC: ST-002
   it('logout clears tokens, user, and disconnects websocket', async () => {
     // Set up authenticated state
     useAuthStore.setState({

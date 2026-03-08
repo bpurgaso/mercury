@@ -47,6 +47,7 @@ describe('moderationStore', () => {
     vi.clearAllMocks()
   })
 
+  // TESTSPEC: ST-017
   describe('blockUser', () => {
     it('adds userId to blockedUserIds and calls API', async () => {
       vi.mocked(moderationApi.blockUser).mockResolvedValue(undefined)
@@ -119,6 +120,7 @@ describe('moderationStore', () => {
     })
   })
 
+  // TESTSPEC: ST-018
   describe('submitReport', () => {
     it('calls API with correct payload', async () => {
       vi.mocked(moderationApi.submitReport).mockResolvedValue({
@@ -204,6 +206,7 @@ describe('moderationStore', () => {
     })
   })
 
+  // TESTSPEC: ST-019
   describe('reviewReport', () => {
     it('updates report status to reviewed', async () => {
       useModerationStore.setState({
@@ -275,6 +278,7 @@ describe('moderationStore', () => {
     })
   })
 
+  // TESTSPEC: ST-020
   describe('fetchAbuseSignals', () => {
     it('loads abuse signals from API', async () => {
       vi.mocked(moderationApi.getAbuseSignals).mockResolvedValue([

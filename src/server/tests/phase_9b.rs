@@ -172,7 +172,10 @@ impl TestClientExt for common::TestClient {
 //  Report Submission Tests
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: API-075, API-077, API-078, WS-029
+// TESTSPEC: API-075
+// TESTSPEC: API-077
+// TESTSPEC: API-078
+// TESTSPEC: WS-029
 #[test]
 fn test_submit_report_and_list_and_review() {
     let srv = server();
@@ -373,7 +376,8 @@ fn test_report_rate_limit() {
 //  Abuse Detection Tests
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: WS-018, WS-020
+// TESTSPEC: WS-018
+// TESTSPEC: WS-020
 #[test]
 fn test_rapid_messaging_auto_rate_limit() {
     let srv = server();
@@ -572,7 +576,8 @@ fn test_report_threshold_creates_high_severity_signal() {
 //  Abuse Signal Management Tests
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: API-081, API-082
+// TESTSPEC: API-081
+// TESTSPEC: API-082
 #[test]
 fn test_abuse_signal_list_filter_and_mark_reviewed() {
     let srv = server();
@@ -775,7 +780,8 @@ fn test_report_invalid_category() {
 //  Report review with ban action
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: API-078, API-063
+// TESTSPEC: API-078
+// TESTSPEC: API-063
 #[test]
 fn test_report_review_with_ban_action() {
     let srv = server();

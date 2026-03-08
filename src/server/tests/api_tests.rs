@@ -956,3 +956,58 @@ fn health_check_db_down() {
         );
     });
 }
+
+// ────────────────────────────────────────────────────────────
+//  Server detail tests
+// ────────────────────────────────────────────────────────────
+
+// TESTSPEC: API-021
+#[test]
+fn get_server_detail() {
+    let srv = server();
+    runtime().block_on(async {
+        setup(srv).await;
+
+        let owner = register_client(srv, "api021_owner", "api021_owner@test.com").await;
+        let owner_id = owner.user_id.as_ref().unwrap().clone();
+
+        // Create a server
+        let (status, server_body) = owner
+            .post_authed("/servers", &json!({ "name": "DetailServer" }))
+            .await;
+        assert_eq!(status, 201, "server creation should succeed");
+        let server_id = server_body["id"].as_str().unwrap();
+        let invite_code = server_body["invite_code"].as_str().unwrap().to_string();
+
+        // GET /servers/:id → 200 with full details
+        let (status, body) = owner
+            .get_authed(&format!("/servers/{}", server_id))
+            .await;
+        assert_eq!(status, 200, "GET /servers/:id should return 200");
+
+        // Verify full details are present
+        assert_eq!(
+            body["id"].as_str().unwrap(),
+            server_id,
+            "response should contain correct server id"
+        );
+        assert_eq!(
+            body["name"].as_str().unwrap(),
+            "DetailServer",
+            "response should contain correct server name"
+        );
+        assert_eq!(
+            body["owner_id"].as_str().unwrap(),
+            owner_id,
+            "response should contain correct owner_id"
+        );
+        // invite_code may or may not be present in GET detail depending on implementation
+        // Check if it exists and matches
+        if let Some(code) = body["invite_code"].as_str() {
+            assert_eq!(
+                code, invite_code,
+                "invite_code should match creation response"
+            );
+        }
+    });
+}

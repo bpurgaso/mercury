@@ -211,6 +211,7 @@ test.describe('Recovery flow E2E', () => {
       await expect(alice.page.getByText('got it')).toBeVisible({ timeout: 15_000 })
     })
 
+    // TESTSPEC: E2E-037
     test('Generate recovery key and create encrypted backup', async () => {
       await exposeCryptoService(alice.page)
 
@@ -234,6 +235,7 @@ test.describe('Recovery flow E2E', () => {
       expect(aliceMasterVerifyKey.length).toBe(32)
     })
 
+    // TESTSPEC: E2E-038
     test('Create and upload encrypted backup to server', async () => {
       // Create backup blob
       const backup = await cryptoOp<{ encrypted_backup: number[]; salt: number[] }>(
@@ -291,6 +293,7 @@ test.describe('Recovery flow E2E', () => {
       rmSync(savedDir, { recursive: true, force: true })
     })
 
+    // TESTSPEC: E2E-039
     test('Restore: login on new device and recover from backup', async () => {
       // Relaunch with fresh userData directory
       const newUserDataDir = mkdtempSync(join(tmpdir(), 'mercury-e2e-recovery-alice-restored-'))

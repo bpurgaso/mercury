@@ -85,6 +85,7 @@ describe('Performance Benchmarks', () => {
   const ITERATIONS = 100
 
   describe('Double Ratchet (DM encryption)', () => {
+    // TESTSPEC: PERF-001
     it('message encrypt latency < 200ms', () => {
       console.log('\n=== Double Ratchet Encrypt Benchmark ===')
 
@@ -104,6 +105,7 @@ describe('Performance Benchmarks', () => {
       expect(median(times)).toBeLessThan(200)
     })
 
+    // TESTSPEC: PERF-002
     it('message decrypt latency < 5ms', () => {
       console.log('\n=== Double Ratchet Decrypt Benchmark ===')
 
@@ -182,6 +184,7 @@ describe('Performance Benchmarks', () => {
       expect(median(times)).toBeLessThan(5)
     })
 
+    // TESTSPEC: PERF-003
     it('lazy rotation for 99 recipients < 3 seconds', () => {
       console.log('\n=== Sender Key Lazy Rotation (99 recipients) Benchmark ===')
 

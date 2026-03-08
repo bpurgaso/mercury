@@ -57,6 +57,7 @@ describe('serverStore', () => {
     vi.clearAllMocks()
   })
 
+  // TESTSPEC: ST-004
   it('setServers populates the server map', () => {
     const s1 = makeServer('s1', 'Server 1')
     const s2 = makeServer('s2', 'Server 2')
@@ -87,6 +88,7 @@ describe('serverStore', () => {
     expect(useServerStore.getState().channels.size).toBe(0)
   })
 
+  // TESTSPEC: ST-005
   it('createServer calls API and adds to store', async () => {
     const server = makeServer('s1', 'New Server')
     vi.mocked(serversApi.create).mockResolvedValue(server)
@@ -98,6 +100,7 @@ describe('serverStore', () => {
     expect(serversApi.create).toHaveBeenCalledWith({ name: 'New Server' })
   })
 
+  // TESTSPEC: ST-006
   it('joinServer calls API, adds to store, and fetches channels', async () => {
     const server = makeServer('s2', 'Joined Server')
     const channels = [makeChannel('c1', 's2', 'general'), makeChannel('c2', 's2', 'random')]
@@ -134,6 +137,7 @@ describe('serverStore', () => {
     expect(channels[1].name).toBe('general')
   })
 
+  // TESTSPEC: ST-007
   it('setActiveServer auto-selects first text channel', () => {
     useServerStore.getState().addServer(makeServer('s1', 'Test'))
     useServerStore.getState().addChannel(makeChannel('c1', 's1', 'general'))

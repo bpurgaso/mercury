@@ -11,6 +11,7 @@ beforeAll(async () => {
   await ensureSodium()
 })
 
+// TESTSPEC: CC-024 signed_device_list_create_verify
 describe('createSignedDeviceList + verifySignedDeviceList', () => {
   it('creates a signed device list that verifies successfully', async () => {
     const masterKP = generateEd25519KeyPair()
@@ -62,6 +63,7 @@ describe('createSignedDeviceList + verifySignedDeviceList', () => {
     expect(payload.devices).toHaveLength(0)
   })
 
+  // TESTSPEC: CC-025 signed_device_list_tamper_detect
   it('fails verification when the list content is tampered', async () => {
     const masterKP = generateEd25519KeyPair()
     const devices: DeviceListEntry[] = [

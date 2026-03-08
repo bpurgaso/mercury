@@ -657,7 +657,8 @@ fn test_rate_limiting_auth_endpoints() {
 //  4. WebSocket (Phase 4)
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: WS-001, WS-004
+// TESTSPEC: WS-001
+// TESTSPEC: WS-004
 #[test]
 fn test_ws_connect_and_identify() {
     let srv = server();

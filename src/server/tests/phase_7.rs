@@ -497,7 +497,8 @@ fn test_e2e_dm_with_x3dh_header() {
     });
 }
 
-// TESTSPEC: WS-010, CC-014
+// TESTSPEC: WS-010
+// TESTSPEC: CC-014
 #[test]
 fn test_private_channel_message() {
     let srv = server();
@@ -565,7 +566,8 @@ fn test_private_channel_message() {
     });
 }
 
-// TESTSPEC: SEC-014, CC-017
+// TESTSPEC: SEC-014
+// TESTSPEC: CC-017
 #[test]
 fn test_epoch_validation_rejects_stale() {
     let srv = server();
@@ -721,7 +723,8 @@ fn test_dm_history() {
     });
 }
 
-// TESTSPEC: WS-010, WS-005
+// TESTSPEC: WS-010
+// TESTSPEC: WS-005
 #[test]
 fn test_msgpack_framing() {
     let srv = server();

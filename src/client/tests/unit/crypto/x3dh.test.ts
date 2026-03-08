@@ -25,6 +25,7 @@ beforeAll(async () => {
 })
 
 describe('X3DH round-trip (4-DH with one-time pre-key)', () => {
+  // TESTSPEC: CC-005
   it('Alice and Bob derive the same shared secret', async () => {
     // Alice generates her identity key
     const aliceIdentity = await generateDeviceIdentityKeyPair()
@@ -99,6 +100,7 @@ describe('X3DH round-trip (4-DH with one-time pre-key)', () => {
 })
 
 describe('X3DH without one-time pre-key (3-DH)', () => {
+  // TESTSPEC: CC-006
   it('Alice and Bob derive the same shared secret without OTP', async () => {
     const aliceIdentity = await generateDeviceIdentityKeyPair()
     const bobIdentity = await generateDeviceIdentityKeyPair()
@@ -212,6 +214,7 @@ describe('X3DH signature verification', () => {
     )
   })
 
+  // TESTSPEC: CC-007
   it('throws when identity key is wrong (signature by different key)', async () => {
     const aliceIdentity = await generateDeviceIdentityKeyPair()
     const bobIdentity = await generateDeviceIdentityKeyPair()

@@ -90,6 +90,7 @@ test.describe('DM messaging E2E', () => {
   let bob: AppCtx
 
   test.describe('Alice and Bob DM exchange', () => {
+    // TESTSPEC: E2E-015
     test('Register Alice and Bob with unique credentials', async () => {
       ;[alice, bob] = await Promise.all([
         launchApp('alice'),
@@ -111,6 +112,7 @@ test.describe('DM messaging E2E', () => {
       expect(alice.userId).not.toBe(bob.userId)
     })
 
+    // TESTSPEC: E2E-016
     test('Alice starts a DM with Bob via POST /dm', async () => {
       // Click New Direct Message button in sidebar
       await alice.page.getByTitle('New Direct Message').click()
@@ -132,6 +134,7 @@ test.describe('DM messaging E2E', () => {
       await expect(alice.page.getByText('Encrypted')).toBeVisible({ timeout: 5_000 })
     })
 
+    // TESTSPEC: E2E-017
     test('Alice sends "hello" → Bob receives and sees "hello"', async () => {
       // Alice types and sends "hello"
       const aliceInput = alice.page.locator('textarea')
@@ -156,6 +159,7 @@ test.describe('DM messaging E2E', () => {
       await expect(bob.page.getByText('hello')).toBeVisible({ timeout: 15_000 })
     })
 
+    // TESTSPEC: E2E-018
     test('Bob replies "hi" → Alice sees "hi"', async () => {
       // Bob types and sends "hi"
       const bobInput = bob.page.locator('textarea')
@@ -170,6 +174,7 @@ test.describe('DM messaging E2E', () => {
       await expect(alice.page.getByText('hi')).toBeVisible({ timeout: 15_000 })
     })
 
+    // TESTSPEC: E2E-019
     test('Messages are E2E encrypted — server stores only ciphertext', async () => {
       // Query the server's DM message history via REST API.
       // The server stores per-device ciphertext: Alice sees messages encrypted
@@ -226,6 +231,7 @@ test.describe('DM messaging E2E', () => {
   })
 
   test.describe('Offline message history from local DB', () => {
+    // TESTSPEC: E2E-020
     test("Close Alice's app → reopen → DM history loaded from local db", async () => {
       // Save Alice's userData dir so we can relaunch with the same state
       const savedDir = alice.userDataDir
@@ -331,6 +337,7 @@ test.describe('DM messaging E2E', () => {
   })
 
   test.describe('TOFU identity verification', () => {
+    // TESTSPEC: E2E-021
     test('Identity change shows warning dialog', async () => {
       // Trigger the identity warning via test hook.
       // This calls the identityWarningCallback registered by ServerPage,
@@ -374,6 +381,7 @@ test.describe('DM messaging E2E', () => {
       expect(result).toBe(false) // Not approved = not sent
     })
 
+    // TESTSPEC: E2E-022
     test('After approval, message sends successfully', async () => {
       // Trigger identity warning and approve it
       const warningPromise = alice.page.evaluate(async (bobId: string) => {

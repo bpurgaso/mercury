@@ -1287,6 +1287,42 @@ describe('callStore', () => {
     })
   })
 
+  // TESTSPEC: ST-015
+  describe('call_join_leave', () => {
+    it('joinCall sets activeCall, leaveCall clears it', async () => {
+      const joinPromise = useCallStore.getState().joinCall('channel-1')
+      emitWsEvent('CALL_CONFIG', mockCallConfigEvent)
+      await joinPromise
+
+      // activeCall should be set after joining
+      const stateAfterJoin = useCallStore.getState()
+      expect(stateAfterJoin.activeCall).not.toBeNull()
+      expect(stateAfterJoin.activeCall?.channelId).toBe('channel-1')
+
+      // leaveCall should clear activeCall
+      await useCallStore.getState().leaveCall()
+      const stateAfterLeave = useCallStore.getState()
+      expect(stateAfterLeave.activeCall).toBeNull()
+    })
+  })
+
+  // TESTSPEC: ST-016
+  describe('call_toggle_mute', () => {
+    it('toggleMute flips isMuted', async () => {
+      const joinPromise = useCallStore.getState().joinCall('channel-1')
+      emitWsEvent('CALL_CONFIG', mockCallConfigEvent)
+      await joinPromise
+
+      expect(useCallStore.getState().isMuted).toBe(false)
+
+      useCallStore.getState().toggleMute()
+      expect(useCallStore.getState().isMuted).toBe(true)
+
+      useCallStore.getState().toggleMute()
+      expect(useCallStore.getState().isMuted).toBe(false)
+    })
+  })
+
   describe('SDP answer handling', () => {
     it('sets remote description when SDP answer received via WEBRTC_SIGNAL', async () => {
       const joinPromise = useCallStore.getState().joinCall('channel-1')

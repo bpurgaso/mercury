@@ -41,6 +41,7 @@ describe('KeyStore round-trip', () => {
     store.close()
   })
 
+  // TESTSPEC: KS-001
   it('stores and retrieves a device identity keypair', async () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const kp = await generateDeviceIdentityKeyPair()
@@ -56,6 +57,7 @@ describe('KeyStore round-trip', () => {
     store.close()
   })
 
+  // TESTSPEC: KS-002
   it('stores and retrieves a signed pre-key', async () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const deviceKP = await generateDeviceIdentityKeyPair()
@@ -72,6 +74,7 @@ describe('KeyStore round-trip', () => {
     store.close()
   })
 
+  // TESTSPEC: KS-003
   it('stores 100 one-time pre-keys and retrieves each by ID', async () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const prekeys = await generateOneTimePreKeys(0, 100)
@@ -85,6 +88,27 @@ describe('KeyStore round-trip', () => {
       expect(retrieved!.keyPair.publicKey).toEqual(pk.keyPair.publicKey)
       expect(retrieved!.keyPair.privateKey).toEqual(pk.keyPair.privateKey)
     }
+
+    store.close()
+  })
+
+  // TESTSPEC: KS-005
+  it('store_retrieve_prekeys: stores 100 OTPs, retrieves by key_id, marks one used → 99 available', async () => {
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
+    const prekeys = await generateOneTimePreKeys(0, 100)
+
+    store.storeOneTimePreKeys(prekeys)
+    expect(store.getUnusedOneTimePreKeyCount()).toBe(100)
+
+    // Retrieve a specific key by ID
+    const retrieved = store.getOneTimePreKey(42)
+    expect(retrieved).not.toBeNull()
+    expect(retrieved!.keyId).toBe(42)
+    expect(retrieved!.keyPair.publicKey).toEqual(prekeys[42].keyPair.publicKey)
+
+    // Mark one used (delete) → 99 available
+    store.deleteOneTimePreKey(0)
+    expect(store.getUnusedOneTimePreKeyCount()).toBe(99)
 
     store.close()
   })
@@ -136,6 +160,7 @@ describe('KeyStore round-trip', () => {
     store.close()
   })
 
+  // TESTSPEC: KS-004
   it('stores and retrieves sessions', () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const sessionData = randomBytes(256)
@@ -169,6 +194,7 @@ describe('KeyStore round-trip', () => {
     store.close()
   })
 
+  // TESTSPEC: KS-006
   it('stores and retrieves sender keys', () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     const keyData = randomBytes(64)
@@ -180,6 +206,35 @@ describe('KeyStore round-trip', () => {
     expect(retrieved!.data).toEqual(keyData)
 
     expect(store.getSenderKey('channel-2', 'user-1', 'device-1')).toBeNull()
+
+    store.close()
+  })
+
+  // TESTSPEC: KS-007
+  it('sender_key_crud: store, retrieve, update (overwrite), and delete a sender key', () => {
+    const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
+    const keyData = randomBytes(64)
+
+    // Store
+    store.storeSenderKey('channel-1', 'user-1', 'device-1', { data: keyData })
+
+    // Retrieve and verify
+    const retrieved = store.getSenderKey('channel-1', 'user-1', 'device-1')
+    expect(retrieved).not.toBeNull()
+    expect(retrieved!.data).toEqual(keyData)
+
+    // Update (overwrite) with new data
+    const updatedKeyData = randomBytes(64)
+    store.storeSenderKey('channel-1', 'user-1', 'device-1', { data: updatedKeyData })
+
+    const afterUpdate = store.getSenderKey('channel-1', 'user-1', 'device-1')
+    expect(afterUpdate).not.toBeNull()
+    expect(afterUpdate!.data).toEqual(updatedKeyData)
+    expect(afterUpdate!.data).not.toEqual(keyData)
+
+    // Delete and verify it returns null
+    store.deleteSenderKey('channel-1', 'user-1', 'device-1')
+    expect(store.getSenderKey('channel-1', 'user-1', 'device-1')).toBeNull()
 
     store.close()
   })
@@ -261,5 +316,49 @@ describe('KeyStore backup', () => {
     const store = new KeyStore(join(tempDir, 'keys.db'), new Uint8Array(encryptionKey))
     expect(() => store.importBackupBlob(new Uint8Array(0))).toThrow()
     store.close()
+  })
+
+  // TESTSPEC: KS-008
+  it('export_import_backup: exported blob restores all data in a new keystore', async () => {
+    const dbPath1 = join(tempDir, 'backup-src.db')
+    const store1 = new KeyStore(dbPath1, new Uint8Array(encryptionKey))
+
+    // Populate with keys and sessions
+    const masterKP = await generateMasterVerifyKeyPair()
+    store1.storeMasterVerifyKeyPair(masterKP)
+
+    const sessionData = randomBytes(128)
+    store1.storeSession('user-1', 'device-1', { data: sessionData })
+
+    const senderKeyData = randomBytes(64)
+    store1.storeSenderKey('channel-1', 'user-1', 'device-1', { data: senderKeyData })
+
+    // Export backup blob
+    const blob = store1.exportBackupBlob()
+    expect(blob).toBeInstanceOf(Uint8Array)
+    expect(blob.byteLength).toBeGreaterThan(0)
+    store1.close()
+
+    // Create a new keystore and import the backup
+    const dbPath2 = join(tempDir, 'backup-dst.db')
+    const store2 = new KeyStore(dbPath2, new Uint8Array(encryptionKey))
+    store2.importBackupBlob(blob)
+
+    // Verify master key pair is restored
+    const restoredMaster = store2.getMasterVerifyKeyPair()
+    expect(restoredMaster.publicKey).toEqual(masterKP.publicKey)
+    expect(restoredMaster.privateKey).toEqual(masterKP.privateKey)
+
+    // Verify session is restored
+    const restoredSession = store2.getSession('user-1', 'device-1')
+    expect(restoredSession).not.toBeNull()
+    expect(restoredSession!.data).toEqual(sessionData)
+
+    // Verify sender key is restored
+    const restoredSenderKey = store2.getSenderKey('channel-1', 'user-1', 'device-1')
+    expect(restoredSenderKey).not.toBeNull()
+    expect(restoredSenderKey!.data).toEqual(senderKeyData)
+
+    store2.close()
   })
 })

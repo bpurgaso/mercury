@@ -12,6 +12,7 @@ beforeAll(async () => {
 })
 
 describe('generateMasterVerifyKeyPair', () => {
+  // TESTSPEC: CC-001
   it('generates a valid Ed25519 signing keypair', async () => {
     const kp = await generateMasterVerifyKeyPair()
 
@@ -29,6 +30,7 @@ describe('generateMasterVerifyKeyPair', () => {
 })
 
 describe('generateDeviceIdentityKeyPair', () => {
+  // TESTSPEC: CC-002
   it('generates a valid Ed25519 signing keypair', async () => {
     const kp = await generateDeviceIdentityKeyPair()
 
@@ -40,6 +42,7 @@ describe('generateDeviceIdentityKeyPair', () => {
 })
 
 describe('generateSignedPreKey', () => {
+  // TESTSPEC: CC-003
   it('generates a signed X25519 pre-key that verifies with the identity key', async () => {
     const identityKey = await generateMasterVerifyKeyPair()
     const spk = await generateSignedPreKey(identityKey)
@@ -70,6 +73,7 @@ describe('generateSignedPreKey', () => {
 })
 
 describe('generateOneTimePreKeys', () => {
+  // TESTSPEC: CC-004
   it('generates a batch of 100 unique X25519 keypairs with sequential IDs', async () => {
     const prekeys = await generateOneTimePreKeys(0, 100)
 

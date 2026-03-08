@@ -101,6 +101,7 @@ test.describe('Private channel E2E', () => {
   // ─── Channel creation with encryption mode ──────────────────────────
 
   test.describe('Channel creation with encryption mode', () => {
+    // TESTSPEC: E2E-008
     test('Owner creates a private channel via Create Channel modal', async () => {
       // Launch and register Alice and Bob
       ;[alice, bob] = await Promise.all([
@@ -186,6 +187,7 @@ test.describe('Private channel E2E', () => {
   // ─── Private channel message round-trip ─────────────────────────────
 
   test.describe('Private channel message round-trip', () => {
+    // TESTSPEC: E2E-009
     test('Alice sends message in private channel → Bob receives and sees it', async () => {
       // Alice selects the private channel
       await alice.page.getByRole('button', { name: /secret-room/ }).click()

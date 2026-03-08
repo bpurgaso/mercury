@@ -16,6 +16,7 @@ import { tmpdir } from 'os'
 
 const MEMORY_TARGET_MB = 300
 
+// TESTSPEC: PERF-005
 test('memory usage at idle < 300 MB', async () => {
   const userDataDir = mkdtempSync(join(tmpdir(), 'mercury-bench-memory-'))
 

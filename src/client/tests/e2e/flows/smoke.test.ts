@@ -54,6 +54,7 @@ test('launch app shows login screen', async () => {
   await expect(page.getByRole('button', { name: 'Register' })).toBeVisible()
 })
 
+// TESTSPEC: E2E-001
 test('register new account and land on main UI', async () => {
   // Switch to register form
   await page.getByRole('button', { name: 'Register' }).click()
@@ -72,6 +73,7 @@ test('register new account and land on main UI', async () => {
   await expect(page.getByTitle('Create Server')).toBeVisible({ timeout: 10000 })
 })
 
+// TESTSPEC: E2E-006
 test('create server and it appears in sidebar', async () => {
   // Click the + button to create a server
   await page.getByTitle('Create Server').click()
@@ -102,6 +104,7 @@ test('create channel and it appears in channel list', async () => {
   await expect(page.getByRole('button', { name: /test-channel/ })).toBeVisible({ timeout: 5000 })
 })
 
+// TESTSPEC: E2E-012
 test('type and send message, it appears in chat', async () => {
   // Click on the channel in the channel list to select it
   await page.getByRole('button', { name: /test-channel/ }).click()

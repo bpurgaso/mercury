@@ -194,7 +194,8 @@ impl TestClientExt for common::TestClient {
 //  Block Tests
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: API-059, API-060
+// TESTSPEC: API-059
+// TESTSPEC: API-060
 #[test]
 fn test_block_user_and_list() {
     let srv = server();
@@ -302,7 +303,8 @@ fn test_dm_policy_set() {
 //  Ban Tests
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: API-063, API-072
+// TESTSPEC: API-063
+// TESTSPEC: API-072
 #[test]
 fn test_ban_user_and_access_denied() {
     let srv = server();
@@ -558,7 +560,8 @@ fn test_kick_owner_rejected() {
 //  Channel Mute Tests
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: API-071, WS-021
+// TESTSPEC: API-071
+// TESTSPEC: WS-021
 #[test]
 fn test_channel_mute_blocks_messages() {
     let srv = server();
@@ -640,7 +643,9 @@ fn test_channel_mute_blocks_messages() {
 //  Moderator Promotion/Demotion Tests
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: API-064, API-068, API-071
+// TESTSPEC: API-064
+// TESTSPEC: API-068
+// TESTSPEC: API-071
 #[test]
 fn test_moderator_can_ban_kick_mute() {
     let srv = server();

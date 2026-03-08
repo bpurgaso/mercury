@@ -509,7 +509,8 @@ fn test_delete_channel_non_owner_forbidden() {
 //  5c. Messages — send via WebSocket, receive, and history
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: WS-009, WS-010
+// TESTSPEC: WS-009
+// TESTSPEC: WS-010
 #[test]
 fn test_message_send_and_receive() {
     let srv = server();

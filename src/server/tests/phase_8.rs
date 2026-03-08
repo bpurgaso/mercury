@@ -435,7 +435,8 @@ fn test_ice_candidate_relay() {
 //  Test 5: CALL_CONFIG includes TURN credentials and simulcast
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: WS-017, MEDIA-004
+// TESTSPEC: WS-017
+// TESTSPEC: MEDIA-004
 #[test]
 fn test_call_config_turn_credentials() {
     let srv = server();
@@ -518,7 +519,8 @@ fn test_call_config_turn_credentials() {
 //  Test 6: POST /calls — creates room, returns call info
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: WS-017, MEDIA-001
+// TESTSPEC: WS-017
+// TESTSPEC: MEDIA-001
 #[test]
 fn test_post_calls() {
     let srv = server();
@@ -557,7 +559,8 @@ fn test_post_calls() {
 //  Test 7: GET /calls/:id — returns participants and status
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: MEDIA-001, MEDIA-002
+// TESTSPEC: MEDIA-001
+// TESTSPEC: MEDIA-002
 #[test]
 fn test_get_call() {
     let srv = server();
@@ -781,7 +784,8 @@ fn test_room_cleanup() {
 //  Test 11: Multiple rooms — two channels, independent calls
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: MEDIA-001, MEDIA-002
+// TESTSPEC: MEDIA-001
+// TESTSPEC: MEDIA-002
 #[test]
 fn test_multiple_rooms() {
     let srv = server();
@@ -852,7 +856,8 @@ fn test_multiple_rooms() {
 //  Test 12: DM call — voice_state_update with DM channel
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: WS-015, WS-017
+// TESTSPEC: WS-015
+// TESTSPEC: WS-017
 #[test]
 fn test_dm_call() {
     let srv = server();
@@ -937,7 +942,8 @@ fn test_dm_call() {
 //  Test 13: Disconnect triggers leave_all and room cleanup
 // ────────────────────────────────────────────────────────────
 
-// TESTSPEC: WS-015, MEDIA-001
+// TESTSPEC: WS-015
+// TESTSPEC: MEDIA-001
 #[test]
 fn test_disconnect_triggers_leave() {
     let srv = server();

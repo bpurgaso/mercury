@@ -81,6 +81,7 @@ async function createTestWorker(): Promise<TestWorker> {
 
 // --- Tests ---
 
+// TESTSPEC: CI-001
 describe('Crypto Worker Thread MessagePort', () => {
   it('sends ping via parentPort and receives pong (simulates Main↔Worker bridge)', async () => {
     if (!WORKER_EXISTS) return

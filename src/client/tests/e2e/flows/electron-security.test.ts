@@ -42,6 +42,8 @@ test.afterAll(async () => {
   rmSync(userDataDir, { recursive: true, force: true })
 })
 
+// TESTSPEC: SEC-008
+// TESTSPEC: SEC-009
 test('nodeIntegration is false and contextIsolation is true', async () => {
   // Inspect webPreferences from the main process via Electron's evaluate API
   const prefs = await app.evaluate(({ BrowserWindow }) => {
@@ -60,6 +62,7 @@ test('nodeIntegration is false and contextIsolation is true', async () => {
   expect(prefs.sandbox).toBe(true)
 })
 
+// TESTSPEC: SEC-007
 test('CSP header is present in responses', async () => {
   // Check that CSP is set by evaluating the document's security policy
   const csp = await page.evaluate(() => {

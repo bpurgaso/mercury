@@ -385,7 +385,8 @@ fn test_claim_otp_exhaustion() {
     });
 }
 
-// TESTSPEC: API-044, SEC-003
+// TESTSPEC: API-044
+// TESTSPEC: SEC-003
 #[test]
 fn test_claim_otp_no_duplicate() {
     let srv = server();

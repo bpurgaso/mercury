@@ -603,6 +603,93 @@ describe('Key generation and serialization', () => {
 })
 
 // ============================================================
+// TESTSPEC Tests: CC-028 through CC-031
+// ============================================================
+
+// TESTSPEC: CC-028
+describe('media_frame_encrypt_decrypt', () => {
+  it('encrypts a mock audio frame and decrypts back to original', async () => {
+    const keyRing = new MediaKeyRing()
+    const key = await makeTestKey()
+    keyRing.setInitialKey(key, 0)
+
+    const originalData = new Uint8Array([1, 2, 3, 4, 5])
+
+    const encrypted = await encryptFrameData(keyRing, originalData.buffer)
+    expect(encrypted).not.toBeNull()
+
+    const decrypted = await decryptFrameData(keyRing, encrypted!)
+    expect(decrypted).not.toBeNull()
+    expect(new Uint8Array(decrypted!)).toEqual(originalData)
+
+    keyRing.destroy()
+  })
+})
+
+// TESTSPEC: CC-029
+describe('media_epoch_tagging', () => {
+  it('frames at epoch=1 get epoch=1 tag, after rotation to epoch=2 frames get epoch=2', async () => {
+    const keyRing = new MediaKeyRing()
+    const key0 = await makeTestKey()
+    keyRing.setInitialKey(key0, 0)
+
+    // Rotate to epoch 1
+    const key1 = await makeTestKey()
+    keyRing.rotateKey(key1)
+    expect(keyRing.currentEpoch).toBe(1)
+
+    // Encrypt at epoch 1
+    const frame1 = await encryptFrameData(keyRing, new Uint8Array([10, 20]).buffer)
+    expect(frame1).not.toBeNull()
+    expect(new Uint8Array(frame1!)[0]).toBe(1)
+
+    // Rotate to epoch 2
+    const key2 = await makeTestKey()
+    keyRing.rotateKey(key2)
+    expect(keyRing.currentEpoch).toBe(2)
+
+    // Encrypt at epoch 2
+    const frame2 = await encryptFrameData(keyRing, new Uint8Array([30, 40]).buffer)
+    expect(frame2).not.toBeNull()
+    expect(new Uint8Array(frame2!)[0]).toBe(2)
+
+    keyRing.destroy()
+  })
+})
+
+// TESTSPEC: CC-030
+describe('media_key_ring_rotation', () => {
+  it('after rotation, old key accessible within timeout, new key is current', async () => {
+    vi.useFakeTimers()
+
+    const keyRing = new MediaKeyRing()
+    const key0 = await makeTestKey()
+    keyRing.setInitialKey(key0, 0)
+
+    const key1 = await makeTestKey()
+    keyRing.rotateKey(key1)
+
+    // getKeyForEpoch(0) returns old key (within timeout)
+    expect(keyRing.getKeyForEpoch(0)).toBe(key0)
+    // getKeyForEpoch(1) returns current key
+    expect(keyRing.getKeyForEpoch(1)).toBe(key1)
+    expect(keyRing.currentKey).toBe(key1)
+
+    vi.useRealTimers()
+    keyRing.destroy()
+  })
+})
+
+// TESTSPEC: CC-031
+describe('media_key_unknown_epoch', () => {
+  it('getKeyForEpoch(99) on fresh key ring returns null', () => {
+    const keyRing = new MediaKeyRing()
+    expect(keyRing.getKeyForEpoch(99)).toBeNull()
+    keyRing.destroy()
+  })
+})
+
+// ============================================================
 // Key Distribution Scenarios
 // ============================================================
 

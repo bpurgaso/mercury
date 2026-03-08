@@ -40,8 +40,10 @@ impl TestServer {
             .unwrap_or_else(|_| {
                 "postgres://mercury:mercury@localhost:5432/mercury_test".to_string()
             });
+        // Use Redis DB 15 for tests to avoid destroying developer data on the default DB 0.
+        // XC-003: flushdb on DB 15 is safe; flushall on DB 0 could destroy unrelated data.
         let redis_url = std::env::var("MERCURY_REDIS_URL")
-            .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+            .unwrap_or_else(|_| "redis://localhost:6379/15".to_string());
 
         let config = AppConfig {
             server: ServerConfig {
@@ -191,12 +193,13 @@ pub async fn setup(server: &TestServer) {
         }
     }
 
-    // Flush all Redis keys
+    // Flush test Redis database only (not all databases)
+    // XC-003: Use flushdb instead of flushall to avoid destroying developer data
     let _: () = server
         .redis
-        .flushall::<()>(false)
+        .flushdb::<()>(false)
         .await
-        .expect("failed to flush Redis");
+        .expect("failed to flush Redis test database");
 }
 
 // ── TestClient (HTTP) ───────────────────────────────────────

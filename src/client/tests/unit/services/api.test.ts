@@ -33,6 +33,7 @@ describe('API client', () => {
     vi.restoreAllMocks()
   })
 
+  // TESTSPEC: RC-001
   it('injects Authorization header', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -46,6 +47,7 @@ describe('API client', () => {
     expect(options.headers.Authorization).toBe('Bearer current-access-token')
   })
 
+  // TESTSPEC: RC-002
   it('401 triggers refresh and retries the request', async () => {
     // First call: 401
     mockFetch.mockResolvedValueOnce({
@@ -77,6 +79,7 @@ describe('API client', () => {
     expect(result).toEqual([{ id: 's1', name: 'Server 1' }])
   })
 
+  // TESTSPEC: RC-003
   it('401 with failed refresh calls onAuthFailed', async () => {
     // First call: 401
     mockFetch.mockResolvedValueOnce({

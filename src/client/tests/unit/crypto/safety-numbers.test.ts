@@ -7,6 +7,7 @@ beforeAll(async () => {
 })
 
 describe('generateSafetyNumber', () => {
+  // TESTSPEC: CC-026 safety_number_format
   it('produces a string of 12 groups of 5 digits separated by spaces', () => {
     const aliceMVK = generateEd25519KeyPair()
     const bobMVK = generateEd25519KeyPair()
@@ -20,6 +21,7 @@ describe('generateSafetyNumber', () => {
     }
   })
 
+  // TESTSPEC: CC-027 safety_number_commutative
   it('Alice and Bob compute identical safety numbers regardless of order', () => {
     const aliceMVK = generateEd25519KeyPair()
     const bobMVK = generateEd25519KeyPair()

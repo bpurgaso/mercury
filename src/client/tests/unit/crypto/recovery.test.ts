@@ -13,6 +13,7 @@ beforeAll(async () => {
   await ensureSodium()
 })
 
+// TESTSPEC: CC-020 recovery_key_generate
 describe('generateRecoveryKey', () => {
   it('generates 32 bytes of randomness', async () => {
     const key = await generateRecoveryKey()
@@ -27,6 +28,7 @@ describe('generateRecoveryKey', () => {
   })
 })
 
+// TESTSPEC: CC-021 mnemonic_encode_decode
 describe('encodeMnemonic', () => {
   it('produces exactly 24 words', () => {
     const entropy = randomBytes(32)
@@ -56,6 +58,7 @@ describe('encodeMnemonic', () => {
   })
 })
 
+// TESTSPEC: CC-022 mnemonic_decode_round_trip
 describe('decodeMnemonic', () => {
   it('round-trips: encode → decode produces identical bytes', () => {
     const entropy = randomBytes(32)
@@ -110,6 +113,7 @@ describe('decodeMnemonic', () => {
   })
 })
 
+// TESTSPEC: CC-023 backup_key_derivation
 describe('deriveBackupEncryptionKey', () => {
   it('derives a 32-byte key', () => {
     const recoveryKey = randomBytes(32)

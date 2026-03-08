@@ -170,6 +170,7 @@ test.afterAll(async () => {
 // --- Tests ---
 
 test.describe('Voice channel — two users', () => {
+  // TESTSPEC: E2E-023
   test('two users join voice channel: both see each other, audio bytes flow', async () => {
     // User1 joins the voice channel
     const voiceChannelBtn = user1.page.getByTestId(/voice-channel-/)
@@ -195,6 +196,7 @@ test.describe('Voice channel — two users', () => {
     expect(stats!.audioBytesSent).toBeGreaterThan(0)
   })
 
+  // TESTSPEC: E2E-024
   test('mute: audio bytes stop flowing after mute', async () => {
     const muteBtn = user1.page.getByTestId('voice-mute-btn')
     if (!(await muteBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
@@ -232,6 +234,7 @@ test.describe('Voice channel — two users', () => {
     await muteBtn.click()
   })
 
+  // TESTSPEC: E2E-025
   test('deafen: also mutes self, remote audio tracks disabled', async () => {
     const deafenBtn = user1.page.getByTestId('voice-deafen-btn')
     if (!(await deafenBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
@@ -267,6 +270,7 @@ test.describe('Voice channel — two users', () => {
     await deafenBtn.click()
   })
 
+  // TESTSPEC: E2E-026
   test('camera: video tile appears for other user, video bytes flow', async () => {
     const cameraBtn = user1.page.getByTestId('voice-camera-btn')
     if (!(await cameraBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
@@ -300,6 +304,7 @@ test.describe('Voice channel — two users', () => {
 })
 
 test.describe('Key rotation on participant changes', () => {
+  // TESTSPEC: E2E-027
   test('third user joins → key rotation occurs, all three have audio', async () => {
     // Create a third user
     user3 = await createUser('charlie')
@@ -335,6 +340,7 @@ test.describe('Key rotation on participant changes', () => {
     expect(statsAfter!.audioBytesSent).toBeGreaterThan(0)
   })
 
+  // TESTSPEC: E2E-028
   test('user leaves → remaining users still have audio bytes flowing', async () => {
     const voicePanel = user1.page.getByTestId('voice-panel')
     if (!(await voicePanel.isVisible({ timeout: 3000 }).catch(() => false))) {
@@ -354,6 +360,7 @@ test.describe('Key rotation on participant changes', () => {
 })
 
 test.describe('Disconnect and cleanup', () => {
+  // TESTSPEC: E2E-029
   test('disconnect button → user leaves call, voice panel disappears', async () => {
     const voicePanel = user1.page.getByTestId('voice-panel')
     if (!(await voicePanel.isVisible({ timeout: 3000 }).catch(() => false))) {

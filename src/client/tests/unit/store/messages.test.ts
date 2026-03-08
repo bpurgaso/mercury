@@ -302,6 +302,71 @@ describe('MessageStore persistence', () => {
   })
 })
 
+// TESTSPEC: KS-009
+describe('MessageStore E2E message store and retrieve', () => {
+  it('stores an E2E message and retrieves it by channel_id with matching content', () => {
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
+    const now = Date.now()
+
+    store.insertMessage({
+      id: 'e2e-msg-1',
+      channelId: 'encrypted-channel-1',
+      senderId: 'user-sender',
+      content: 'This is an end-to-end encrypted message',
+      createdAt: now,
+      receivedAt: now,
+    })
+
+    const messages = store.getMessagesByChannel('encrypted-channel-1')
+    expect(messages.length).toBe(1)
+    expect(messages[0].id).toBe('e2e-msg-1')
+    expect(messages[0].content).toBe('This is an end-to-end encrypted message')
+    expect(messages[0].senderId).toBe('user-sender')
+    expect(messages[0].channelId).toBe('encrypted-channel-1')
+
+    store.close()
+  })
+})
+
+// TESTSPEC: KS-010
+describe('MessageStore messages_db_pagination', () => {
+  it('50 messages retrieved with limit=20 returns correct count', () => {
+    const store = new MessageStore(join(tempDir, 'messages.db'), new Uint8Array(encryptionKey))
+    const now = Date.now()
+
+    // Insert 50 messages
+    for (let i = 0; i < 50; i++) {
+      store.insertMessage({
+        id: `pagination-msg-${i}`,
+        channelId: 'paginated-channel',
+        senderId: 'user-1',
+        content: `message ${i}`,
+        createdAt: now + i,
+        receivedAt: now,
+      })
+    }
+
+    // Retrieve with limit=20
+    const page1 = store.getMessagesByChannel('paginated-channel', 20, 0)
+    expect(page1.length).toBe(20)
+    expect(page1[0].content).toBe('message 0')
+    expect(page1[19].content).toBe('message 19')
+
+    // Retrieve next page (cursor = offset 20)
+    const page2 = store.getMessagesByChannel('paginated-channel', 20, 20)
+    expect(page2.length).toBe(20)
+    expect(page2[0].content).toBe('message 20')
+    expect(page2[19].content).toBe('message 39')
+
+    // Retrieve last page (only 10 remaining)
+    const page3 = store.getMessagesByChannel('paginated-channel', 20, 40)
+    expect(page3.length).toBe(10)
+    expect(page3[0].content).toBe('message 40')
+
+    store.close()
+  })
+})
+
 // ── KS-011: messages_db_encrypted_at_rest ─────────────────
 
 // TESTSPEC: KS-011

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { encode } from '@msgpack/msgpack'
 import { calculateBackoff, WebSocketManager } from '../../../src/renderer/services/websocket'
 
 // ── Mock WebSocket ────────────────────────────────────────
@@ -331,6 +332,7 @@ describe('WebSocketManager resume', () => {
 
 // TESTSPEC: WSM-009
 describe('WebSocketManager event dispatch', () => {
+  // TESTSPEC: WSM-011
   it('dispatches typed events to registered listeners', async () => {
     const mgr = new WebSocketManager()
     const received: unknown[] = []
@@ -389,6 +391,60 @@ describe('WebSocketManager event dispatch', () => {
 
     ws._receive(JSON.stringify({ t: 'PRESENCE_UPDATE', d: { user_id: 'u2', status: 'online' }, seq: 3 }))
     expect(received).toHaveLength(1) // Still 1 — unsubscribed
+
+    mgr.disconnect()
+  })
+})
+
+// ── WSM-010: msgpack_binary_decode ────────────────────────
+
+// TESTSPEC: WSM-010
+describe('WebSocketManager binary frame decode (msgpack)', () => {
+  it('decodes incoming binary (msgpack) frame and dispatches event', async () => {
+    const mgr = new WebSocketManager()
+    const received: unknown[] = []
+
+    mgr.on('MESSAGE_CREATE', (data) => {
+      received.push(data)
+    })
+
+    mgr.connect('test-token')
+    await flushTimers()
+
+    const ws = lastMockWs!
+
+    // Establish session
+    ws._receive(JSON.stringify({
+      t: 'READY',
+      d: { session_id: 'sess-msgpack', heartbeat_interval: 30 },
+      seq: 1,
+    }))
+    expect(mgr.getState()).toBe('CONNECTED')
+
+    // Build a msgpack-encoded MESSAGE_CREATE event
+    const eventPayload = {
+      t: 'MESSAGE_CREATE',
+      d: {
+        id: 'msg-bin-1',
+        channel_id: 'ch-bin',
+        sender_id: 'user-bin',
+        content: 'Hello from binary!',
+      },
+      seq: 2,
+    }
+    const packed = encode(eventPayload)
+    // Create a standalone ArrayBuffer (encode may return a view into a larger buffer)
+    const arrayBuffer = packed.slice().buffer as ArrayBuffer
+
+    // Simulate receiving a binary frame
+    ws._receiveBinary(arrayBuffer)
+
+    // Verify the event was dispatched to the listener
+    expect(received).toHaveLength(1)
+    expect(received[0]).toEqual(eventPayload.d)
+
+    // Verify sequence number was updated
+    expect(mgr.getSeq()).toBe(2)
 
     mgr.disconnect()
   })
@@ -493,6 +549,7 @@ describe('WebSocket reconnection backoff', () => {
     expect(avg).toBeLessThan(1300)
   })
 
+  // TESTSPEC: WSM-004
   it('grows exponentially: attempt 0 < attempt 1 < attempt 2', () => {
     const avg = (attempt: number) => {
       const samples = Array.from({ length: 200 }, () => calculateBackoff(attempt))
@@ -516,6 +573,7 @@ describe('WebSocket reconnection backoff', () => {
     }
   })
 
+  // TESTSPEC: WSM-005
   it('applies jitter within +/-20% bounds', () => {
     // At attempt 0, base is 1000ms. +/-20% -> [800, 1200]
     for (let i = 0; i < 200; i++) {

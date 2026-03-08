@@ -13,6 +13,7 @@ import { tmpdir } from 'os'
 const LAUNCH_TARGET_MS = 3000
 const RUNS = 3
 
+// TESTSPEC: PERF-004
 test('app launch to login screen < 3 seconds', async () => {
   const times: number[] = []
 

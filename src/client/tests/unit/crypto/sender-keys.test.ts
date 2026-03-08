@@ -59,6 +59,7 @@ function encryptMany(
   return { senderKey: current, messages }
 }
 
+// TESTSPEC: CC-014 sender_key_generate_distribute
 describe('Basic group send/receive', () => {
   it('Alice generates, distributes to Bob and Carol, all decrypt', () => {
     // Set up DR sessions: Alice↔Bob and Alice↔Carol
@@ -120,6 +121,7 @@ describe('Basic group send/receive', () => {
   })
 })
 
+// TESTSPEC: CC-015 sender_key_chain_ratchet
 describe('Chain ratchet', () => {
   it('Alice sends 5 messages, Bob decrypts all, each uses different message key', () => {
     const ab = setupDRPair()
@@ -185,6 +187,7 @@ describe('Chain ratchet', () => {
   })
 })
 
+// TESTSPEC: CC-016 sender_key_out_of_order
 describe('Out-of-order delivery', () => {
   it('deliver message 4 first, then 0-3', () => {
     const ab = setupDRPair()
@@ -252,6 +255,7 @@ describe('Out-of-order delivery', () => {
   })
 })
 
+// TESTSPEC: CC-017 sender_key_lazy_rotation
 describe('Lazy rotation on member removal', () => {
   it('full lazy rotation flow: remove Carol, Alice rotates on next send', () => {
     // --- Setup: 3-member channel at epoch 0 ---
@@ -344,6 +348,7 @@ describe('Lazy rotation on member removal', () => {
   })
 })
 
+// TESTSPEC: CC-018 sender_key_epoch_validation
 describe('Epoch validation', () => {
   it('rejects message with epoch below minEpoch', () => {
     const ab = setupDRPair()
@@ -621,6 +626,7 @@ describe('Self-echo behavior', () => {
   })
 })
 
+// TESTSPEC: CC-019 sender_key_forward_secrecy
 describe('New member forward secrecy', () => {
   it('new joiner cannot decrypt pre-join messages', () => {
     // Alice sends messages at epoch 0. Dave joins later and receives

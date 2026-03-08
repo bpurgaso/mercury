@@ -6,7 +6,8 @@ use serde_json::json;
 use std::time::Duration;
 
 /// GET /metrics returns 200 and contains expected metric names.
-// TESTSPEC: API-086, API-087
+// TESTSPEC: API-086
+// TESTSPEC: API-087
 #[tokio::test]
 async fn test_metrics_endpoint() {
     let server = TestServer::start().await;
@@ -151,7 +152,8 @@ async fn test_metrics_after_message_send() {
 }
 
 /// GET /health returns JSON with all expected fields.
-// TESTSPEC: API-083, API-085
+// TESTSPEC: API-083
+// TESTSPEC: API-085
 #[tokio::test]
 async fn test_health_check_json() {
     let server = TestServer::start().await;
@@ -192,7 +194,8 @@ async fn test_health_check_degraded_turn() {
 }
 
 /// Security headers are present on all responses.
-// TESTSPEC: API-089, SEC-015
+// TESTSPEC: API-089
+// TESTSPEC: SEC-015
 #[tokio::test]
 async fn test_security_headers() {
     let server = TestServer::start().await;

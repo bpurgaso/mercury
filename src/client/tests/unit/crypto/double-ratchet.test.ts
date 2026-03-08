@@ -55,6 +55,7 @@ function sendMany(
 }
 
 describe('Basic send/receive', () => {
+  // TESTSPEC: CC-008
   it('Alice sends 10 messages, Bob decrypts all in order', () => {
     let { aliceSession, bobSession } = setupSessions()
 
@@ -87,6 +88,7 @@ describe('Basic send/receive', () => {
 })
 
 describe('Bidirectional messaging', () => {
+  // TESTSPEC: CC-009
   it('Alice sends 3, Bob replies 3, Alice sends 3', () => {
     let { aliceSession, bobSession } = setupSessions()
     const results: string[] = []
@@ -160,6 +162,7 @@ describe('Bidirectional messaging', () => {
 })
 
 describe('Out-of-order delivery', () => {
+  // TESTSPEC: CC-010
   it('Alice sends 5, Bob receives in order 4,2,0,3,1', () => {
     const { aliceSession, bobSession } = setupSessions()
     const { messages } = sendMany(aliceSession, 5)
@@ -225,6 +228,7 @@ describe('Skipped key limit', () => {
     )
   })
 
+  // TESTSPEC: CC-011
   it('evicts oldest skipped keys when total exceeds 1000', () => {
     let { aliceSession, bobSession } = setupSessions()
 
@@ -267,6 +271,7 @@ describe('Skipped key limit', () => {
 })
 
 describe('Persistence round-trip', () => {
+  // TESTSPEC: CC-013
   it('serialized session continues encrypting/decrypting', () => {
     let { aliceSession, bobSession } = setupSessions()
 
@@ -361,6 +366,7 @@ describe('Wrong session', () => {
 })
 
 describe('Forward secrecy', () => {
+  // TESTSPEC: CC-012
   it('same message cannot be decrypted twice with updated session', () => {
     const { aliceSession, bobSession } = setupSessions()
 
