@@ -3,9 +3,10 @@ import { useAuthStore } from '../stores/authStore'
 
 interface RegisterPageProps {
   onSwitchToLogin: () => void
+  onChangeServer: () => void
 }
 
-export function RegisterPage({ onSwitchToLogin }: RegisterPageProps): React.ReactElement {
+export function RegisterPage({ onSwitchToLogin, onChangeServer }: RegisterPageProps): React.ReactElement {
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -94,6 +95,15 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps): React.Reac
             className="text-text-link hover:underline"
           >
             Log In
+          </button>
+        </p>
+
+        <p className="mt-2 text-center text-sm">
+          <button
+            onClick={onChangeServer}
+            className="text-text-muted hover:text-text-primary hover:underline"
+          >
+            Change server
           </button>
         </p>
       </div>

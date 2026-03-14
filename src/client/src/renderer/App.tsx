@@ -9,7 +9,9 @@ import { wsManager } from './services/websocket'
 import { initCryptoPort } from './services/crypto'
 import { LoginPage } from './pages/LoginPage'
 import { RegisterPage } from './pages/RegisterPage'
+import { ServerConnectPage } from './pages/ServerConnectPage'
 import { ServerPage } from './pages/ServerPage'
+import { clearConfiguredServerUrl, clearServerState } from './services/serverUrl'
 import type {
   ReadyEvent, MessageCreateEvent, PresenceUpdateEvent,
   ChannelCreateEvent, ChannelUpdateEvent, ChannelDeleteEvent,
@@ -19,11 +21,11 @@ import type {
 } from './types/ws'
 import { cryptoService } from './services/crypto'
 
-type AuthView = 'login' | 'register'
+type AppView = 'connect' | 'login' | 'register'
 
 export function App(): React.ReactElement {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
-  const [authView, setAuthView] = useState<AuthView>('login')
+  const [appView, setAppView] = useState<AppView>('login')
 
   // Initialize crypto port and hydrate auth state on mount
   useEffect(() => {
@@ -206,12 +208,40 @@ export function App(): React.ReactElement {
     }
   }, [])
 
-  if (!isAuthenticated) {
-    if (authView === 'register') {
-      return <RegisterPage onSwitchToLogin={() => setAuthView('login')} />
-    }
-    return <LoginPage onSwitchToRegister={() => setAuthView('register')} />
+  const handleChangeServer = () => {
+    wsManager.disconnect()
+    clearServerState()
+    clearConfiguredServerUrl()
+    useAuthStore.setState({
+      user: null,
+      accessToken: null,
+      refreshToken: null,
+      isAuthenticated: false,
+      error: null,
+    })
+    setAppView('connect')
   }
 
-  return <ServerPage />
+  if (appView === 'connect') {
+    return <ServerConnectPage onConnected={() => setAppView('login')} />
+  }
+
+  if (!isAuthenticated) {
+    if (appView === 'register') {
+      return (
+        <RegisterPage
+          onSwitchToLogin={() => setAppView('login')}
+          onChangeServer={handleChangeServer}
+        />
+      )
+    }
+    return (
+      <LoginPage
+        onSwitchToRegister={() => setAppView('register')}
+        onChangeServer={handleChangeServer}
+      />
+    )
+  }
+
+  return <ServerPage onChangeServer={handleChangeServer} />
 }

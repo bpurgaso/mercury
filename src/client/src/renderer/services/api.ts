@@ -29,7 +29,7 @@ import type {
   UserModerationMetadataResponse,
 } from '../types/api'
 
-const SERVER_URL = (import.meta as unknown as { env: Record<string, string | undefined> }).env.VITE_SERVER_URL || 'https://localhost:8443'
+import { getConfiguredServerUrl } from './serverUrl'
 
 type TokenProvider = {
   getAccessToken: () => string | null
@@ -51,7 +51,7 @@ async function request<T>(
   options: RequestInit = {},
   retry = true
 ): Promise<T> {
-  const url = `${SERVER_URL}${path}`
+  const url = `${getServerUrl()}${path}`
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
@@ -112,7 +112,7 @@ async function doRefresh(): Promise<boolean> {
   if (!refreshToken) return false
 
   try {
-    const response = await fetch(`${SERVER_URL}/auth/refresh`, {
+    const response = await fetch(`${getServerUrl()}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
@@ -414,5 +414,5 @@ export const moderation = {
 }
 
 export function getServerUrl(): string {
-  return SERVER_URL
+  return getConfiguredServerUrl()
 }

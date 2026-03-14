@@ -20,7 +20,11 @@ import { ReportDialog } from '../components/moderation/ReportDialog'
 import { ModerationDashboard } from '../components/moderation/ModerationDashboard'
 import { wsManager } from '../services/websocket'
 
-export function ServerPage(): React.ReactElement {
+interface ServerPageProps {
+  onChangeServer: () => void
+}
+
+export function ServerPage({ onChangeServer }: ServerPageProps): React.ReactElement {
   const activeServerId = useServerStore((s) => s.activeServerId)
   const activeChannelId = useServerStore((s) => s.activeChannelId)
   const channels = useServerStore((s) => s.channels)
@@ -161,7 +165,7 @@ export function ServerPage(): React.ReactElement {
       {/* Channel/DM list (middle) + persistent VoicePanel */}
       <div className="flex h-full w-60 flex-col">
         <div className="flex-1 overflow-hidden">
-          {isDmView ? <DmList /> : <ChannelList onOpenDashboard={() => setShowModerationDashboard(true)} />}
+          {isDmView ? <DmList /> : <ChannelList onOpenDashboard={() => setShowModerationDashboard(true)} onChangeServer={onChangeServer} />}
         </div>
         <VoicePanel />
       </div>
