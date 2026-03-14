@@ -638,6 +638,9 @@ Location: `src/client/tests/e2e/flows/` (existing files: `smoke.test.ts`, `dm-me
 | E2E-027 | `leave_voice` | e2e | Leave → removed from list. |
 | E2E-028 | `key_rotation_on_join` | e2e | A+B in call. C joins → key_epoch increments. |
 | E2E-029 | `key_rotation_on_leave` | e2e | A+B+C in call. C leaves → key_epoch increments. |
+| E2E-043 | `enable_camera` | e2e | A enables camera → `videoBytesSent > 0`, video-grid and video-tile visible. |
+| E2E-044 | `two_users_video` | e2e | A+B both enable camera → `videoBytesSent > 0` for both, SFU forwards: `videoBytesReceived > 0` bidirectionally. |
+| E2E-045 | `disable_camera` | e2e | A disables camera → video bytes plateau. Audio still flows. |
 
 ### 5.6 Moderation
 

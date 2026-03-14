@@ -290,9 +290,31 @@ export class WebRTCManager {
     this.localVideoTrack = track
 
     if (this.pc) {
-      const sender = this.pc.addTrack(track, stream)
+      let sender: RTCRtpSender
+
+      // Use addTransceiver with sendEncodings for simulcast support.
+      // rid and encoding count must be set at transceiver creation time —
+      // they cannot be modified via setParameters() after the fact.
+      const simulcastLayers = this.callConfig?.video?.simulcastEnabled
+        ? this.callConfig.video.simulcastLayers
+        : null
+
+      if (simulcastLayers && simulcastLayers.length > 1) {
+        const transceiver = this.pc.addTransceiver(track, {
+          streams: [stream],
+          sendEncodings: simulcastLayers.map((layer: SimulcastLayer) => ({
+            rid: layer.rid,
+            maxBitrate: layer.maxBitrateKbps * 1000,
+            scaleResolutionDownBy: layer.scaleDown,
+            active: true,
+          })),
+        })
+        sender = transceiver.sender
+      } else {
+        sender = this.pc.addTrack(track, stream)
+      }
+
       this.applySenderTransform(sender as unknown as RTCRtpSender)
-      await this.configureSimulcast()
 
       // Video add requires renegotiation — serialized through queue
       if (sendSignal) {
@@ -520,25 +542,6 @@ export class WebRTCManager {
         params.encodings = [{}]
       }
       params.encodings[0].maxBitrate = this.callConfig.audio.maxBitrateKbps * 1000
-      await sender.setParameters(params)
-    }
-  }
-
-  private async configureSimulcast(): Promise<void> {
-    if (!this.pc || !this.callConfig?.video?.simulcastEnabled) return
-
-    const layers = this.callConfig.video.simulcastLayers
-    if (!layers || layers.length === 0) return
-
-    for (const sender of this.pc.getSenders()) {
-      if (sender.track?.kind !== 'video') continue
-      const params = sender.getParameters()
-      params.encodings = layers.map((layer: SimulcastLayer) => ({
-        rid: layer.rid,
-        maxBitrate: layer.maxBitrateKbps * 1000,
-        scaleResolutionDownBy: layer.scaleDown,
-        active: true,
-      }))
       await sender.setParameters(params)
     }
   }

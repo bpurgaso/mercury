@@ -32,6 +32,8 @@ async function createUser(suffix: string): Promise<TestUser> {
     args: [
       join(__dirname, '../../../out/main/index.js'),
       `--user-data-dir=${userDataDir}`,
+      '--use-fake-device-for-media-stream',
+      '--use-fake-ui-for-media-stream',
     ],
     env: {
       ...process.env,
@@ -298,6 +300,88 @@ test.describe('Voice channel — two users', () => {
 
     // Undeafen
     await deafenBtn.click()
+  })
+})
+
+test.describe('Video — camera toggle and video flow', () => {
+  // TESTSPEC: E2E-043
+  test('enable camera: video bytes flow and video grid appears', async () => {
+    // Ensure both users are still in the voice call from prior tests
+    await expect(user1.page.getByTestId('voice-panel')).toBeVisible({ timeout: 5000 })
+    await expect(user2.page.getByTestId('voice-panel')).toBeVisible({ timeout: 5000 })
+
+    // User1 enables camera
+    await user1.page.getByTestId('voice-camera-btn').click()
+
+    // Wait for outbound video bytes to flow
+    await waitForOutboundStats(user1.page, (s) => s.videoBytesSent > 0, 20000)
+
+    const stats = await getOutboundStats(user1.page)
+    expect(stats).not.toBeNull()
+    expect(stats!.videoBytesSent).toBeGreaterThan(0)
+
+    // Video grid should be visible with at least one video tile
+    await expect(user1.page.getByTestId('video-grid')).toBeVisible({ timeout: 5000 })
+    await expect(user1.page.getByTestId('video-tile').first()).toBeVisible({ timeout: 5000 })
+  })
+
+  // TESTSPEC: E2E-044
+  test('two users video: both enable camera, video bytes flow bidirectionally', async () => {
+    // User1's camera should still be on from E2E-043
+
+    // User2 enables camera
+    await user2.page.getByTestId('voice-camera-btn').click()
+
+    // Wait for user2 outbound video bytes
+    await waitForOutboundStats(user2.page, (s) => s.videoBytesSent > 0, 20000)
+
+    const user2OutStats = await getOutboundStats(user2.page)
+    expect(user2OutStats).not.toBeNull()
+    expect(user2OutStats!.videoBytesSent).toBeGreaterThan(0)
+
+    // Verify SFU forwards video: user2 should receive user1's video
+    await waitForInboundStats(user2.page, (s) => s.videoBytesReceived > 0, 20000)
+    const user2InStats = await getInboundStats(user2.page)
+    expect(user2InStats).not.toBeNull()
+    expect(user2InStats!.videoBytesReceived).toBeGreaterThan(0)
+
+    // Verify user1 also receives user2's video
+    await waitForInboundStats(user1.page, (s) => s.videoBytesReceived > 0, 20000)
+    const user1InStats = await getInboundStats(user1.page)
+    expect(user1InStats).not.toBeNull()
+    expect(user1InStats!.videoBytesReceived).toBeGreaterThan(0)
+
+    // Both should see the video grid with multiple tiles
+    await expect(user1.page.getByTestId('video-grid')).toBeVisible()
+    await expect(user2.page.getByTestId('video-grid')).toBeVisible()
+  })
+
+  // TESTSPEC: E2E-045
+  test('disable camera: video bytes stop flowing', async () => {
+    // User1 disables camera
+    await user1.page.getByTestId('voice-camera-btn').click()
+
+    // Wait for the disable to take effect and encoding pipeline to drain
+    await user1.page.waitForTimeout(3000)
+
+    // Record video bytes over a 2-second window while camera is off
+    const afterDisable1 = await getOutboundStats(user1.page)
+    await user1.page.waitForTimeout(2000)
+    const afterDisable2 = await getOutboundStats(user1.page)
+
+    expect(afterDisable1).not.toBeNull()
+    expect(afterDisable2).not.toBeNull()
+
+    // Video bytes should plateau (RTCP keepalives may produce minimal bytes)
+    const videoByteDelta = afterDisable2!.videoBytesSent - afterDisable1!.videoBytesSent
+    expect(videoByteDelta).toBeLessThan(5000)
+
+    // Audio should still be flowing (camera off doesn't affect audio)
+    const audioByteDelta = afterDisable2!.audioBytesSent - afterDisable1!.audioBytesSent
+    expect(audioByteDelta).toBeGreaterThan(0)
+
+    // Turn off user2's camera too for clean state
+    await user2.page.getByTestId('voice-camera-btn').click()
   })
 })
 
