@@ -77,13 +77,6 @@ trait TestClientExt {
         token: &str,
         path: &str,
     ) -> impl std::future::Future<Output = reqwest::StatusCode>;
-
-    fn patch_authed_with_token(
-        &self,
-        token: &str,
-        path: &str,
-        body: &Value,
-    ) -> impl std::future::Future<Output = (reqwest::StatusCode, Value)>;
 }
 
 impl TestClientExt for common::TestClient {
@@ -167,28 +160,6 @@ impl TestClientExt for common::TestClient {
             .await
             .expect("DELETE request failed");
         resp.status()
-    }
-
-    async fn patch_authed_with_token(
-        &self,
-        token: &str,
-        path: &str,
-        body: &Value,
-    ) -> (reqwest::StatusCode, Value) {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        let resp = client
-            .patch(format!("{}{}", self.base_url, path))
-            .header("Authorization", format!("Bearer {}", token))
-            .json(body)
-            .send()
-            .await
-            .expect("PATCH request failed");
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(json!({}));
-        (status, body)
     }
 }
 

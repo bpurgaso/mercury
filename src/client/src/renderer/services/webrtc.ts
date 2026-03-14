@@ -172,7 +172,7 @@ export class WebRTCManager {
     this.sendSignalFn = sendSignal
 
     // Expose PeerConnection for E2E test introspection via getStats()
-    if (typeof window !== 'undefined' && (window as unknown as Record<string, unknown>).__MERCURY_DEV__) {
+    if (typeof window !== 'undefined') {
       (window as unknown as Record<string, unknown>).__mercury_pc = pc
     }
 

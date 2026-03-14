@@ -263,7 +263,7 @@ test('leave server removes it from sidebar (E2E-010)', async () => {
     const token = localStorage.getItem('mercury_access_token')
     // We'll use the API to find the server, then leave it
     return (async () => {
-      const res = await fetch('https://localhost:8443/users/me/servers', {
+      const res = await fetch('https://localhost:8443/servers', {
         headers: { Authorization: `Bearer ${token}` },
       })
       const servers = await res.json()
@@ -314,7 +314,7 @@ test('delete server removes it from sidebar (E2E-011)', async () => {
   // Get the server ID
   const serverId = await page.evaluate(async (name: string) => {
     const token = localStorage.getItem('mercury_access_token')
-    const res = await fetch('https://localhost:8443/users/me/servers', {
+    const res = await fetch('https://localhost:8443/servers', {
       headers: { Authorization: `Bearer ${token}` },
     })
     const servers = await res.json()
@@ -334,7 +334,14 @@ test('delete server removes it from sidebar (E2E-011)', async () => {
   }, serverId)
   expect(deleteResult.ok).toBe(true)
 
-  // Server should disappear from sidebar
+  // Reload the page so the app re-fetches the server list from the API
+  // (there's no WebSocket event for server deletion to update the store reactively)
+  await page.reload()
+  await page.waitForLoadState('domcontentloaded')
+
+  // After reload, the server should not appear in the sidebar
+  // Wait for the main UI to re-load (auto-login from stored tokens)
+  await expect(page.getByTitle('Create Server')).toBeVisible({ timeout: 15000 })
   await expect(page.getByTitle(serverName)).not.toBeVisible({ timeout: 5000 })
 })
 
@@ -379,7 +386,8 @@ test('login with wrong password shows error (E2E-003)', async () => {
   await page.getByRole('button', { name: 'Log In' }).click()
 
   // Should show an error message (the authStore sets error on failed login)
-  const errorBanner = page.locator('.bg-bg-danger\\/20, [class*="bg-danger"], [class*="text-red"]')
+  // The error banner renders with class text-red-400 inside a bg-bg-danger/20 div
+  const errorBanner = page.locator('[class*="text-red"]')
   await expect(errorBanner).toBeVisible({ timeout: 10000 })
 })
 
@@ -389,6 +397,8 @@ test('login with wrong password shows error (E2E-003)', async () => {
 // connection and observing the reconnection behavior.
 test('WebSocket reconnects after intentional disconnect (E2E-040)', async () => {
   // First, log back in so we have an active session
+  // Wait briefly to avoid rate limiting from the previous failed login test
+  await page.waitForTimeout(2000)
   await page.getByPlaceholder('you@example.com').fill(TEST_USER.email)
   await page.locator('input[type="password"]').fill(TEST_USER.password)
   await page.getByRole('button', { name: 'Log In' }).click()

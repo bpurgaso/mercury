@@ -6,28 +6,25 @@
 
 mod common;
 
-use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use chrono::{self, Utc};
 use mercury_auth::{
-    jwt::{create_access_token, create_refresh_token, create_token_pair, validate_token, Claims},
+    jwt::{create_access_token, create_token_pair, validate_token, Claims},
     password::{hash_password, verify_password},
     turn::{generate_turn_credentials, verify_turn_credential},
 };
 use mercury_core::{
     config::{
-        AppConfig, AudioConfig, AuthConfig, BandwidthConfig, DatabaseConfig, IceConfig,
-        MediaConfig, ModerationConfig, ObservabilityConfig, RedisConfig, ServerConfig,
-        SimulcastLayer, TlsConfig, TurnConfig, VideoConfig, AutoActionsConfig,
+        AppConfig, AuthConfig, BandwidthConfig,
+        MediaConfig, SimulcastLayer, TurnConfig, AutoActionsConfig,
     },
     error::MercuryError,
     ids::*,
     models::*,
 };
 use mercury_moderation::reports::is_valid_category;
-use serde_json::json;
 use uuid::Uuid;
 
 // ── Helper configs ──────────────────────────────────────────

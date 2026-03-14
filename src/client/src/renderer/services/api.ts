@@ -143,13 +143,13 @@ export const auth = {
     request<AuthResponse>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(data),
-    }),
+    }, false),
 
   login: (data: LoginRequest) =>
     request<AuthResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(data),
-    }),
+    }, false),
 
   refresh: (refreshToken: string) =>
     request<RefreshResponse>(

@@ -5,7 +5,6 @@
 // because they share a single server and truncate tables between tests.
 mod common;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use common::{setup, TestServer};
 use serde_json::{json, Value};
 use std::sync::OnceLock;
@@ -165,24 +164,6 @@ async fn block_user(srv: &TestServer, blocker_token: &str, blocked_id: &str) {
         .await
         .unwrap();
     assert_eq!(resp.status(), 204, "block should succeed");
-}
-
-/// Create a DM channel between two users, return dm_channel_id.
-async fn create_dm(srv: &TestServer, token: &str, recipient_id: &str) -> String {
-    let resp = reqwest::Client::new()
-        .post(format!("{}/dm", srv.base_url()))
-        .header("Authorization", format!("Bearer {token}"))
-        .json(&json!({ "recipient_id": recipient_id }))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        resp.status().is_success(),
-        "DM creation should succeed, got {}",
-        resp.status()
-    );
-    let body: Value = resp.json().await.unwrap();
-    body["id"].as_str().unwrap().to_string()
 }
 
 /// Promote user to moderator in a server.
@@ -444,7 +425,7 @@ fn blocked_user_msg_dropped() {
     runtime().block_on(async {
         setup(srv).await;
 
-        let (token_a, user_a) = register_user(srv, "ws022_alice", "ws022_alice@test.com").await;
+        let (token_a, _user_a) = register_user(srv, "ws022_alice", "ws022_alice@test.com").await;
         let (token_b, user_b) = register_user(srv, "ws022_bob", "ws022_bob@test.com").await;
 
         // Create a shared server so both are in the same channel

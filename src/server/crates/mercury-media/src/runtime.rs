@@ -6,6 +6,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::detect_local_ip;
 use crate::room::RoomManager;
 use crate::types::*;
 
@@ -237,7 +238,18 @@ async fn sfu_main_loop(
         }
     };
 
-    let local_addr = socket.local_addr().unwrap();
+    let socket_addr = socket.local_addr().unwrap();
+    // When bound to 0.0.0.0, resolve the actual network IP so that the
+    // ICE candidate address matches the destination in Input::Receive.
+    // str0m rejects packets whose destination doesn't match a local candidate.
+    let local_addr = if socket_addr.ip().is_unspecified() {
+        let ip = detect_local_ip().unwrap_or(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::LOCALHOST,
+        ));
+        std::net::SocketAddr::new(ip, socket_addr.port())
+    } else {
+        socket_addr
+    };
     let mut room_manager =
         RoomManager::new(max_participants, empty_room_timeout, event_tx, local_addr);
 

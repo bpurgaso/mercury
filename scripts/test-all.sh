@@ -8,12 +8,12 @@
 #   3. Create mercury_test database and run migrations
 #   4. Run server tests (cargo nextest)
 #   5. Run client unit tests (vitest)
-#   6. Optionally build + start server and run client E2E tests (Playwright)
+#   6. Build + start server and run client E2E tests (Playwright)
 #   7. Tear everything down and report results
 #
 # Usage:
-#   ./scripts/test-all.sh              # Server tests + client unit tests
-#   ./scripts/test-all.sh --e2e        # Also run E2E tests (slower)
+#   ./scripts/test-all.sh              # Server tests + client unit + E2E tests
+#   ./scripts/test-all.sh --no-e2e     # Skip E2E tests (faster)
 #   ./scripts/test-all.sh --no-infra   # Skip Docker (infra already running)
 #
 # Prerequisites:
@@ -43,17 +43,17 @@ NC='\033[0m'
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 
-RUN_E2E=false
+RUN_E2E=true
 MANAGE_INFRA=true
 
 for arg in "$@"; do
     case "$arg" in
-        --e2e)       RUN_E2E=true ;;
+        --no-e2e)    RUN_E2E=false ;;
         --no-infra)  MANAGE_INFRA=false ;;
         --help|-h)
-            echo "Usage: $0 [--e2e] [--no-infra]"
+            echo "Usage: $0 [--no-e2e] [--no-infra]"
             echo ""
-            echo "  --e2e       Also run E2E tests (builds server, starts it, runs Playwright)"
+            echo "  --no-e2e    Skip E2E tests (faster, only runs server + client unit tests)"
             echo "  --no-infra  Skip starting/stopping Docker (assumes infra is already running)"
             exit 0
             ;;
@@ -136,18 +136,28 @@ if [[ "$MANAGE_INFRA" == true ]]; then
     command -v docker  &>/dev/null || missing+=("docker")
 fi
 
+if [[ "$RUN_E2E" == true ]]; then
+    command -v curl    &>/dev/null || missing+=("curl")
+fi
+
 if [[ ${#missing[@]} -gt 0 ]]; then
     echo -e "${RED}ERROR: Missing required tools: ${missing[*]}${NC}"
     echo "See docs/GETTING_STARTED.md for installation instructions."
     exit 1
 fi
 
+# Ensure Playwright browsers are installed for E2E
+if [[ "$RUN_E2E" == true ]]; then
+    echo -e "${CYAN}    Ensuring Playwright browsers are installed...${NC}"
+    (cd "$CLIENT_DIR" && pnpm exec playwright install --with-deps chromium) 2>&1 | tail -1
+fi
+
 # ── Step 1: Start infrastructure ─────────────────────────────────────────────
 
 STEP=1
-TOTAL_STEPS=4
-if [[ "$RUN_E2E" == true ]]; then
-    TOTAL_STEPS=6
+TOTAL_STEPS=6
+if [[ "$RUN_E2E" == false ]]; then
+    TOTAL_STEPS=4
 fi
 
 if [[ "$MANAGE_INFRA" == true ]]; then

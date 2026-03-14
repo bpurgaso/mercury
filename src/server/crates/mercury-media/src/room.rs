@@ -4,14 +4,15 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use mercury_core::ids::{ChannelId, ServerId, UserId};
-use str0m::change::SdpOffer;
+use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
+use str0m::media::{Direction, KeyframeRequest, MediaData, MediaKind, Mid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event as RtcEvent, IceConnectionState, Input, Output, Rtc};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::types::*;
+use crate::{detect_local_ip, types::*};
 
 /// Metric name constant — must match `mercury-api`'s `metrics.rs`.
 const MEDIA_BANDWIDTH_BYTES: &str = "mercury_media_bandwidth_bytes";
@@ -48,6 +49,46 @@ pub struct PeerSession {
     /// layer panics if poll_output() is called before SDP processing initialises
     /// the DTLS state, so we guard all poll_output calls with this flag.
     pub sdp_initialized: bool,
+    /// Incoming tracks — media this peer's client is sending to us.
+    tracks_in: Vec<TrackIn>,
+    /// Outgoing tracks — media we forward from other peers to this client.
+    tracks_out: Vec<TrackOut>,
+    /// Pending SDP offer awaiting an answer from this client.
+    pending_offer: Option<SdpPendingOffer>,
+}
+
+/// Incoming track from a remote peer (client sending media to SFU).
+struct TrackIn {
+    origin: UserId,
+    mid: Mid,
+    kind: MediaKind,
+}
+
+/// Outgoing track to a remote peer (SFU forwarding another user's media to client).
+struct TrackOut {
+    source_user: UserId,
+    source_mid: Mid,
+    kind: MediaKind,
+    state: TrackOutState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrackOutState {
+    /// Needs SDP renegotiation to open.
+    ToOpen,
+    /// Offer sent, awaiting answer. Mid is the local media id assigned by add_media().
+    Negotiating(Mid),
+    /// Ready for forwarding.
+    Open(Mid),
+}
+
+impl TrackOut {
+    fn mid(&self) -> Option<Mid> {
+        match self.state {
+            TrackOutState::ToOpen => None,
+            TrackOutState::Negotiating(m) | TrackOutState::Open(m) => Some(m),
+        }
+    }
 }
 
 // ── Room Manager ───────────────────────────────────────────
@@ -86,19 +127,20 @@ impl RoomManager {
     }
 
     /// Create a new str0m Rtc instance for a participant.
+    /// Uses sample mode (default) — emits MediaData events instead of raw RTP.
     fn create_rtc(&self) -> Rtc {
-        let mut rtc = Rtc::builder()
-            .set_rtp_mode(true)
-            .build(Instant::now());
+        let mut rtc = Rtc::builder().build(Instant::now());
 
         // Add our SFU's UDP socket as a local ICE candidate.
-        // str0m rejects 0.0.0.0 as invalid, so substitute 127.0.0.1 for
-        // unspecified addresses (common in tests and single-host deployments).
+        // str0m rejects 0.0.0.0 as invalid, so we detect the machine's
+        // actual network IP. Using 127.0.0.1 breaks ICE when the client's
+        // WebRTC stack picks the LAN address (Chromium filters out loopback
+        // candidates), causing a source-address mismatch on STUN responses.
         let candidate_addr = if self.local_addr.ip().is_unspecified() {
-            SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                self.local_addr.port(),
-            )
+            let ip = detect_local_ip().unwrap_or(std::net::IpAddr::V4(
+                std::net::Ipv4Addr::LOCALHOST,
+            ));
+            SocketAddr::new(ip, self.local_addr.port())
         } else {
             self.local_addr
         };
@@ -179,6 +221,24 @@ impl RoomManager {
             return Err(SfuError::RoomFull);
         }
 
+        // Collect existing peers' incoming tracks so the new peer can receive them.
+        // Must be done before adding the new participant to avoid including self.
+        let existing_tracks: Vec<(UserId, Mid, MediaKind)> = room
+            .participants
+            .keys()
+            .flat_map(|&uid| {
+                self.peer_sessions
+                    .get(&uid)
+                    .map(|p| {
+                        p.tracks_in
+                            .iter()
+                            .map(|t| (t.origin, t.mid, t.kind))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+
         // Add participant
         let room = self.rooms_by_id.get_mut(&room_id).unwrap();
         room.participants.insert(
@@ -193,8 +253,18 @@ impl RoomManager {
         );
         self.user_rooms.insert(user_id, room_id.clone());
 
-        // Create str0m peer session
+        // Create str0m peer session with TrackOuts for existing peers' tracks
         let rtc = self.create_rtc();
+        let tracks_out = existing_tracks
+            .into_iter()
+            .map(|(origin, mid, kind)| TrackOut {
+                source_user: origin,
+                source_mid: mid,
+                kind,
+                state: TrackOutState::ToOpen,
+            })
+            .collect();
+
         let peer = PeerSession {
             rtc,
             user_id,
@@ -202,6 +272,9 @@ impl RoomManager {
             connected: false,
             remote_addr: None,
             sdp_initialized: false,
+            tracks_in: Vec::new(),
+            tracks_out,
+            pending_offer: None,
         };
         self.peer_sessions.insert(user_id, peer);
 
@@ -268,6 +341,23 @@ impl RoomManager {
         // Remove peer session
         self.peer_sessions.remove(&user_id);
 
+        // Remove TrackOut entries referencing the leaving user from all other peers
+        if let Some(room) = self.rooms_by_id.get(&room_id) {
+            let other_users: Vec<UserId> = room
+                .participants
+                .keys()
+                .copied()
+                .filter(|&uid| uid != user_id)
+                .collect();
+            for other_uid in other_users {
+                if let Some(other_peer) = self.peer_sessions.get_mut(&other_uid) {
+                    other_peer
+                        .tracks_out
+                        .retain(|t| t.source_user != user_id);
+                }
+            }
+        }
+
         let (channel_id, server_id, room_empty) = {
             let room = match self.rooms_by_id.get_mut(&room_id) {
                 Some(r) => r,
@@ -298,20 +388,8 @@ impl RoomManager {
                 let room_id_clone = room_id.clone();
                 let event_tx = self.event_tx.clone();
 
-                // We need to destroy the room after the timeout.
-                // Store a channel sender that the delayed task can use to request cleanup.
-                // For simplicity, destroy the room data now but delay the CallEnded event.
-                // Actually, we need to keep the room alive so people can rejoin.
-                // So we keep the room but schedule its destruction.
-
-                // Remove room from channel mapping immediately to allow new room creation
-                // if someone joins a different way, but keep room_by_id for the timeout period.
-
-                // Simplest approach: spawn a task that sleeps and then sends a cleanup command.
-                // We'll use a JoinHandle that we can abort.
                 let handle = tokio::spawn(async move {
                     tokio::time::sleep(timeout).await;
-                    // Signal cleanup (the event will be consumed by the command loop)
                     let _ = event_tx
                         .send(SfuEvent::CallEnded {
                             room_id: room_id_clone,
@@ -406,8 +484,8 @@ impl RoomManager {
     }
 
     /// Handle a WebRTC signal using str0m.
-    /// For SDP offers: creates a real SDP answer via str0m.
-    /// For ICE candidates: feeds them to the str0m Rtc instance.
+    /// Handles SDP offers (from client), SDP answers (from SFU-initiated renegotiation),
+    /// and ICE candidates.
     pub async fn handle_signal(
         &mut self,
         user_id: UserId,
@@ -434,25 +512,39 @@ impl RoomManager {
                 let offer = SdpOffer::from_sdp_string(sdp_str)
                     .map_err(|e| SfuError::Internal(format!("invalid SDP offer: {e}")))?;
 
-                let peer = self
-                    .peer_sessions
-                    .get_mut(&user_id)
-                    .ok_or_else(|| SfuError::Internal("peer session not found".into()))?;
+                // Scope the mutable borrow of the peer session
+                let answer_sdp = {
+                    let peer = self
+                        .peer_sessions
+                        .get_mut(&user_id)
+                        .ok_or_else(|| SfuError::Internal("peer session not found".into()))?;
 
-                // Accept the offer and generate an answer
-                let answer = peer
-                    .rtc
-                    .sdp_api()
-                    .accept_offer(offer)
-                    .map_err(|e| SfuError::Internal(format!("str0m accept_offer failed: {e}")))?;
+                    // Accept the offer and generate an answer
+                    let answer = peer
+                        .rtc
+                        .sdp_api()
+                        .accept_offer(offer)
+                        .map_err(|e| {
+                            SfuError::Internal(format!("str0m accept_offer failed: {e}"))
+                        })?;
 
-                let answer_sdp = answer.to_sdp_string();
+                    // If the client sent a new offer, any pending SFU-initiated offer
+                    // is invalidated (glare resolution). Reset negotiating tracks.
+                    peer.pending_offer = None;
+                    for track in &mut peer.tracks_out {
+                        if let TrackOutState::Negotiating(_) = track.state {
+                            track.state = TrackOutState::ToOpen;
+                        }
+                    }
 
-                // Mark DTLS as initialized — safe to call poll_output now
-                peer.sdp_initialized = true;
+                    // Mark DTLS as initialized — safe to call poll_output now
+                    peer.sdp_initialized = true;
 
-                // Drain any outputs (transmit packets, events) after SDP processing
-                drain_rtc_outputs(&mut peer.rtc, socket);
+                    answer.to_sdp_string()
+                }; // peer borrow ends here
+
+                // Drain outputs (sends DTLS packets), process events, negotiate
+                self.drain_and_forward(user_id, socket);
 
                 Ok(Some(WebRtcSignalData {
                     signal_type: "answer".to_string(),
@@ -460,23 +552,83 @@ impl RoomManager {
                     candidate: None,
                 }))
             }
-            "ice_candidate" => {
-                if let Some(candidate_str) = &signal.candidate {
+
+            "answer" => {
+                let sdp_str = signal
+                    .sdp
+                    .as_deref()
+                    .ok_or_else(|| SfuError::Internal("answer missing sdp".into()))?;
+
+                let answer = SdpAnswer::from_sdp_string(sdp_str)
+                    .map_err(|e| SfuError::Internal(format!("invalid SDP answer: {e}")))?;
+
+                {
                     let peer = self
                         .peer_sessions
                         .get_mut(&user_id)
                         .ok_or_else(|| SfuError::Internal("peer session not found".into()))?;
 
-                    // Parse and add remote ICE candidate
-                    match Candidate::from_sdp_string(candidate_str) {
-                        Ok(candidate) => {
-                            peer.rtc.add_remote_candidate(candidate);
-                            if peer.sdp_initialized {
-                                drain_rtc_outputs(&mut peer.rtc, socket);
-                            }
+                    let pending = peer
+                        .pending_offer
+                        .take()
+                        .ok_or_else(|| SfuError::Internal("no pending offer for answer".into()))?;
+
+                    peer.rtc
+                        .sdp_api()
+                        .accept_answer(pending, answer)
+                        .map_err(|e| {
+                            SfuError::Internal(format!("str0m accept_answer failed: {e}"))
+                        })?;
+
+                    // Move negotiating tracks to open
+                    for track in &mut peer.tracks_out {
+                        if let TrackOutState::Negotiating(m) = track.state {
+                            track.state = TrackOutState::Open(m);
                         }
-                        Err(e) => {
-                            debug!("failed to parse ICE candidate: {e}");
+                    }
+                }
+
+                // Drain outputs after accepting the answer
+                self.drain_and_forward(user_id, socket);
+
+                Ok(None)
+            }
+
+            "ice_candidate" => {
+                if let Some(candidate_str) = &signal.candidate {
+                    // The client sends JSON.stringify(event.candidate.toJSON()),
+                    // which wraps the SDP candidate string inside a JSON object.
+                    // Extract the "candidate" field if it's JSON, otherwise use as-is.
+                    let sdp_str = if candidate_str.starts_with('{') {
+                        serde_json::from_str::<serde_json::Value>(candidate_str)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("candidate")
+                                    .and_then(|c| c.as_str())
+                                    .map(String::from)
+                            })
+                    } else {
+                        Some(candidate_str.clone())
+                    };
+
+                    if let Some(sdp) = sdp_str {
+                        match Candidate::from_sdp_string(&sdp) {
+                            Ok(candidate) => {
+                                let sdp_init = if let Some(peer) =
+                                    self.peer_sessions.get_mut(&user_id)
+                                {
+                                    peer.rtc.add_remote_candidate(candidate);
+                                    peer.sdp_initialized
+                                } else {
+                                    false
+                                };
+                                if sdp_init {
+                                    self.drain_and_forward(user_id, socket);
+                                }
+                            }
+                            Err(e) => {
+                                debug!("failed to parse ICE candidate: {e}");
+                            }
                         }
                     }
                 }
@@ -577,33 +729,31 @@ impl RoomManager {
         }
     }
 
-    /// Drain outputs from an Rtc instance and forward RTP to other room members.
+    /// Drain outputs from an Rtc instance, forward media to other room members,
+    /// and trigger SDP renegotiation for any peers with pending outgoing tracks.
     fn drain_and_forward(&mut self, user_id: UserId, socket: &UdpSocket) {
-        let _room_id = match self.user_rooms.get(&user_id) {
+        let room_id = match self.user_rooms.get(&user_id) {
             Some(rid) => rid.clone(),
             None => return,
         };
 
-        // Collect RTP packets to forward to other participants
-        let mut has_rtp = false;
+        // ── Phase 1: Drain events from this peer ─────────────────
+        let mut media_items: Vec<MediaData> = Vec::new();
+        let mut new_tracks: Vec<(Mid, MediaKind)> = Vec::new();
+        let mut keyframe_requests: Vec<KeyframeRequest> = Vec::new();
         let mut disconnected = false;
 
         if let Some(peer) = self.peer_sessions.get_mut(&user_id) {
-            // Skip peers that haven't processed SDP yet — str0m's internal DTLS
-            // layer panics if poll_output is called before SDP initialises DTLS.
             if !peer.sdp_initialized {
                 return;
             }
-            // str0m requires a timeout input before poll_output
             let _ = peer.rtc.handle_input(Input::Timeout(Instant::now()));
             loop {
                 match peer.rtc.poll_output() {
                     Ok(Output::Timeout(_)) => break,
                     Ok(Output::Transmit(t)) => {
-                        // Track outbound (download) bandwidth
                         metrics::gauge!(MEDIA_BANDWIDTH_BYTES, "direction" => "download")
                             .increment(t.contents.len() as f64);
-                        // Send the packet out via UDP
                         let _ = socket.try_send_to(&t.contents, t.destination);
                     }
                     Ok(Output::Event(event)) => match event {
@@ -611,19 +761,27 @@ impl RoomManager {
                             debug!("peer {user_id} ICE disconnected");
                             disconnected = true;
                         }
-                        RtcEvent::RtpPacket(rtp) => {
-                            // Track inbound (upload) bandwidth
+                        RtcEvent::MediaData(data) => {
                             metrics::gauge!(MEDIA_BANDWIDTH_BYTES, "direction" => "upload")
-                                .increment(rtp.payload.len() as f64);
-                            // RTP packet received from this participant.
-                            // In a full SFU, we'd forward this to other participants'
-                            // Rtc instances via StreamTx::write_rtp(). For now, we note
-                            // that RTP is flowing.
-                            has_rtp = true;
+                                .increment(data.data.len() as f64);
+                            media_items.push(data);
                         }
                         RtcEvent::MediaAdded(media) => {
-                            debug!("media added for peer {user_id}: mid={}", media.mid);
+                            debug!(
+                                "media added for peer {user_id}: mid={}, kind={:?}, dir={:?}",
+                                media.mid, media.kind, media.direction
+                            );
                             peer.connected = true;
+                            // Only register tracks where the SFU receives media from the client
+                            match media.direction {
+                                Direction::RecvOnly | Direction::SendRecv => {
+                                    new_tracks.push((media.mid, media.kind));
+                                }
+                                _ => {}
+                            }
+                        }
+                        RtcEvent::KeyframeRequest(req) => {
+                            keyframe_requests.push(req);
                         }
                         _ => {}
                     },
@@ -635,11 +793,197 @@ impl RoomManager {
             }
         }
 
-        let _ = has_rtp; // RTP forwarding will be refined with full media pipeline
+        // ── Phase 2: Register new incoming tracks ────────────────
+        if !new_tracks.is_empty() {
+            // Add TrackIn entries to the source peer
+            if let Some(peer) = self.peer_sessions.get_mut(&user_id) {
+                for &(mid, kind) in &new_tracks {
+                    peer.tracks_in.push(TrackIn {
+                        origin: user_id,
+                        mid,
+                        kind,
+                    });
+                }
+            }
+
+            // Add TrackOut entries to all other peers in the room
+            if let Some(room) = self.rooms_by_id.get(&room_id) {
+                let other_users: Vec<UserId> = room
+                    .participants
+                    .keys()
+                    .copied()
+                    .filter(|&uid| uid != user_id)
+                    .collect();
+
+                for other_uid in other_users {
+                    if let Some(other_peer) = self.peer_sessions.get_mut(&other_uid) {
+                        for &(mid, kind) in &new_tracks {
+                            other_peer.tracks_out.push(TrackOut {
+                                source_user: user_id,
+                                source_mid: mid,
+                                kind,
+                                state: TrackOutState::ToOpen,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Phase 3: Forward media data to other peers ───────────
+        if !media_items.is_empty() {
+            if let Some(room) = self.rooms_by_id.get(&room_id) {
+                let other_users: Vec<UserId> = room
+                    .participants
+                    .keys()
+                    .copied()
+                    .filter(|&uid| uid != user_id)
+                    .collect();
+
+                for data in &media_items {
+                    for &other_uid in &other_users {
+                        if let Some(other_peer) = self.peer_sessions.get_mut(&other_uid) {
+                            // Find matching Open TrackOut for this source track
+                            let out_mid = other_peer
+                                .tracks_out
+                                .iter()
+                                .find(|t| {
+                                    t.source_user == user_id
+                                        && t.source_mid == data.mid
+                                        && matches!(t.state, TrackOutState::Open(_))
+                                })
+                                .and_then(|t| match t.state {
+                                    TrackOutState::Open(m) => Some(m),
+                                    _ => None,
+                                });
+
+                            if let Some(mid) = out_mid {
+                                if let Some(writer) = other_peer.rtc.writer(mid) {
+                                    if let Some(pt) = writer.match_params(data.params) {
+                                        if let Err(e) = writer.write(
+                                            pt,
+                                            data.network_time,
+                                            data.time,
+                                            data.data.clone(),
+                                        ) {
+                                            warn!(
+                                                "failed to forward media to {other_uid}: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Phase 4: Route keyframe requests to source peers ─────
+        for req in keyframe_requests {
+            // Find which source track this outgoing track corresponds to
+            let source_info = self
+                .peer_sessions
+                .get(&user_id)
+                .and_then(|peer| {
+                    peer.tracks_out
+                        .iter()
+                        .find(|t| t.mid() == Some(req.mid))
+                        .map(|t| (t.source_user, t.source_mid))
+                });
+
+            if let Some((source_user, source_mid)) = source_info {
+                if let Some(source_peer) = self.peer_sessions.get_mut(&source_user) {
+                    if let Some(mut writer) = source_peer.rtc.writer(source_mid) {
+                        let _ = writer.request_keyframe(req.rid, req.kind);
+                    }
+                }
+            }
+        }
+
+        // ── Phase 5: Negotiate for peers with ToOpen tracks ──────
+        self.negotiate_tracks_in_room(&room_id, socket);
 
         // Handle disconnect
-        if disconnected {
-            // Will be handled by the command loop via leave_all
+        let _ = disconnected;
+    }
+
+    /// For each peer in the room that has un-negotiated outgoing tracks (ToOpen),
+    /// create an SDP offer and send it to the client via WebSocket.
+    fn negotiate_tracks_in_room(&mut self, room_id: &str, socket: &UdpSocket) {
+        let room = match self.rooms_by_id.get(room_id) {
+            Some(r) => r,
+            None => return,
+        };
+
+        let peer_ids: Vec<UserId> = room.participants.keys().copied().collect();
+        let event_tx = self.event_tx.clone();
+
+        for uid in peer_ids {
+            let peer = match self.peer_sessions.get_mut(&uid) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Skip peers not yet initialized or with a pending offer already in flight
+            if !peer.sdp_initialized || peer.pending_offer.is_some() {
+                continue;
+            }
+
+            let has_to_open = peer
+                .tracks_out
+                .iter()
+                .any(|t| matches!(t.state, TrackOutState::ToOpen));
+            if !has_to_open {
+                continue;
+            }
+
+            // Build the SDP change: add a SendOnly media line for each ToOpen track
+            let mut change = peer.rtc.sdp_api();
+
+            for track in &mut peer.tracks_out {
+                if matches!(track.state, TrackOutState::ToOpen) {
+                    let mid =
+                        change.add_media(track.kind, Direction::SendOnly, None, None, None);
+                    track.state = TrackOutState::Negotiating(mid);
+                }
+            }
+
+            if !change.has_changes() {
+                continue;
+            }
+
+            let Some((offer, pending)) = change.apply() else {
+                continue;
+            };
+
+            peer.pending_offer = Some(pending);
+            let offer_sdp = offer.to_sdp_string();
+
+            debug!("sending SFU-initiated offer to peer {uid}");
+
+            let _ = event_tx.try_send(SfuEvent::WebRtcSignal {
+                target_user: uid,
+                from_user: uid,
+                signal: WebRtcSignalData {
+                    signal_type: "offer".to_string(),
+                    sdp: Some(offer_sdp),
+                    candidate: None,
+                },
+            });
+
+            // Drain any transmit outputs generated by the SDP change
+            let _ = peer.rtc.handle_input(Input::Timeout(Instant::now()));
+            loop {
+                match peer.rtc.poll_output() {
+                    Ok(Output::Timeout(_)) => break,
+                    Ok(Output::Transmit(t)) => {
+                        let _ = socket.try_send_to(&t.contents, t.destination);
+                    }
+                    Ok(Output::Event(_)) => {}
+                    Err(_) => break,
+                }
+            }
         }
     }
 
@@ -666,23 +1010,5 @@ impl RoomManager {
         self.rooms_by_channel
             .get(&channel_id)
             .and_then(|rid| self.get_room(rid))
-    }
-}
-
-/// Drain all pending outputs from an Rtc instance, sending transmits via UDP.
-fn drain_rtc_outputs(rtc: &mut Rtc, socket: &UdpSocket) {
-    // str0m requires a timeout input before poll_output
-    let _ = rtc.handle_input(Input::Timeout(Instant::now()));
-    loop {
-        match rtc.poll_output() {
-            Ok(Output::Timeout(_)) => break,
-            Ok(Output::Transmit(t)) => {
-                let _ = socket.try_send_to(&t.contents, t.destination);
-            }
-            Ok(Output::Event(_)) => {
-                // Events are consumed but not acted on in this helper
-            }
-            Err(_) => break,
-        }
     }
 }

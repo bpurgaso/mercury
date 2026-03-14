@@ -223,7 +223,7 @@ async fn otp_atomic_claim() {
 
     // Exactly one should succeed, the other should get 404 (exhausted)
     let successes = [bob_status, carol_status].iter().filter(|s| s.is_success()).count();
-    let failures = [bob_status, carol_status].iter().filter(|s| **s == 404).count();
+    let _failures = [bob_status, carol_status].iter().filter(|s| **s == 404).count();
 
     assert!(
         successes <= 1,
@@ -275,7 +275,7 @@ async fn sql_injection_rejected() {
 
     let mut client = server.client();
     let injection = "'; DROP TABLE users;--";
-    let (status, _) = client.register_raw(injection, "inject@test.com", "password123").await;
+    let (_status, _) = client.register_raw(injection, "inject@test.com", "password123").await;
 
     // The request should either succeed safely (parameterized) or be rejected
     // The users table must still exist
@@ -405,7 +405,7 @@ async fn blocked_user_silent_drop() {
     let mut alice = server.client();
     alice.register_raw("sec_drop_a", "sec_drop_a@test.com", "password123").await;
     let alice_token = alice.access_token.clone().unwrap();
-    let alice_id = alice.user_id.clone().unwrap();
+    let _alice_id = alice.user_id.clone().unwrap();
 
     let mut bob = server.client();
     bob.register_raw("sec_drop_b", "sec_drop_b@test.com", "password123").await;
@@ -458,7 +458,7 @@ async fn banned_user_ws_rejected() {
 
     let mut owner = server.client();
     owner.register_raw("sec_ban_owner", "sec_ban_o@test.com", "password123").await;
-    let owner_token = owner.access_token.clone().unwrap();
+    let _owner_token = owner.access_token.clone().unwrap();
 
     let mut target = server.client();
     target.register_raw("sec_ban_target", "sec_ban_t@test.com", "password123").await;
@@ -541,7 +541,7 @@ async fn banned_user_ws_rejected() {
 
     // Verify the banned user received an error event (not silently dropped)
     // The server should send an ERROR or close the subscription for the banned server
-    let target_events = target_ws
+    let _target_events = target_ws
         .collect_events("ERROR", Duration::from_millis(500))
         .await;
     // Even if no explicit ERROR event, the message being silently dropped is acceptable
@@ -653,7 +653,7 @@ async fn encryption_mode_immutable() {
     let channel_id = ch["id"].as_str().unwrap();
 
     // Try to change encryption_mode to private
-    let (status, _) = client.patch_authed(
+    let (_status, _) = client.patch_authed(
         &format!("/channels/{channel_id}"),
         &json!({"encryption_mode": "private"}),
     ).await;

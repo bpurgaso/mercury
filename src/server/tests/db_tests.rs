@@ -747,7 +747,7 @@ async fn channel_encryption_mode_immutable() {
     let channel_id = ch["id"].as_str().unwrap();
 
     // Attempt to PATCH encryption_mode from standard → private
-    let (status, _) = client
+    let (_status, _) = client
         .patch_authed(
             &format!("/channels/{channel_id}"),
             &json!({"encryption_mode": "private"}),
