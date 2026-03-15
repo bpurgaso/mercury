@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Mercury — E2E encrypted communication client",
   "author": "Mercury Contributors",
-  "private": true,
+  "license": "Apache-2.0",
+  "private": false,
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

@@ -5,8 +5,8 @@ A self-hosted, end-to-end encrypted communication platform supporting text, voic
 ## Features
 
 - **Tiered Encryption** -- Channels choose their encryption model at creation time:
-  - *End-to-End Encrypted*: DMs and private channels use Signal Protocol (X3DH + Double Ratchet). The server never sees plaintext.
-  - *Server-Side Encrypted*: Standard channels use TLS + at-rest encryption, enabling full search and moderation.
+  - _End-to-End Encrypted_: DMs and private channels use Signal Protocol (X3DH + Double Ratchet). The server never sees plaintext.
+  - _Server-Side Encrypted_: Standard channels use TLS + at-rest encryption, enabling full search and moderation.
 - **Voice & Video** -- SFU-based calls in channels and DMs with E2E-encrypted media via WebRTC Insertable Streams.
 - **Self-Hosted** -- Single Docker container with bundled TURN server. Designed for 500--5,000+ concurrent users per instance.
 - **Moderation Tools** -- Reporting, metadata-based abuse detection, and an operator dashboard.
@@ -14,13 +14,13 @@ A self-hosted, end-to-end encrypted communication platform supporting text, voic
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Server | Rust, Tokio, Axum, str0m (WebRTC SFU) |
-| Database | PostgreSQL 16+, Redis 7+ |
-| Client | Electron 33+, React 19, TypeScript, Tailwind CSS 4 |
-| Crypto | libsodium, ring, RustCrypto |
-| Build | Cargo workspaces, Vite (electron-vite), Docker |
+| Layer    | Technology                                         |
+| -------- | -------------------------------------------------- |
+| Server   | Rust, Tokio, Axum, str0m (WebRTC SFU)              |
+| Database | PostgreSQL 16+, Redis 7+                           |
+| Client   | Electron 33+, React 19, TypeScript, Tailwind CSS 4 |
+| Crypto   | libsodium, ring, RustCrypto                        |
+| Build    | Cargo workspaces, Vite (electron-vite), Docker     |
 
 ## Quick Start
 
@@ -127,15 +127,15 @@ mercury/
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Getting Started](docs/GETTING_STARTED.md) | Development environment setup |
-| [Operator Guide](docs/operator-guide.md) | Production deployment & operations |
-| [Implementation Plan](docs/IMPLEMENTATION_PLAN.md) | Phased development roadmap |
-| [Server Spec](specs/server-spec.md) | Server architecture & API design |
-| [Client Spec](specs/client-spec.md) | Client architecture & UI design |
-| [Test Spec](specs/TESTSPEC.md) | Test strategy & coverage |
+| Document                                           | Description                        |
+| -------------------------------------------------- | ---------------------------------- |
+| [Getting Started](docs/GETTING_STARTED.md)         | Development environment setup      |
+| [Operator Guide](docs/operator-guide.md)           | Production deployment & operations |
+| [Implementation Plan](docs/IMPLEMENTATION_PLAN.md) | Phased development roadmap         |
+| [Server Spec](specs/server-spec.md)                | Server architecture & API design   |
+| [Client Spec](specs/client-spec.md)                | Client architecture & UI design    |
+| [Test Spec](specs/TESTSPEC.md)                     | Test strategy & coverage           |
 
 ## License
 
-All rights reserved.
+Licensed under the [Apache License, Version 2.0](LICENSE).
