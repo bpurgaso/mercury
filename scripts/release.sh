@@ -310,7 +310,7 @@ echo ""
 echo -e "${CYAN}==> [5] Creating git tag v$VERSION...${NC}"
 
 git -C "$REPO_ROOT" add -A
-git -C "$REPO_ROOT" commit -m "release: bump version to $VERSION"
+git -C "$REPO_ROOT" diff --cached --quiet || git -C "$REPO_ROOT" commit -m "release: bump version to $VERSION"
 git -C "$REPO_ROOT" tag -a "v$VERSION" -m "Mercury v$VERSION"
 echo -e "${GREEN}    Tag v$VERSION created.${NC}"
 
