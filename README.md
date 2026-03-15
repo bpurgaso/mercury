@@ -1,5 +1,8 @@
 # Mercury
 
+> [!IMPORTANT]
+> Mercury is provided as is. It is a proof of concept project for me to learn agentic software development strategies. Mercury works, and like all software, likely contains bugs. I plan to continue working on Mercury for my communities, and if there is interest, for everyone else.
+
 A self-hosted, end-to-end encrypted communication platform supporting text, voice, and video. Deploy it yourself with a single Docker container and own your community's data.
 
 ## Features
