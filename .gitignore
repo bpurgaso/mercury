@@ -29,6 +29,9 @@ pnpm-debug.log*
 *.db-shm
 *.db-wal
 
+# Release Artifacts
+dist/
+
 # OS Generated Files
 .DS_Store
 .DS_Store?

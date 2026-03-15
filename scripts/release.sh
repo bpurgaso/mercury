@@ -268,13 +268,13 @@ if [[ "$BUILD_CLIENT" == true ]]; then
     (cd "$CLIENT_DIR" && pnpm run build:linux)
 
     echo -e "${GREEN}    Linux client artifacts:${NC}"
-    for f in "$CLIENT_DIR"/dist/*.{AppImage,deb,rpm,flatpak} 2>/dev/null; do
-        if [[ -f "$f" ]]; then
-            SIZE=$(du -h "$f" | cut -f1)
-            echo -e "${GREEN}      $(basename "$f") ($SIZE)${NC}"
-            ARTIFACTS+=("$f")
-        fi
+    shopt -s nullglob
+    for f in "$CLIENT_DIR"/dist/*.AppImage "$CLIENT_DIR"/dist/*.deb "$CLIENT_DIR"/dist/*.rpm "$CLIENT_DIR"/dist/*.flatpak; do
+        SIZE=$(du -h "$f" | cut -f1)
+        echo -e "${GREEN}      $(basename "$f") ($SIZE)${NC}"
+        ARTIFACTS+=("$f")
     done
+    shopt -u nullglob
 else
     echo ""
     echo -e "${YELLOW}==> [3] Skipping client build (--server-only)${NC}"
@@ -288,13 +288,13 @@ if [[ "$BUILD_CLIENT" == true && "$SKIP_WINDOWS" == false ]]; then
 
     if (cd "$CLIENT_DIR" && pnpm run build:win); then
         echo -e "${GREEN}    Windows client artifacts:${NC}"
-        for f in "$CLIENT_DIR"/dist/*.exe 2>/dev/null; do
-            if [[ -f "$f" ]]; then
-                SIZE=$(du -h "$f" | cut -f1)
-                echo -e "${GREEN}      $(basename "$f") ($SIZE)${NC}"
-                ARTIFACTS+=("$f")
-            fi
+        shopt -s nullglob
+        for f in "$CLIENT_DIR"/dist/*.exe; do
+            SIZE=$(du -h "$f" | cut -f1)
+            echo -e "${GREEN}      $(basename "$f") ($SIZE)${NC}"
+            ARTIFACTS+=("$f")
         done
+        shopt -u nullglob
     else
         echo -e "${YELLOW}    WARNING: Windows cross-build failed. Skipping Windows artifacts.${NC}"
         echo -e "${YELLOW}    Build natively on Windows for reliable .exe output.${NC}"
@@ -332,11 +332,13 @@ if [[ "$GITHUB_RELEASE" == true ]]; then
         fi
     done
 
-    gh release create "v$VERSION" \
-        "${GH_ARGS[@]}" \
-        --title "Mercury v$VERSION" \
-        --notes "$(cat <<EOF
-## Mercury v$VERSION
+    # Build release notes
+    WINDOWS_LINE="- Windows: not included in this release"
+    if [[ "$SKIP_WINDOWS" == false ]]; then
+        WINDOWS_LINE="- Windows: NSIS installer, portable .exe"
+    fi
+
+    RELEASE_NOTES="## Mercury v$VERSION
 
 ### Server
 - Docker image: \`mercury-server:$VERSION\`
@@ -344,11 +346,14 @@ if [[ "$GITHUB_RELEASE" == true ]]; then
 
 ### Client
 - Linux: AppImage, .deb, .rpm
-$([[ "$SKIP_WINDOWS" == false ]] && echo "- Windows: NSIS installer, portable .exe" || echo "- Windows: not included in this release")
+$WINDOWS_LINE
 
-See [docs/release-runbook.md](docs/release-runbook.md) for deployment instructions.
-EOF
-)"
+See [docs/release-runbook.md](docs/release-runbook.md) for deployment instructions."
+
+    gh release create "v$VERSION" \
+        "${GH_ARGS[@]}" \
+        --title "Mercury v$VERSION" \
+        --notes "$RELEASE_NOTES"
 
     echo -e "${GREEN}    GitHub release created.${NC}"
 else
