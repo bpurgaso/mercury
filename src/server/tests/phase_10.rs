@@ -206,9 +206,11 @@ async fn test_security_headers() {
 
     assert_eq!(status, 200);
 
+    // HSTS is intentionally omitted for localhost requests to avoid poisoning
+    // Chromium's HSTS cache (which applies per-domain across all ports).
     assert!(
-        headers.contains_key("strict-transport-security"),
-        "should have HSTS header"
+        !headers.contains_key("strict-transport-security"),
+        "should NOT have HSTS header on localhost"
     );
     assert!(
         headers.contains_key("content-security-policy"),

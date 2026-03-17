@@ -58,7 +58,7 @@ For production deployment, see the [Operator Guide](docs/operator-guide.md).
 ./scripts/test-all.sh
 ```
 
-Or run individually: `cargo nextest run` (server) and `pnpm test` (client). See [Test Spec](specs/TESTSPEC.md) for coverage details.
+Or run individually: `cargo nextest run -j1` (server, must run sequentially) and `pnpm test` (client). See [Test Spec](specs/TESTSPEC.md) for coverage details.
 
 ## Project Structure
 

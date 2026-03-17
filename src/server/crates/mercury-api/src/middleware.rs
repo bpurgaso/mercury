@@ -147,13 +147,28 @@ pub async fn security_headers(
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
 
+    // Check if this is a localhost request to avoid poisoning the HSTS cache.
+    // Chromium applies HSTS per-domain (all ports), so sending HSTS on localhost:8443
+    // forces http://localhost:5173 (Vite dev server) to upgrade to https://.
+    let is_localhost = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|h| {
+            let host = h.split(':').next().unwrap_or(h);
+            host == "localhost" || host == "127.0.0.1" || host == "::1"
+        })
+        .unwrap_or(false);
+
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
-    headers.insert(
-        header::STRICT_TRANSPORT_SECURITY,
-        HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
-    );
+    if !is_localhost {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
+        );
+    }
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),

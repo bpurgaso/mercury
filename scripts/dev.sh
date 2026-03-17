@@ -124,6 +124,41 @@ if [[ ! -f "$REPO_ROOT/certs/cert.pem" ]]; then
     exit 1
 fi
 
+# ── Kill stale processes from previous runs ──────────────────────────────────
+
+echo -e "${CYAN}==> Cleaning up stale processes...${NC}"
+
+stale_server_pids=$(pgrep -f "target/debug/mercury-server" 2>/dev/null || true)
+if [[ -n "$stale_server_pids" ]]; then
+    echo -e "${YELLOW}    Killing stale mercury-server (PIDs: $stale_server_pids)${NC}"
+    kill $stale_server_pids 2>/dev/null || true
+    sleep 1
+    # Force-kill any that didn't exit gracefully
+    for pid in $stale_server_pids; do
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    done
+fi
+
+stale_cargo_watch_pids=$(pgrep -f "cargo-watch" 2>/dev/null || true)
+if [[ -n "$stale_cargo_watch_pids" ]]; then
+    echo -e "${YELLOW}    Killing stale cargo-watch (PIDs: $stale_cargo_watch_pids)${NC}"
+    kill $stale_cargo_watch_pids 2>/dev/null || true
+fi
+
+stale_electron_pids=$(pgrep -f "electron.*mercury" 2>/dev/null || true)
+if [[ -n "$stale_electron_pids" ]]; then
+    echo -e "${YELLOW}    Killing stale Electron client (PIDs: $stale_electron_pids)${NC}"
+    kill $stale_electron_pids 2>/dev/null || true
+fi
+
+stale_vite_pids=$(pgrep -f "electron-vite" 2>/dev/null || true)
+if [[ -n "$stale_vite_pids" ]]; then
+    echo -e "${YELLOW}    Killing stale electron-vite (PIDs: $stale_vite_pids)${NC}"
+    kill $stale_vite_pids 2>/dev/null || true
+fi
+
+echo -e "${GREEN}==> Clean.${NC}"
+
 # ── Start infrastructure ─────────────────────────────────────────────────────
 
 echo -e "${CYAN}==> Starting Docker Compose services...${NC}"
