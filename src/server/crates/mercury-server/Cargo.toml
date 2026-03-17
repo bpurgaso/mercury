@@ -67,6 +67,10 @@ path = "../../tests/api_tests.rs"
 name = "ws_tests"
 path = "../../tests/ws_tests.rs"
 
+[[test]]
+name = "channel_types"
+path = "../../tests/channel_types.rs"
+
 [[bench]]
 name = "server_benchmarks"
 path = "../../benches/server_benchmarks.rs"

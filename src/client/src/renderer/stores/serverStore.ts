@@ -24,7 +24,7 @@ interface ServerState {
   addChannel(channel: Channel): void
   removeChannel(channelId: string): void
   updateChannel(channel: Channel): void
-  createChannel(serverId: string, name: string, encryptionMode: 'standard' | 'private'): Promise<Channel>
+  createChannel(serverId: string, name: string, channelType: 'text' | 'voice', encryptionMode: 'standard' | 'private'): Promise<Channel>
   fetchChannels(serverId: string): Promise<void>
   setActiveChannel(channelId: string | null): void
 
@@ -153,9 +153,10 @@ export const useServerStore = create<ServerState>((set, get) => ({
     })
   },
 
-  async createChannel(serverId: string, name: string, encryptionMode: 'standard' | 'private') {
+  async createChannel(serverId: string, name: string, channelType: 'text' | 'voice', encryptionMode: 'standard' | 'private') {
     const channel = await channelsApi.create(serverId, {
       name,
+      channel_type: channelType,
       encryption_mode: encryptionMode,
     })
     get().addChannel(channel)
