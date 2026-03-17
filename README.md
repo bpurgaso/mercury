@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/mercury_banner.png" alt="Mercury" width="800">
+</p>
+
 # Mercury
 
 > [!IMPORTANT]
